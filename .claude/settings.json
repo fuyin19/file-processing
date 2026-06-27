@@ -1,0 +1,11 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python -m pytest tests/markdown-conversion/test_pipeline.py *)",
+      "Bash(python -m pytest tests/markdown-cleanup/test_cleanup_pipeline.py *)",
+      "Bash(python *pipeline.py*)",
+      "Bash(python *cleanup_pipeline.py*)",
+      "Bash(python *translate_pipeline.py*)"
+    ]
+  }
+}
