@@ -65,11 +65,28 @@ _TARGET_HEADERS = {'target', 'chinese', 'zh', 'translation', 'to', 'value', 'tra
 
 
 def load_glossary_json(path: str) -> dict[str, str]:
-    """Load a JSON glossary file. Expects dict of source -> target."""
+    """Load a JSON glossary file as a flat source -> target dict.
+
+    Accepts three shapes (backward compatible):
+      - flat dict {source: target}
+      - list of dicts with source/target keys (or [source, target] pairs)
+      - structured wrapper {"terms": [{source, target, ...}, ...]} (metadata is
+        dropped here; use load_glossary_structured to keep it)
+    """
     with open(path, 'r', encoding='utf-8') as f:
         data = json.load(f)
 
     if isinstance(data, dict):
+        # Structured wrapper -> extract source/target only.
+        if 'terms' in data and isinstance(data['terms'], list):
+            result = {}
+            for item in data['terms']:
+                if isinstance(item, dict):
+                    src = item.get('source')
+                    tgt = item.get('target')
+                    if src and tgt:
+                        result[str(src)] = str(tgt)
+            return result
         # Simple source -> target mapping
         return {str(k): str(v) for k, v in data.items()}
 
@@ -211,11 +228,242 @@ def load_reference_content(path: str) -> str:
 # Glossary I/O
 # ---------------------------------------------------------------------------
 
-def save_glossary(glossary: dict[str, str], path: str) -> None:
-    """Save a glossary dict to a JSON file."""
+def save_glossary(glossary, path: str) -> None:
+    """Save a glossary to JSON.
+
+    Polymorphic by input (backward compatible):
+      - flat dict {source: target} -> written as-is (legacy flat file)
+      - list of structured entries -> written as {"terms": [...]} (structured)
+      - {"terms": [...]} dict -> written as structured
+    """
     os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
+    if isinstance(glossary, list):
+        out = {'terms': glossary}
+    elif isinstance(glossary, dict) and 'terms' in glossary and isinstance(glossary['terms'], list):
+        out = glossary
+    else:
+        out = glossary
     with open(path, 'w', encoding='utf-8') as f:
-        json.dump(glossary, f, indent=2, ensure_ascii=False)
+        json.dump(out, f, indent=2, ensure_ascii=False)
+
+
+def load_glossary_structured(path: str) -> list[dict]:
+    """Load a glossary as a list of structured entries.
+
+    - Structured {"terms": [...]} input is returned (entries kept as-is).
+    - Legacy flat dict / CSV / MD / list-of-dicts input is wrapped: each term
+      becomes {"source": s, "target": t, "confidence": "high"}.
+    """
+    ext = os.path.splitext(path)[1].lower()
+    if ext == '.json':
+        with open(path, 'r', encoding='utf-8') as f:
+            data = json.load(f)
+        if isinstance(data, dict) and 'terms' in data and isinstance(data['terms'], list):
+            return data['terms']
+        if isinstance(data, list):
+            entries = []
+            for item in data:
+                if isinstance(item, dict):
+                    src = _find_key(item, _SOURCE_HEADERS)
+                    tgt = _find_key(item, _TARGET_HEADERS)
+                    if src and tgt:
+                        entries.append({'source': str(src), 'target': str(tgt), 'confidence': 'high'})
+                elif isinstance(item, (list, tuple)) and len(item) >= 2:
+                    entries.append({'source': str(item[0]), 'target': str(item[1]), 'confidence': 'high'})
+            return entries
+        if isinstance(data, dict):
+            return [{'source': str(k), 'target': str(v), 'confidence': 'high'} for k, v in data.items()]
+        return []
+    # Legacy CSV / MD / flat -> wrap as confidence:high seeds.
+    flat = load_glossary(path)
+    return [{'source': s, 'target': t, 'confidence': 'high'} for s, t in flat.items()]
+
+
+def save_glossary_structured(terms: list[dict], path: str) -> None:
+    """Write structured glossary {"terms": [...]}."""
+    save_glossary(terms, path)
+
+
+# ---------------------------------------------------------------------------
+# Glossary slicing (per-chunk) and target matching
+# ---------------------------------------------------------------------------
+
+_CONF_RANK = {'high': 0, 'medium': 1, 'none': 2, None: 3}
+
+
+def slice_glossary_for_chunk(
+    terms: list[dict],
+    chunk_index: int,
+    protected_sources: list[str] | None = None,
+    max_terms: int | None = None,
+) -> dict:
+    """Return the glossary entries relevant to one chunk.
+
+    An entry is relevant if the chunk is in its ``source_chunks`` or in any of its
+    ``occurrences`` [{chunk, line}], or if its source is in ``protected_sources``
+    (high-frequency / proper-noun / user seed terms kept in every chunk).
+    When the selection exceeds ``max_terms``, it is truncated by priority
+    (confidence high>medium>none, then occurrence count, then seed membership).
+    """
+    protected = set(protected_sources or [])
+    selected = []
+    for t in terms:
+        src = t.get('source')
+        chunks = set(t.get('source_chunks') or [])
+        occ_chunks = {
+            o.get('chunk') for o in (t.get('occurrences') or []) if isinstance(o, dict)
+        }
+        if chunk_index in chunks or chunk_index in occ_chunks or src in protected:
+            selected.append(t)
+    truncated = False
+    if max_terms and len(selected) > max_terms:
+        selected.sort(
+            key=lambda t: (
+                _CONF_RANK.get(t.get('confidence'), 3),
+                -len(t.get('occurrences') or []),
+                0 if t.get('source') in protected else 1,
+                t.get('source', ''),
+            )
+        )
+        selected = selected[:max_terms]
+        truncated = True
+    return {'terms': selected, 'count': len(selected), 'truncated': truncated}
+
+
+def _normalize_latin(s: str) -> str:
+    import unicodedata
+    nfkd = unicodedata.normalize('NFKD', s)
+    return ''.join(c for c in nfkd if not unicodedata.combining(c)).lower()
+
+
+def _is_cjk(s: str) -> bool:
+    return any('一' <= ch <= '鿿' for ch in s)
+
+
+def normalize_target(target: str) -> str:
+    """Normalized comparison form (lowercase + diacritics stripped)."""
+    return _normalize_latin(target or '')
+
+
+def target_present(target: str, text: str) -> bool:
+    """True if ``target`` appears in ``text``.
+
+    CJK targets -> exact substring match. Latin targets -> normalized form
+    (lowercase + diacritics stripped) with word boundaries, so morphological
+    variants match while avoiding partial-word false positives.
+    """
+    if not target:
+        return False
+    if _is_cjk(target):
+        return target in text
+    norm_target = _normalize_latin(target)
+    if not norm_target:
+        return False
+    norm_text = _normalize_latin(text)
+    return re.search(r'\b' + re.escape(norm_target) + r'\b', norm_text) is not None
+
+
+# ---------------------------------------------------------------------------
+# Structure-safe chunking (shared with content-review's review_plan; duplicated
+# here so the translate pipeline does not cross-import another skill)
+# ---------------------------------------------------------------------------
+
+_FENCE_RE = re.compile(r'^\s*(```|~~~)')
+
+
+def _is_fence_open(line: str) -> bool:
+    return bool(_FENCE_RE.match(line))
+
+
+def _is_table_row(line: str) -> bool:
+    return line.lstrip().startswith('|')
+
+
+def parse_blocks(text: str) -> list[tuple[str, list[str]]]:
+    """Split text into atomic blocks (fenced code / tables / prose+blank runs).
+
+    Fenced code and tables are never split. Every input line lands in exactly one
+    block, so concatenating blocks reproduces the source.
+    """
+    lines = text.split('\n')
+    blocks: list[tuple[str, list[str]]] = []
+    i, n = 0, len(lines)
+    while i < n:
+        line = lines[i]
+        if _is_fence_open(line):
+            fence = _FENCE_RE.match(line).group(1)
+            j = i + 1
+            buf = [line]
+            while j < n:
+                buf.append(lines[j])
+                if re.match(r'^\s*' + re.escape(fence) + r'\s*$', lines[j].strip()):
+                    j += 1
+                    break
+                j += 1
+            blocks.append(('code', buf))
+            i = j
+        elif _is_table_row(line):
+            buf = []
+            while i < n and _is_table_row(lines[i]):
+                buf.append(lines[i])
+                i += 1
+            blocks.append(('table', buf))
+        elif line.strip() == '':
+            blocks.append(('prose', [line]))
+            i += 1
+        else:
+            buf = []
+            while (
+                i < n and lines[i].strip() != ''
+                and not _is_fence_open(lines[i]) and not _is_table_row(lines[i])
+            ):
+                buf.append(lines[i])
+                i += 1
+            blocks.append(('prose', buf))
+    return blocks
+
+
+def pack_blocks(blocks: list[tuple[str, list[str]]], chunk_lines: int) -> list[list[tuple[str, list[str]]]]:
+    """Greedily pack atomic blocks into chunks of at most ~chunk_lines lines.
+
+    A single block larger than chunk_lines becomes its own (oversized) chunk
+    rather than being split.
+    """
+    chunks: list[list[tuple[str, list[str]]]] = []
+    cur: list[tuple[str, list[str]]] = []
+    cur_lines = 0
+    for btype, blines in blocks:
+        blen = len(blines)
+        if cur and cur_lines + blen > chunk_lines:
+            chunks.append(cur)
+            cur, cur_lines = [], 0
+        cur.append((btype, blines))
+        cur_lines += blen
+    if cur:
+        chunks.append(cur)
+    return chunks
+
+
+def chunk_text(text: str, chunk_lines: int) -> list[dict]:
+    """Return structure-safe chunks: [{index, start, end, lines, text, oversized}]."""
+    packed = pack_blocks(parse_blocks(text), chunk_lines)
+    out = []
+    lineno = 1
+    for idx, chunk in enumerate(packed, start=1):
+        n_in = sum(len(blines) for _, blines in chunk)
+        start = lineno
+        end = lineno + n_in - 1
+        body = '\n'.join(line for _, blines in chunk for line in blines)
+        out.append({
+            'index': idx,
+            'start': start,
+            'end': end,
+            'lines': n_in,
+            'text': body,
+            'oversized': n_in > chunk_lines,
+        })
+        lineno = end + 1
+    return out
 
 
 def load_glossary_file(path: str) -> dict[str, str]:
