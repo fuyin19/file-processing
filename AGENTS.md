@@ -1,15 +1,73 @@
 # AGENTS.md
 
-This file provides guidance to Codex (Codex.ai/code) when working with code in this repository.
+This file is the single source of project guidance for the `file-processing`
+plugin. `CLAUDE.md` is a one-line `@AGENTS.md` import; do not maintain a second
+copy of this content there.
 
-## Project Overview
+> This file is static project guidance. Do not modify it unless the user
+> explicitly asks for refresh/sync/update — the minimal Core and scope design
+> depends on it not drifting.
 
-**file-processing** is a Codex plugin (v3.5.0) containing four file processing skills:
+## Project Purpose
+
+`file-processing` is a Claude Code plugin (v3.5.0) that packages four
+file-processing skills as `/file-processing:<name>` commands. It serves
+developers working inside Claude Code who need repeatable, script-backed
+document workflows — convert, review, translate, clean up — where deterministic
+Python pipelines do the structural work and Claude / sub-agents do the
+linguistic and judgment work. It exists so these workflows are consistent,
+testable, and resistant to LLM step-skipping (via sub-agent orchestration)
+rather than depending on ad-hoc per-conversation prompting.
+
+Immutable long-term tradeoff (one line): for `translate`, accuracy / terminology
+match is prioritized over speed and token cost; across all skills,
+structure-safety and testability are prioritized over feature breadth.
+
+The four skills:
 
 - **markdown-conversion** (v4.0.0) — Convert documents to markdown. Python pipeline with Chinese text processing, encoding detection, and optional image stripping. Output defaults to the source file's directory; use `--output-path` to write to an Obsidian vault.
-- **content-review** (v1.1.0) — Review files for grammar, typos, logic, and stylistic issues. Verify content against reference materials (fact-checking). SKILL.md-only with `references/` and `assets/`.
+- **content-review** (v2.0.0) — Review files for grammar, typos, logic, and stylistic issues. Verify content against reference materials (fact-checking). `scripts/review_plan.py` computes a dimension × chunk matrix and assembles sub-agent results; `references/` (criteria + sub-agent prompts) and `assets/` (report template).
 - **markdown-cleanup** (v1.0.0) — Clean up formatting artifacts in markitdown-converted .md files. Pure Python stdlib.
-- **translate** (v1.0.0) — Translate files to a target language with optional reference-guided terminology. Hybrid architecture: Python pipeline for deterministic work, Codex for linguistic work.
+- **translate** (v2.0.0) — Translate files to a target language with optional reference-guided terminology. Hybrid architecture: Python pipeline (`translate_pipeline.py`, `glossary_utils.py`) for deterministic work (structure-safe chunking, source-driven glossary slicing, per-occurrence forced-application QA); Claude/sub-agents for linguistic work.
+
+## Goal Format
+
+How future `/goal` (or similar goal-driven) tasks in this repo should be written.
+This section is **not** a current objective and **not** a peer of Project
+Purpose — it stores "how future goals are expressed", not what the current goal
+is.
+
+Every goal includes, at minimum:
+
+- **Objective** — the concrete outcome this task delivers.
+- **Definition of Done** — DoD must name the verification evidence. For this
+  repo that usually means a specific `python -m pytest tests/<skill>/...` command
+  (or a pipeline invocation) plus its expected exit code / output. No separate
+  mandatory field named Verification or Work Loop is required.
+
+Optional fields (add only when they'd change execution):
+
+- **Constraints** — hard boundaries for this task (e.g. "do not touch
+  markdown-conversion or markdown-cleanup"; "no new runtime dependencies").
+- **Work Plan / Work Loop** — multi-step rhythm, e.g. `write test → run pytest →
+  implement → run full suite`.
+- **Non-Goals**, **State** (progress ledger for long tasks), **Reviewer**,
+  **Recovery**, **Cost Boundary**, **Stop / Escalation**.
+
+Transform vague asks into verifiable goals:
+
+- "add a cleanup fixer" → "add a fixer plus a test fixture it must clean; run
+  `python -m pytest tests/markdown-cleanup/test_cleanup_pipeline.py -v` and
+  confirm the new test passes and existing fixers are unchanged."
+- "fix a pipeline bug" → "add a reproducing `pytest` case that fails, then make
+  it pass; run the full suite to confirm no regression."
+- "add validation" → "write tests for invalid inputs, then make them pass."
+- "fix bug" → "write a reproducing test, then make it pass."
+
+Scope red line: `Objective` belongs to a specific goal, not to this file's top
+level. `Project Purpose` belongs to the repo, not to a goal. General constraints
+live in the behavioral expectations implied by the sections below, not repeated
+per goal.
 
 ## Commands
 
@@ -21,6 +79,9 @@ python -m pytest tests/markdown-conversion/test_pipeline.py -v
 
 # Markdown-cleanup tests
 python -m pytest tests/markdown-cleanup/test_cleanup_pipeline.py -v
+
+# Content-review tests
+python -m pytest tests/content-review/test_review_plan.py -v
 
 # Translate tests
 python -m pytest tests/translate/test_translate_pipeline.py -v
@@ -70,7 +131,20 @@ python skills/markdown-cleanup/scripts/cleanup_pipeline.py --list-fixers
 
 **Exit codes (markdown-cleanup)**: 0=success, 1=error. Output writes to same directory as source by default.
 
-### Content Review and Translate (SKILL.md-only invocation)
+```bash
+# content-review — matrix plan + assemble (deterministic, testable without sub-agents)
+python skills/content-review/scripts/review_plan.py plan --input <file> [--references <ref>...] [--focus all|grammar|style|logic|consistency] [--chunk-lines 400] [--dry-run] [--plan-output plan.json]
+python skills/content-review/scripts/review_plan.py assemble --plan plan.json --cells-dir <workspace> [--output report.md] [--accept-partial]
+
+# translate — prepare emits a structure-safe CHUNK PLAN + PASSAGE MANIFEST (legacy SOURCE/REFERENCES/INSTRUCTIONS sections preserved)
+python skills/translate/scripts/translate_pipeline.py prepare --input <file> --language <lang> [--references <ref>...] [--glossary <seed>...] [--chunk-lines 300]
+python skills/translate/scripts/translate_pipeline.py qa --source <file> --translation <translated.md> --language <lang> [--workspace .translate-workspace] [--glossary <g>]
+```
+
+**Exit codes (content-review `review_plan`)**: 0=success, 1=error, 2=caps exceeded (raise `--chunk-lines`, reduce `--focus`, or pass `--accept-partial`).
+**Exit codes (translate `qa`)**: 0=pass (no errors), 1=errors present — re-translate the chunks in the printed FIX MAP, then re-run.
+
+### Content Review and Translate (slash-command invocation)
 
 ```bash
 # Content review
@@ -87,7 +161,7 @@ python skills/markdown-cleanup/scripts/cleanup_pipeline.py --list-fixers
 
 ### Skill Structure
 
-The plugin lives in `skills/` with one subdirectory per skill. Each skill has a `SKILL.md` defining the `/file-processing:<name>` command and workflow. Script-backed skills (`markdown-conversion`, `markdown-cleanup`, `translate`) have a `scripts/` directory with Python pipelines. `content-review` is SKILL.md-only with `references/` (check criteria) and `assets/` (report template).
+The plugin lives in `skills/` with one subdirectory per skill. Each skill has a `SKILL.md` defining the `/file-processing:<name>` command and workflow. Script-backed skills (`markdown-conversion`, `markdown-cleanup`, `content-review`, `translate`) have a `scripts/` directory with Python pipelines. `content-review` and `translate` additionally keep sub-agent prompt templates in `references/subagent-prompts.md`.
 
 ### Pipeline Flow (markdown-conversion)
 
@@ -112,13 +186,26 @@ Uses only Python stdlib (`re`, `difflib`).
 
 ### Translate Pipeline Flow (translate)
 
-1. **Prepare** — reads input (markitdown for non-.md), collects references from dirs recursively, outputs structured text
-2. **Glossary generation** — Codex extracts terminology mappings from source + references. Saves as JSON (first-class output artifact)
-3. **Translate** — Codex translates using the glossary
-4. **QA** — deterministic structural checks: heading/paragraph/table counts, untranslated fragment detection, glossary coverage
-5. **Write** — filename with language suffix (`report.zh.md`), frontmatter injection
+Two runtime modes (preflight in SKILL.md records `runtime_mode`):
 
-Glossary supports JSON, CSV/TSV, and Markdown table formats via `glossary_utils.py`.
+- **`orchestrated`** (default when a sub-agent tool is available):
+  1. **Prepare** — reads input (markitdown for non-.md), collects references recursively, **structure-safe chunks** the source + references (writes `.translate-workspace/chunk_NNN.md` + passage files with stable ids), preserves the legacy `=== SOURCE TEXT ===` / `=== REFERENCES ===` / `=== INSTRUCTIONS ===` sections and adds `=== CHUNK PLAN ===` + `=== PASSAGE MANIFEST ===`.
+  2. **Glossary (source-driven, two phases)** — G1 sub-agents extract candidate terms per source chunk; G2 sub-agents ground them against pre-selected reference passages; merged into a structured `{"terms":[...]}` glossary (with `confidence` + `source_chunks` + `occurrences`). `confidence:"none"` entries carry `target:null`.
+  3. **Translate** — one translator sub-agent per chunk with a sliced glossary (`slice_glossary_for_chunk`); returns `{translated_markdown, self_audit}`; orchestrator validates + writes `chunk_NNN.<lang>.md`.
+  4. **QA** — per-occurrence forced application (target must appear in each chunk where the source occurs; convergence-gated), structural counts, untranslated-fragment detection, `confidence:none` consistency. Auto-discovers the glossary via `derive_glossary_path`. Emits a **FIX MAP** (`term → chunk`) and exits 1 on errors.
+  5. **Write** — blocked on QA errors / `FAILED` required stages unless the user accepts a partial artifact.
+- **`legacy_single_agent`** (fallback, no sub-agent tool) — original single-pass prepare → translate → qa → write; output stamped "legacy-single-agent; no matrix guarantee".
+
+Glossary supports JSON (structured `{"terms":[...]}` or flat), CSV/TSV, and Markdown table formats via `glossary_utils.py` (legacy inputs load as `confidence:"high"` seeds).
+
+### Sub-agent Orchestration (content-review, translate)
+
+Both skills combat LLM "laziness / step-skipping" by replacing one agent "doing everything" with **narrow, exhaustive sub-agents** whose completeness is structurally enforced:
+
+- **content-review** — a **dimension × chunk matrix**. `review_plan.py plan` computes the cells deterministically (structure-safe chunks, never split mid-fence/table; `max_chunks`/`max_cells` caps); the orchestrator dispatches one reviewer per cell (grammar-style / logic-consistency / fact-check), writes each result to `<dimension>__<chunk>.json`, and `review_plan.py assemble` validates every cell, dedupes findings, fills the report, and emits a diff. A `FAILED` required cell marks the report **incomplete** (no diff unless `--accept-partial`). The whole contract is testable with mocked cell fixtures — no sub-agents needed.
+- **translate** — source-driven glossary (enumerate terms from the document, ground in references) + chunked translation + per-occurrence QA + a bounded (2×/chunk) re-translation loop.
+
+Anti-skip levers (both skills): (1) narrow per-cell/per-chunk mandates; (2) prompt-forced JSON returns parsed strictly (`json.loads` + required fields + cell-identity check); (3) deterministic cell counts with mandatory before/after coverage accounting; (4) per-cell retry cap of 2 → `FAILED`; (5) runtime preflight that refuses to claim matrix guarantees when no sub-agent tool exists.
 
 ### Cross-Skill Patterns
 
@@ -133,13 +220,16 @@ Glossary supports JSON, CSV/TSV, and Markdown table formats via `glossary_utils.
 Each skill stores its own `scripts/config.json` (gitignored):
 - `skills/markdown-conversion/scripts/config.json` — currently no settings (reserved; output defaults to the source file's directory)
 - `skills/markdown-cleanup/scripts/config.json` — fixer enable/disable settings
-- `skills/translate/scripts/config.json` — default target language
+- `skills/content-review/scripts/config.json` — `chunk_lines` (400), `max_chunks` (20), `max_cells` (60)
+- `skills/translate/scripts/config.json` — `default_target_language` (zh), `chunk_lines` (300), `max_chunks` (30), `max_terms` (800), `max_terms_per_chunk_prompt` (120), `max_reference_passages_per_term` (5), `max_workspace_mb` (100)
 
 ## Permissions
 
-`.Codex/settings.json` pre-allows:
+`.claude/settings.json` pre-allows:
 - `python -m pytest tests/markdown-conversion/test_pipeline.py *`
 - `python -m pytest tests/markdown-cleanup/test_cleanup_pipeline.py *`
+- `python -m pytest tests/content-review/test_review_plan.py *`
 - `python *pipeline.py*`
 - `python *cleanup_pipeline.py*`
 - `python *translate_pipeline.py*`
+- `python *review_plan.py*`
