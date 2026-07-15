@@ -25,5 +25,6 @@ Style issues are independent of grammar and logic — they affect readability an
 ## What Not to Flag
 
 - Intentional formatting in code blocks, tables, or diagrams
-- Markitdown conversion artifacts (see SKILL.md "Markitdown Artifact Awareness" section)
+- Ordinary MarkItDown conversion artifacts (see the canonical-source guidance
+  in SKILL.md)
 - Stylistic choices that are consistent within their section (e.g., one section using Title Case headers is fine if all headers in that section do it — flag only if headers mix styles)

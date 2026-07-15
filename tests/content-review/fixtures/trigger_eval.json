@@ -1,0 +1,236 @@
+{
+  "schema_version": "1.0.0",
+  "cases": [
+    {
+      "id": "zh_workplace_word_grammar",
+      "query": "请审阅这份 Word 工作报告，检查语法、错别字和不自然的表达。",
+      "should_trigger": true,
+      "category": "workplace_prose",
+      "critical": true
+    },
+    {
+      "id": "en_workplace_pdf_consistency",
+      "query": "Review this client-facing PDF report for grammar and internal narrative consistency.",
+      "should_trigger": true,
+      "category": "workplace_prose",
+      "critical": true
+    },
+    {
+      "id": "zh_workplace_memo_style",
+      "query": "帮我检查这份内部备忘录的措辞、语气和前后表述是否一致。",
+      "should_trigger": true,
+      "category": "workplace_prose",
+      "critical": false
+    },
+    {
+      "id": "en_workplace_proposal_edit",
+      "query": "Please edit the prose in this business proposal for clarity, tone, and consistency.",
+      "should_trigger": true,
+      "category": "workplace_prose",
+      "critical": false
+    },
+    {
+      "id": "zh_reference_word_scope",
+      "query": "请根据我提供的政策文件核对这份 Word 方案，指出不符合 reference 或超出 scope 的文字。",
+      "should_trigger": true,
+      "category": "reference_verification",
+      "critical": true
+    },
+    {
+      "id": "en_reference_pdf_fidelity",
+      "query": "Check this PDF briefing against the supplied reference materials for factual fidelity and out-of-scope claims.",
+      "should_trigger": true,
+      "category": "reference_verification",
+      "critical": true
+    },
+    {
+      "id": "zh_explicit_slash_command",
+      "query": "{{candidate_command}} 季度总结.docx --focus all",
+      "should_trigger": true,
+      "category": "explicit_invocation",
+      "critical": true
+    },
+    {
+      "id": "en_explicit_slash_command",
+      "query": "{{candidate_command}} board-paper.pdf --references policy.pdf",
+      "should_trigger": true,
+      "category": "explicit_invocation",
+      "critical": true
+    },
+    {
+      "id": "en_explicit_override_skill_architecture",
+      "query": "{{candidate_command}} Review SKILL.md for architectural and orchestration issues.",
+      "should_trigger": true,
+      "category": "explicit_invocation",
+      "critical": true
+    },
+    {
+      "id": "zh_technical_readme_proofread",
+      "query": "请只校对 README.md 的英文语法、拼写和文字可读性，不评估代码实现。",
+      "should_trigger": true,
+      "category": "technical_prose_proofread",
+      "critical": true
+    },
+    {
+      "id": "zh_technical_readme_implementation",
+      "query": "审查 README.md 描述的安装流程是否与代码实现一致，并找出架构问题。",
+      "should_trigger": false,
+      "category": "api_implementation",
+      "critical": true
+    },
+    {
+      "id": "en_technical_api_guide_proofread",
+      "query": "Proofread the prose in our API guide for grammar and readability; do not assess endpoint behavior.",
+      "should_trigger": true,
+      "category": "technical_prose_proofread",
+      "critical": true
+    },
+    {
+      "id": "en_technical_api_implementation",
+      "query": "Review the API guide and implementation to verify that every endpoint behaves as documented.",
+      "should_trigger": false,
+      "category": "api_implementation",
+      "critical": true
+    },
+    {
+      "id": "zh_code_review",
+      "query": "请 review 这段 Python 代码，找出 bug、性能问题和不一致的实现。",
+      "should_trigger": false,
+      "category": "code",
+      "critical": true
+    },
+    {
+      "id": "en_code_review",
+      "query": "Review this TypeScript module for correctness, security issues, and maintainability.",
+      "should_trigger": false,
+      "category": "code",
+      "critical": false
+    },
+    {
+      "id": "zh_pr_diff_review",
+      "query": "帮我审阅这个 PR diff，检查回归风险和实现错误。",
+      "should_trigger": false,
+      "category": "pr_diff",
+      "critical": true
+    },
+    {
+      "id": "en_pr_diff_review",
+      "query": "Audit this pull request diff and flag incorrect changes or missing edge cases.",
+      "should_trigger": false,
+      "category": "pr_diff",
+      "critical": false
+    },
+    {
+      "id": "zh_tests_review",
+      "query": "检查这些 pytest 测试是否覆盖所有分支，并指出断言错误。",
+      "should_trigger": false,
+      "category": "tests",
+      "critical": true
+    },
+    {
+      "id": "en_tests_review",
+      "query": "Review the unit tests for coverage gaps, flaky behavior, and incorrect assertions.",
+      "should_trigger": false,
+      "category": "tests",
+      "critical": false
+    },
+    {
+      "id": "zh_config_review",
+      "query": "审查这份 YAML 配置，确认字段、路径和环境变量设置正确。",
+      "should_trigger": false,
+      "category": "configs",
+      "critical": true
+    },
+    {
+      "id": "en_config_review",
+      "query": "Check this JSON configuration for invalid keys and deployment-breaking values.",
+      "should_trigger": false,
+      "category": "configs",
+      "critical": false
+    },
+    {
+      "id": "zh_logs_diagnosis",
+      "query": "分析这段应用日志，定位超时和服务崩溃的原因。",
+      "should_trigger": false,
+      "category": "logs",
+      "critical": true
+    },
+    {
+      "id": "en_logs_diagnosis",
+      "query": "Review these production logs and diagnose the failed database connections.",
+      "should_trigger": false,
+      "category": "logs",
+      "critical": false
+    },
+    {
+      "id": "zh_api_implementation_review",
+      "query": "检查 REST API 的鉴权实现、错误码和接口行为是否正确。",
+      "should_trigger": false,
+      "category": "api_implementation",
+      "critical": true
+    },
+    {
+      "id": "en_implementation_correctness",
+      "query": "Verify that the parser implementation matches its schema and handles every failure mode.",
+      "should_trigger": false,
+      "category": "api_implementation",
+      "critical": false
+    },
+    {
+      "id": "zh_skill_md_architecture",
+      "query": "审查 SKILL.md 的工作流设计、工具调用顺序和行为契约是否合理。",
+      "should_trigger": false,
+      "category": "skill_md",
+      "critical": true
+    },
+    {
+      "id": "en_skill_md_behavior",
+      "query": "Review SKILL.md for architectural flaws, missing gates, and incorrect tool behavior.",
+      "should_trigger": false,
+      "category": "skill_md",
+      "critical": false
+    },
+    {
+      "id": "zh_agents_md_governance",
+      "query": "检查 AGENTS.md 的开发约束是否完整，以及各条规则会不会互相冲突。",
+      "should_trigger": false,
+      "category": "agents_md",
+      "critical": true
+    },
+    {
+      "id": "en_agents_md_governance",
+      "query": "Audit AGENTS.md for instruction precedence, repository governance, and workflow correctness.",
+      "should_trigger": false,
+      "category": "agents_md",
+      "critical": false
+    },
+    {
+      "id": "zh_prompt_behavior",
+      "query": "评估这组 sub-agent prompts 是否会漏步骤，并优化它们的编排行为。",
+      "should_trigger": false,
+      "category": "prompts",
+      "critical": true
+    },
+    {
+      "id": "en_prompt_behavior",
+      "query": "Review this system prompt for tool-routing mistakes, prompt injection risks, and orchestration gaps.",
+      "should_trigger": false,
+      "category": "prompts",
+      "critical": false
+    },
+    {
+      "id": "zh_plugin_metadata",
+      "query": "检查 plugin.json metadata 的 command 注册、版本字段和 schema 是否有效。",
+      "should_trigger": false,
+      "category": "plugin_metadata",
+      "critical": true
+    },
+    {
+      "id": "en_plugin_metadata",
+      "query": "Audit the plugin metadata for invalid manifests, command registration, and version compatibility.",
+      "should_trigger": false,
+      "category": "plugin_metadata",
+      "critical": false
+    }
+  ]
+}

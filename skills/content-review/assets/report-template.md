@@ -1,68 +1,119 @@
-# Content Review Report Templates
+# Content Review Report Renderer
 
-Use the appropriate template based on the review mode.
+This asset is the authoritative user-facing renderer source. The assembler
+selects blocks by resolved report language and substitutes `{{...}}` tokens.
+Omit an optional block rather than leaving an empty heading.
 
-## Standalone Review
+## Report blocks
 
-```markdown
-# Content Review: <filename>
+<!-- REPORT:ZH -->
+# 内容审阅：{{filename}}
 
-## Summary
-- **Overall quality:** Good / Needs attention / Poor
-- **Issues found:** X grammar, Y logic, Z consistency, W style
-- **Passes completed:** 2 (surface + deep)
+{{status_notice}}{{summary_line}}{{findings}}{{diff_section}}
+<!-- /REPORT:ZH -->
 
-## Grammar & Spelling
-| # | Location | Issue | Suggestion |
-|---|----------|-------|------------|
-| 1 | Line 42 | "recieve" | "receive" |
+<!-- REPORT:EN -->
+# Content Review: {{filename}}
 
-## Style
-| # | Location | Issue | Suggestion |
-|---|----------|-------|------------|
-| 1 | Line 15 | Double space: "the  report" | "the report" |
+{{status_notice}}{{summary_line}}{{findings}}{{diff_section}}
+<!-- /REPORT:EN -->
 
-## Logic & Consistency
-| # | Location | Issue | Suggestion |
-|---|----------|-------|------------|
-| 1 | Line 15 vs Line 87 | "revenue grew 12%" vs "revenue was flat" | Reconcile conflicting statements |
+## Complete-run summary blocks
+
+<!-- SUMMARY:ZH -->
+发现 {{finding_count}} 个需要修改的问题。
+
+<!-- /SUMMARY:ZH -->
+
+<!-- SUMMARY:EN -->
+Found {{finding_count}} issue(s) that require changes.
+
+<!-- /SUMMARY:EN -->
+
+## Finding blocks
+
+<!-- FINDING:ZH -->
+## 问题 {{index}}
+
+- **原文位置：** {{location}}
+- **原文：** {{original_text}}
+- **修改后文本：** {{revised_text}}
+- **具体改动：** {{change}}
+- **改动原因：** {{reason}}
+
+<!-- /FINDING:ZH -->
+
+<!-- FINDING:EN -->
+## Issue {{index}}
+
+- **Original location:** {{location}}
+- **Original text:** {{original_text}}
+- **Revised text:** {{revised_text}}
+- **Exact change:** {{change}}
+- **Reason for change:** {{reason}}
+
+<!-- /FINDING:EN -->
+
+## No-finding blocks (complete runs only)
+
+<!-- NO_FINDINGS:ZH -->
+未发现需要修改的问题。
+<!-- /NO_FINDINGS:ZH -->
+
+<!-- NO_FINDINGS:EN -->
+No issues requiring changes were found.
+<!-- /NO_FINDINGS:EN -->
+
+## Partial-run warning blocks
+
+<!-- PARTIAL:ZH -->
+> **审阅未完成。** 以下范围未被完整核验：{{uncovered_scope}}。本报告中的零问题或问题数量不代表完整审阅结论。
+
+<!-- /PARTIAL:ZH -->
+
+<!-- PARTIAL:EN -->
+> **Review incomplete.** The following scope was not fully verified: {{uncovered_scope}}. Zero findings or the count below is not a complete-review conclusion.
+
+<!-- /PARTIAL:EN -->
+
+For a partial run, render the partial warning, then render any validated findings.
+Do not render `SUMMARY` or `NO_FINDINGS` when the partial run has zero findings.
+Do not expose coverage tables, severity, categories, cell state, or orchestration
+details beyond the short `uncovered_scope` notice.
+
+## Optional diff blocks
+
+Render these only when the user passed `--diff` and the direct input is `.md`,
+`.markdown`, or `.txt`. Never present a canonical-conversion diff as a patch for
+DOCX, PDF, HTML, RTF, or URL input.
+
+<!-- DIFF:ZH -->
+## 建议修改 Diff
+
+```diff
+{{diff}}
 ```
+<!-- /DIFF:ZH -->
 
-If a section has zero issues, omit it entirely.
+<!-- DIFF:EN -->
+## Suggested Diff
 
-## Verification Review (with `--references`)
-
-```markdown
-# Content Review: <filename>
-## Verification against: <ref1>, <ref2>
-
-## Summary
-- **Overall quality:** Good / Needs attention / Poor
-- **Issues found:** X grammar, Y logic, Z consistency, W style
-- **Cross-reference:** A confirmed, B conflicts, C unsupported
-- **Passes completed:** 2 (surface + deep + cross-reference)
-
-## Grammar & Spelling
-| # | Location | Issue | Suggestion |
-|---|----------|-------|------------|
-| 1 | Line 42 | "recieve" | "receive" |
-
-## Style
-| # | Location | Issue | Suggestion |
-|---|----------|-------|------------|
-| 1 | Line 15 | Double space: "the  report" | "the report" |
-
-## Logic & Consistency
-| # | Location | Issue | Suggestion |
-|---|----------|-------|------------|
-| 1 | Line 15 vs Line 87 | Conflicting revenue figures | Reconcile |
-
-## Cross-Reference Issues
-| # | Location | Issue | Reference Source |
-|---|----------|-------|-----------------|
-| 1 | Line 23 | "2025 launch" contradicts ref | ref1.md Line 45: "2026 launch" |
-| 2 | Line 56 | Claim has no basis in references | Not found in any reference |
-| 3 | (omission) | Key metric from ref not mentioned | ref2.pdf: "Q3 revenue: $4.2M" |
+```diff
+{{diff}}
 ```
+<!-- /DIFF:EN -->
 
-If a section has zero issues, omit it entirely.
+For inapplicable converted or URL inputs, keep `diff_section` empty and record
+`diff_status:not_applicable` plus its reason in structured output rather than in
+the default report.
+
+## Field normalization
+
+- `original_text` must be verbatim. Use `[原文缺失]` / `[Missing from source]`
+  (selected by document language) only for a document-level omission.
+- `revised_text` is complete replacement or insertion text. For deletion use
+  `[删除该文本]` / `[Delete this text]`.
+- When safe final wording is unavailable, use `需作者确认；建议方向：…` /
+  `Author confirmation required; suggested direction: ...`.
+- `change` states the concrete delta only; `reason` explains why.
+- Reference reasons include the validated file and passage/page/line citation.

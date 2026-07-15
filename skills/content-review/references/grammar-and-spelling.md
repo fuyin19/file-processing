@@ -28,4 +28,5 @@ Check for surface-level grammar and spelling issues.
 
 - Intentional informal language or colloquialisms
 - Technical terms, jargon, or proper nouns that may be unfamiliar but are correctly spelled
-- Markitdown conversion artifacts (see SKILL.md "Markitdown Artifact Awareness" section)
+- Ordinary MarkItDown conversion artifacts (see the canonical-source guidance
+  in SKILL.md)
