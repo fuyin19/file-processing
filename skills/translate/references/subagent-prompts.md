@@ -11,8 +11,34 @@ token cost are secondary.**
 > agent never decides whether to proceed; it only returns structured JSON.
 
 The orchestrator preflights `runtime_mode`. In `orchestrated` mode it runs the
-two-phase glossary + chunked translation below. In `legacy_single_agent` it falls
-back to the original single-pass translate (no sub-agents) and stamps the output.
+two-phase glossary + chunked translation below. Without that runtime it must use
+report-only mode and cannot publish a formal v3 translation.
+
+## V3 artifact envelope
+
+For v3 runs, every agent return is wrapped before publication with:
+
+```json
+{
+  "schema_version": "3.0",
+  "run_id": "<run manifest run_id>",
+  "stage_input_hash": "<Python-computed hash for this stage and its upstream artifacts>",
+  "attempt": 1,
+  "...": "stage payload"
+}
+```
+
+The orchestrator validates this envelope, the stage-specific schema, and the
+complete coverage universe before publishing it with
+`translate_pipeline.py publish-stage`; agents never write a manifest directly.
+The translator payload additionally includes `translation_sha256` and one chunk
+record per planned chunk; each carries the complete occurrence-ID set it
+acknowledged. A v3 QA pass rejects missing, duplicate, unknown, or stale IDs.
+The semantic-QA payload is published only after deterministic QA and carries the
+same assembled translation hash plus the complete checked occurrence-ID set.
+Without an orchestrated runtime,
+use report-only mode; the legacy single-agent fallback cannot write a formal v3
+translation.
 
 ---
 
@@ -27,9 +53,9 @@ prepare (python) → CHUNK PLAN + PASSAGE MANIFEST
   ├─ merge → structured glossary {"terms":[...]} (saved to derive_glossary_path)
   │
   ├─ translator-chunk (one per source chunk, glossary sliced per chunk)
-  │     → {translated_markdown, self_audit}; orchestrator writes chunk_NNN.<lang>.md
+  │     → {translated_markdown, self_audit}; orchestrator validates then publishes a manifest-bound translation artifact
   ├─ assemble + qa (python) → per-occurrence forced application + fix map
-  └─ (optional) consistency-QA over the assembled translation
+  └─ required consistency-QA over the assembled translation
 ```
 
 ---
@@ -132,9 +158,9 @@ non-vacuously.
 
 ## Agent 3 — `translator-chunk` (one per source chunk)
 
-**Reads:** one chunk file + that chunk's **glossary slice** (produced by
-`slice_glossary_for_chunk`: the chunk's occurrence terms + global protected terms,
-capped by `max_terms_per_chunk_prompt`) + `references/translation-guidelines.md`.
+**Reads:** one chunk file + its complete relevance ledger. If it exceeds a prompt
+budget, the orchestrator uses deterministic, exhaustive batches and records all
+occurrence ids; it never silently truncates constraints.
 
 **Mandate:** translate the chunk completely and apply every glossary entry it
 contains. Return the translation + a self-audit listing, for each glossary term
@@ -155,8 +181,8 @@ glossary exactly. Follow references/translation-guidelines.md.
 
 Read the chunk: <chunk_path> (document lines <start>-<end>, chunk index <chunk>).
 
-Glossary slice for this chunk (apply every entry whose source appears here):
-<JSON: slice_glossary_for_chunk output>
+Relevance batch for this chunk (apply every listed occurrence):
+<JSON: deterministic batch output>
 
 Rules:
 - Preserve ALL markdown structure: heading levels, list markers, table | layout,
@@ -180,22 +206,23 @@ Return ONLY this JSON (no prose):
       {"source": "<term>", "rendered": "<target form used>",
        "occurrences": [<line numbers>], "confidence": "high|medium|none",
        "human_confirm": <true only for confidence:none>}
-    ]
+    ],
+    "occurrence_ids": ["<every v3 occurrence id acknowledged in this chunk>"]
   }
 }
 ```
 
 ---
 
-## Agent 4 — `consistency-QA` (optional, over the assembled translation)
+## Agent 4 — `consistency-QA` (required, over the assembled translation)
 
 **Reads:** the assembled translation (all chunks in order) + the structured
 glossary.
 
 **Mandate:** catch what regex QA cannot — cross-chunk terminology drift, dropped
 sections, fluency, register consistency. Return a report; the orchestrator fixes
-`error`-level items. **This step is optional:** failure does not block `write`,
-but must be recorded as a warning in the QA report.
+`error`-level items. Its validated result is the required `semantic_qa` artifact;
+an error or unavailable result blocks strict `write`.
 
 **Prompt template:**
 
@@ -216,6 +243,11 @@ Check:
 
 Return ONLY this JSON (no prose):
 {
+  "translation_sha256": "<SHA-256 of assembled translation>",
+  "checked_occurrence_ids": ["<every occurrence id>"],
+  "checks": {"reference_expression": "pass|error", "chunk_seams": "pass|error",
+             "register_style": "pass|error", "context_rules": "pass|error",
+             "source_residual": "pass|error"},
   "issues": [
     {"severity": "error|warning", "chunk": <index or null>,
      "issue": "...", "suggestion": "..."}
@@ -235,13 +267,13 @@ Return ONLY this JSON (no prose):
 3. **G2**: `select_reference_passages` (Python) pre-selects passages per term;
    `reference-grounder` agents batched over terms. Merge → structured glossary;
    `save_glossary_structured` to `derive_glossary_path` (and `--glossary-output`).
-4. **Translator**: `slice_glossary_for_chunk` per chunk; one `translator-chunk`
-   per chunk. Orchestrator validates (`validate_translator_payload`) and writes
-   `chunk_NNN.<lang>.md` + `self_audit_NNN.json`. Re-dispatch up to 2× on
-   invalid/missing; still failing → `FAILED` (blocks `write`).
+4. **Translator**: deterministic exhaustive relevance batches per chunk; one initial `translator-chunk`
+   per chunk. Orchestrator validates (`validate_translator_payload`), records all
+   occurrence IDs, and publishes the translation/self-audit with `publish-stage`.
+   Re-dispatch up to 2× on invalid/missing; still failing → `FAILED` (blocks strict `write`).
 5. **Assemble + QA**: orchestrator concatenates chunks in order → temp file →
    `python scripts/translate_pipeline.py qa --source … --translation <temp>
-   --language <lang> [--workspace …]`. qa auto-discovers the glossary, enforces
+   --language <lang> --manifest <run_manifest>`. qa reads only manifest artifacts, enforces
    per-occurrence application (convergence-gated), checks confidence:none
    consistency, and prints a **FIX MAP** (`term → chunk`).
 6. **Fix loop**: for each fix-map entry, re-translate that chunk with a forced

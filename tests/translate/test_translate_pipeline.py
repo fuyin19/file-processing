@@ -229,7 +229,7 @@ class TestPipelineCLIPrepare:
             f.write("# Test Document\n\nHello world.\n")
             f.flush()
             result = subprocess.run(
-                SCRIPT + CONFIG_ARG + ['prepare', '--input', f.name, '--language', 'zh'],
+                SCRIPT + CONFIG_ARG + ['prepare', '--input', f.name, '--language', 'zh', '--runtime-mode', 'orchestrated'],
                 capture_output=True, text=True,
             )
         os.unlink(f.name)
@@ -247,7 +247,8 @@ class TestPipelineCLIPrepare:
                 glos.flush()
                 result = subprocess.run(
                     SCRIPT + CONFIG_ARG + ['prepare', '--input', src.name,
-                                           '--language', 'zh', '--glossary', glos.name],
+                                           '--language', 'zh', '--glossary', glos.name,
+                                           '--runtime-mode', 'orchestrated'],
                     capture_output=True, text=True,
                 )
                 glos_path = glos.name
@@ -260,7 +261,8 @@ class TestPipelineCLIPrepare:
 
     def test_prepare_file_not_found(self):
         result = subprocess.run(
-            SCRIPT + CONFIG_ARG + ['prepare', '--input', '/nonexistent/file.md', '--language', 'zh'],
+            SCRIPT + CONFIG_ARG + ['prepare', '--input', '/nonexistent/file.md', '--language', 'zh',
+                                   '--runtime-mode', 'orchestrated'],
             capture_output=True, text=True,
         )
         assert result.returncode == 1
@@ -281,8 +283,8 @@ class TestPipelineCLIQa:
                 SCRIPT + CONFIG_ARG + ['qa', '--source', src, '--translation', tgt, '--language', 'zh'],
                 capture_output=True, text=True,
             )
-            assert result.returncode == 0
-            assert 'All checks passed' in result.stdout or 'Issues found: 0' in result.stdout or 'QA Report' in result.stdout
+            assert result.returncode == 2
+            assert '--manifest' in result.stderr
 
     def test_qa_detects_heading_mismatch(self):
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -298,17 +300,19 @@ class TestPipelineCLIQa:
                 capture_output=True, text=True,
             )
             # Heading mismatch is an error tier -> exit 1 (gate behavior).
-            assert result.returncode == 1
-            assert 'H2 heading count mismatch' in result.stdout
+            assert result.returncode == 2
+            assert '--manifest' in result.stderr
 
     def test_qa_source_not_found(self):
         result = subprocess.run(
             SCRIPT + CONFIG_ARG + ['qa', '--source', '/nonexistent.md', '--translation', '/nonexistent2.md'],
             capture_output=True, text=True,
         )
-        assert result.returncode == 1
+        assert result.returncode == 2
+        assert '--manifest' in result.stderr
 
 
+@pytest.mark.skip(reason='Superseded by manifest-bound v3 write contract tests below.')
 class TestPipelineCLIWrite:
     def test_write_creates_output(self):
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -512,6 +516,26 @@ class TestReferencePassageRetrieval:
             none = select_reference_passages('nonexistent term xyz', manifest, top_k=5)
             assert none == []
 
+    def test_duplicate_reference_basenames_receive_distinct_passage_ids(self):
+        from translate_pipeline import chunk_references
+        with tempfile.TemporaryDirectory() as ws:
+            manifest = chunk_references([
+                ('same.md', 'first reference'),
+                ('same.md', 'second reference'),
+            ], 10, ws)
+            assert len({p['id'] for p in manifest}) == 2
+            assert len({p['path'] for p in manifest}) == 2
+
+    def test_retrieval_prefers_reference_source_diversity(self):
+        from translate_pipeline import chunk_references, select_reference_passages
+        with tempfile.TemporaryDirectory() as ws:
+            manifest = chunk_references([
+                ('a.md', 'alpha alpha\n\nalpha alpha\n\nalpha alpha'),
+                ('b.md', 'alpha'),
+            ], 1, ws)
+            hits = select_reference_passages('alpha', manifest, top_k=2)
+            assert {h['id'].split('#')[0] for h in hits} == {'a', 'b'}
+
 
 class TestTranslatorPayloadValidation:
     def test_valid_payload(self):
@@ -562,7 +586,8 @@ class TestPrepareChunkPlan:
     def _prepare(self, tmpdir, refs=False, chunk_lines='15', extra=None):
         src = os.path.join(tmpdir, 'doc.md')
         open(src, 'w', encoding='utf-8').write('# T\n\n' + 'neural network.\\n\\n'.replace('\\n', '\n') * 40)
-        cmd = SCRIPT + CONFIG_ARG + ['prepare', '--input', src, '--language', 'zh', '--chunk-lines', chunk_lines]
+        cmd = SCRIPT + CONFIG_ARG + ['prepare', '--input', src, '--language', 'zh', '--chunk-lines', chunk_lines,
+                                     '--runtime-mode', 'orchestrated']
         if refs:
             ref = os.path.join(tmpdir, 'ref.md')
             open(ref, 'w', encoding='utf-8').write('neural network means 神经网络.\n\n' * 5)
@@ -598,7 +623,7 @@ class TestPrepareChunkPlan:
         src.write_text('\n\n'.join(f'para {i}' for i in range(50)), encoding='utf-8')
         res = subprocess.run(
             SCRIPT + ['--config', str(small_cfg), 'prepare', '--input', str(src),
-                      '--language', 'zh', '--chunk-lines', '5'],
+                      '--language', 'zh', '--chunk-lines', '5', '--runtime-mode', 'orchestrated'],
             capture_output=True, text=True,
         )
         assert res.returncode == 1
@@ -607,6 +632,7 @@ class TestPrepareChunkPlan:
 
 # --- New: qa per-occurrence / convergence / auto-discover / conf:none -----
 
+@pytest.mark.skip(reason='Superseded by manifest-bound v3 occurrence-ledger tests below.')
 class TestQaPerOccurrence:
     def _setup(self, tmpdir, terms, chunk_translations, assembled_text=None):
         """Write source chunks + their translations + assembled file + auto glossary."""
@@ -697,3 +723,462 @@ class TestQaPerOccurrence:
         )
         assert res.returncode == 1
         assert 'empty rendered' in res.stdout
+
+
+# --- v3 manifest / occurrence contract -----------------------------------
+
+class TestV3RuntimeContract:
+    def test_v3_seed_loader_does_not_fabricate_reference_evidence(self):
+        from glossary_utils import load_glossary_v3
+        with tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False, encoding='utf-8') as f:
+            json.dump({'Alpha': '阿尔法'}, f)
+            f.flush()
+            entries = load_glossary_v3(f.name)
+        os.unlink(f.name)
+        assert entries[0]['origin'] == 'user_seed'
+        assert entries[0]['evidence'] == []
+
+    def test_relevance_batches_are_complete_and_deterministic(self):
+        from glossary_utils import partition_relevance_batches
+        items = [{'occurrence_id': f'o{i}', 'source': f't{i}'} for i in [3, 1, 2, 4, 0]]
+        batches = partition_relevance_batches(items, 2)
+        assert [[x['occurrence_id'] for x in batch] for batch in batches] == [
+            ['o0', 'o1'], ['o2', 'o3'], ['o4'],
+        ]
+        assert sorted(x['occurrence_id'] for batch in batches for x in batch) == [f'o{i}' for i in range(5)]
+
+    def test_occurrence_ledger_is_stable_and_requires_terminal_disposition(self):
+        from v3_runtime import build_occurrence_ledger, validate_occurrence_ledger
+        source = 'Alpha appears here.\n\nAlpha appears again.\n'
+        chunks = [
+            {'index': 1, 'start': 1, 'end': 1},
+            {'index': 2, 'start': 2, 'end': 3},
+        ]
+        ledger = build_occurrence_ledger(source, chunks, [
+            {'source': 'Alpha', 'target': '阿尔法', 'type': 'proper-noun'},
+        ])
+        assert len(ledger) == 2
+        assert ledger[0]['term_id'] == ledger[1]['term_id']
+        assert ledger[0]['occurrence_id'] != ledger[1]['occurrence_id']
+        assert ledger[0]['source_offset'] < ledger[1]['source_offset']
+        assert validate_occurrence_ledger(ledger)
+        for item in ledger:
+            item['disposition'] = 'applied'
+        assert validate_occurrence_ledger(ledger) == []
+
+    def test_key_item_preserve_requires_reason(self):
+        from v3_runtime import build_occurrence_ledger, validate_occurrence_ledger
+        ledger = build_occurrence_ledger('Codex\n', [{'index': 1, 'start': 1, 'end': 1}], [
+            {'source': 'Codex', 'type': 'proper-noun'},
+        ])
+        ledger[0]['disposition'] = 'preserved'
+        assert any('requires a reason' in e for e in validate_occurrence_ledger(ledger))
+        ledger[0]['reason'] = 'Official product name'
+        assert validate_occurrence_ledger(ledger) == []
+
+    def test_translation_audit_must_cover_every_occurrence(self):
+        from v3_runtime import build_occurrence_ledger, validate_translation_occurrences
+        ledger = build_occurrence_ledger('Alpha Alpha', [{'index': 1, 'start': 1, 'end': 1}], [
+            {'source': 'Alpha', 'type': 'proper-noun'},
+        ])
+        one_only = {'occurrence_ids': [ledger[0]['occurrence_id']]}
+        assert any('misses occurrence_ids' in e for e in validate_translation_occurrences(ledger, one_only))
+        complete = {'occurrence_ids': [x['occurrence_id'] for x in ledger]}
+        assert validate_translation_occurrences(ledger, complete) == []
+
+    def test_manifest_digest_ignores_self_reference(self):
+        from v3_runtime import make_manifest, manifest_digest
+        manifest = make_manifest(
+            source_path='source.md', source_hash='abc', language='zh',
+            runtime_mode='orchestrated', quality_mode='strict', workspace='workspace',
+            reference_hashes=[], config={}, stages=['prepare'],
+        )
+        digest = manifest_digest(manifest)
+        manifest['manifest_sha256'] = digest
+        assert manifest_digest(manifest) == digest
+
+    def test_content_addressed_cache_reuses_first_published_value(self, tmp_path):
+        from v3_runtime import fingerprint, publish_cache_json
+        key = fingerprint(stage='reference_mining', input='same')
+        first = publish_cache_json(tmp_path, key, {'value': 1})
+        second = publish_cache_json(tmp_path, key, {'value': 2})
+        assert first['hit'] is False
+        assert second['hit'] is True
+        assert second['value'] == {'value': 1}
+
+    def test_content_addressed_cache_does_not_overwrite_under_concurrency(self, tmp_path):
+        from concurrent.futures import ThreadPoolExecutor
+        from v3_runtime import fingerprint, publish_cache_json
+        key = fingerprint(stage='reference_mining', input='concurrent')
+        with ThreadPoolExecutor(max_workers=8) as pool:
+            results = list(pool.map(lambda value: publish_cache_json(tmp_path, key, {'value': value}), range(8)))
+        assert sum(not result['hit'] for result in results) == 1
+        values = {result['value']['value'] for result in results}
+        assert len(values) == 1
+
+
+class TestV3CliContract:
+    def _prepare(self, tmpdir, *, quality='strict', runtime='orchestrated'):
+        src = os.path.join(tmpdir, 'source.md')
+        ws = os.path.join(tmpdir, 'run')
+        with open(src, 'w', encoding='utf-8') as f:
+            f.write('# Title\n\nhello\n')
+        result = subprocess.run(
+            SCRIPT + CONFIG_ARG + ['prepare', '--input', src, '--language', 'zh',
+                                   '--workspace', ws, '--quality-mode', quality,
+                                   '--runtime-mode', runtime],
+            capture_output=True, text=True,
+        )
+        return src, ws, result
+
+    def _publish(self, manifest, workspace, stage, artifact, payload):
+        from v3_runtime import stage_input_hash
+        payload = dict(payload)
+        manifest_data = json.load(open(manifest, encoding='utf-8'))
+        payload.setdefault('schema_version', '3.0')
+        payload.setdefault('run_id', manifest_data['run_id'])
+        payload.setdefault('stage_input_hash', stage_input_hash(manifest_data, stage))
+        payload.setdefault('attempt', 1)
+        path = os.path.join(workspace, f'{stage}-{artifact}.json')
+        with open(path, 'w', encoding='utf-8') as f:
+            json.dump(payload, f)
+        return subprocess.run(
+            SCRIPT + CONFIG_ARG + ['publish-stage', '--manifest', manifest,
+                                   '--stage', stage, '--artifact', artifact, '--input', path],
+            capture_output=True, text=True,
+        )
+
+    def _valid_matching(self, manifest, source_text='hello', target='你好'):
+        from v3_runtime import build_occurrence_ledger
+        data = json.load(open(manifest, encoding='utf-8'))
+        plan = json.load(open(data['artifacts']['chunk_plan']['path'], encoding='utf-8'))
+        candidates = [{
+            'source': source_text, 'target': target, 'type': 'proper-noun',
+            'origin': 'reference', 'evidence': ['manual-seed'],
+        }]
+        ledger = build_occurrence_ledger(open(data['source']['path'], encoding='utf-8').read(), plan['chunks'], candidates)
+        for occurrence in ledger:
+            occurrence['disposition'] = 'applied'
+            occurrence['target'] = target
+            occurrence['origin'] = 'reference'
+            occurrence['evidence'] = ['manual-seed']
+        return {
+            'scan_chunks': [{'chunk': item['index'], 'status': 'completed'} for item in plan['chunks']],
+            'source_candidates': candidates,
+            'occurrences': ledger,
+            'relevance_batches': [[item['occurrence_id'] for item in ledger]],
+        }
+
+    def _publish_valid_pre_qa(self, manifest, workspace, translation_text):
+        memory = {
+            'passages': [], 'terms': [], 'expressions': [], 'style_rules': [],
+            'semantic_retrieval': {'status': 'not_applicable', 'reason': 'no references'},
+        }
+        memory_result = self._publish(manifest, workspace, 'reference_mining', 'reference_memory', memory)
+        assert memory_result.returncode == 0, memory_result.stderr
+        matching = self._valid_matching(manifest)
+        matching_result = self._publish(manifest, workspace, 'source_matching', 'occurrence_ledger', matching)
+        assert matching_result.returncode == 0, matching_result.stderr
+        translation = {
+            'translation_sha256': __import__('hashlib').sha256(translation_text.encode('utf-8')).hexdigest(),
+            'chunks': [{'chunk': 1, 'translated_markdown': translation_text,
+                        'occurrence_ids': [item['occurrence_id'] for item in matching['occurrences']]}],
+        }
+        translated = self._publish(manifest, workspace, 'translation', 'translation', translation)
+        assert translated.returncode == 0, translated.stderr
+        return matching
+
+    def _publish_valid_semantic_qa(self, manifest, workspace, translation_text, matching):
+        semantic = {
+            'translation_sha256': __import__('hashlib').sha256(translation_text.encode('utf-8')).hexdigest(),
+            'checked_occurrence_ids': [item['occurrence_id'] for item in matching['occurrences']],
+            'issues': [],
+            'checks': {
+                'reference_expression': 'pass', 'chunk_seams': 'pass', 'register_style': 'pass',
+                'context_rules': 'pass', 'source_residual': 'pass',
+            },
+        }
+        result = self._publish(manifest, workspace, 'semantic_qa', 'semantic_qa', semantic)
+        assert result.returncode == 0, result.stderr
+
+    def test_strict_prepare_requires_runtime(self, tmp_path):
+        src = os.path.join(str(tmp_path), 'source.md')
+        with open(src, 'w', encoding='utf-8') as f:
+            f.write('# Title\n\nhello\n')
+        ws = os.path.join(str(tmp_path), 'run')
+        result = subprocess.run(
+            SCRIPT + CONFIG_ARG + ['prepare', '--input', src, '--language', 'zh', '--workspace', ws],
+            capture_output=True, text=True,
+        )
+        assert result.returncode == 4
+        assert not os.path.exists(os.path.join(ws, 'run_manifest.json'))
+
+    def test_prepare_creates_isolated_manifest_and_resume_is_recoverable(self, tmp_path):
+        _src, ws, result = self._prepare(str(tmp_path))
+        assert result.returncode == 0, result.stderr
+        manifest = os.path.join(ws, 'run_manifest.json')
+        data = json.load(open(manifest, encoding='utf-8'))
+        assert data['schema_version'] == '3.0'
+        assert data['stages']['prepare']['state'] == 'completed'
+        assert data['stages']['reference_mining']['state'] == 'pending'
+        resumed = subprocess.run(SCRIPT + CONFIG_ARG + ['resume', '--manifest', manifest],
+                                capture_output=True, text=True)
+        assert resumed.returncode == 2
+        assert 'reference_mining' in resumed.stdout
+
+    def test_publish_stage_rejects_wrong_run_id(self, tmp_path):
+        _src, ws, result = self._prepare(str(tmp_path))
+        assert result.returncode == 0
+        manifest = os.path.join(ws, 'run_manifest.json')
+        bad = os.path.join(ws, 'bad.json')
+        with open(bad, 'w', encoding='utf-8') as f:
+            json.dump({'schema_version': '3.0', 'run_id': 'not-this-run'}, f)
+        published = subprocess.run(
+            SCRIPT + CONFIG_ARG + ['publish-stage', '--manifest', manifest,
+                                   '--stage', 'reference_mining', '--artifact', 'memory', '--input', bad],
+            capture_output=True, text=True,
+        )
+        assert published.returncode == 1
+        assert 'run_id' in published.stderr
+
+    def test_publish_stage_rejects_wrong_input_fingerprint(self, tmp_path):
+        _src, ws, result = self._prepare(str(tmp_path))
+        assert result.returncode == 0
+        manifest = os.path.join(ws, 'run_manifest.json')
+        data = json.load(open(manifest, encoding='utf-8'))
+        bad = os.path.join(ws, 'bad-fingerprint.json')
+        with open(bad, 'w', encoding='utf-8') as f:
+            json.dump({'schema_version': '3.0', 'run_id': data['run_id'],
+                       'stage_input_hash': 'wrong'}, f)
+        published = subprocess.run(
+            SCRIPT + CONFIG_ARG + ['publish-stage', '--manifest', manifest,
+                                   '--stage', 'reference_mining', '--artifact', 'memory', '--input', bad],
+            capture_output=True, text=True,
+        )
+        assert published.returncode == 1
+        assert 'stage_input_hash' in published.stderr
+
+    def test_report_only_qa_and_write_are_manifest_bound(self, tmp_path):
+        src, ws, result = self._prepare(str(tmp_path), quality='report-only', runtime='unavailable')
+        assert result.returncode == 0
+        manifest = os.path.join(ws, 'run_manifest.json')
+        translation = os.path.join(ws, 'translation.zh.md')
+        with open(translation, 'w', encoding='utf-8') as f:
+            f.write('# 标题\n\n你好\n')
+        qa = subprocess.run(
+            SCRIPT + CONFIG_ARG + ['qa', '--source', src, '--translation', translation,
+                                   '--language', 'zh', '--manifest', manifest],
+            capture_output=True, text=True,
+        )
+        assert qa.returncode == 1, qa.stdout + qa.stderr
+        written = subprocess.run(
+            SCRIPT + CONFIG_ARG + ['write', '--input', src, '--translation', translation,
+                                   '--language', 'zh', '--manifest', manifest],
+            capture_output=True, text=True,
+        )
+        assert written.returncode == 3, written.stdout + written.stderr
+        incomplete = os.path.join(os.path.dirname(src), 'source.zh.incomplete.md')
+        assert os.path.exists(incomplete)
+        assert 'qa_status: "INCOMPLETE"' in open(incomplete, encoding='utf-8').read()
+
+    def test_strict_write_rejects_incomplete_required_agent_stages(self, tmp_path):
+        src, ws, result = self._prepare(str(tmp_path))
+        assert result.returncode == 0
+        manifest = os.path.join(ws, 'run_manifest.json')
+        translation = os.path.join(ws, 'translation.zh.md')
+        with open(translation, 'w', encoding='utf-8') as f:
+            f.write('# 标题\n\n你好\n')
+        qa = subprocess.run(
+            SCRIPT + CONFIG_ARG + ['qa', '--source', src, '--translation', translation,
+                                   '--language', 'zh', '--manifest', manifest],
+            capture_output=True, text=True,
+        )
+        assert qa.returncode == 1
+        written = subprocess.run(
+            SCRIPT + CONFIG_ARG + ['write', '--input', src, '--translation', translation,
+                                   '--language', 'zh', '--manifest', manifest],
+            capture_output=True, text=True,
+        )
+        assert written.returncode == 1
+        assert 'required stage not completed' in written.stderr
+
+    @pytest.mark.skip(reason='This encoded the pre-fix empty-artifact bypass; replaced by validated v3 path.')
+    def test_strict_write_succeeds_only_after_published_agent_stages(self, tmp_path):
+        src, ws, result = self._prepare(str(tmp_path))
+        assert result.returncode == 0
+        manifest = os.path.join(ws, 'run_manifest.json')
+        for stage, artifact, payload in [
+            ('reference_mining', 'reference_memory', {'passages': [], 'terms': []}),
+            ('source_matching', 'occurrence_ledger', {'occurrences': []}),
+            ('translation', 'translation', {'chunks': [1]}),
+            ('semantic_qa', 'semantic_qa', {'issues': []}),
+        ]:
+            published = self._publish(manifest, ws, stage, artifact, payload)
+            assert published.returncode == 0, published.stdout + published.stderr
+        translation = os.path.join(ws, 'translation.zh.md')
+        with open(translation, 'w', encoding='utf-8') as f:
+            f.write('# 标题\n\n你好\n')
+        qa = subprocess.run(
+            SCRIPT + CONFIG_ARG + ['qa', '--source', src, '--translation', translation,
+                                   '--language', 'zh', '--manifest', manifest],
+            capture_output=True, text=True,
+        )
+        assert qa.returncode == 0, qa.stdout + qa.stderr
+        written = subprocess.run(
+            SCRIPT + CONFIG_ARG + ['write', '--input', src, '--translation', translation,
+                                   '--language', 'zh', '--manifest', manifest],
+            capture_output=True, text=True,
+        )
+        assert written.returncode == 0, written.stdout + written.stderr
+        output = os.path.join(os.path.dirname(src), 'source.zh.md')
+        content = open(output, encoding='utf-8').read()
+        assert 'qa_status: "strict-pass"' in content
+        assert 'run_id:' in content
+
+    def test_strict_write_requires_validated_artifacts_and_binds_frontmatter(self, tmp_path):
+        src, ws, result = self._prepare(str(tmp_path))
+        assert result.returncode == 0
+        manifest = os.path.join(ws, 'run_manifest.json')
+        translation_text = '# \u6807\u9898\n\n\u4f60\u597d\n'
+        translation = os.path.join(ws, 'translation.zh.md')
+        with open(translation, 'w', encoding='utf-8') as f:
+            f.write(translation_text)
+        matching = self._publish_valid_pre_qa(manifest, ws, translation_text)
+        qa = subprocess.run(
+            SCRIPT + CONFIG_ARG + ['qa', '--source', src, '--translation', translation,
+                                   '--language', 'zh', '--manifest', manifest],
+            capture_output=True, text=True,
+        )
+        assert qa.returncode == 0, qa.stdout + qa.stderr
+        self._publish_valid_semantic_qa(manifest, ws, translation_text, matching)
+        written = subprocess.run(
+            SCRIPT + CONFIG_ARG + ['write', '--input', src, '--translation', translation,
+                                   '--language', 'zh', '--manifest', manifest],
+            capture_output=True, text=True,
+        )
+        assert written.returncode == 0, written.stdout + written.stderr
+        content = open(os.path.join(os.path.dirname(src), 'source.zh.md'), encoding='utf-8').read()
+        assert 'qa_status: "strict-pass"' in content
+        assert 'manifest_sha256:' in content
+
+    def test_translation_artifact_hash_must_match_canonical_chunks(self, tmp_path):
+        _src, ws, result = self._prepare(str(tmp_path))
+        assert result.returncode == 0
+        manifest = os.path.join(ws, 'run_manifest.json')
+        memory = self._publish(manifest, ws, 'reference_mining', 'reference_memory', {
+            'passages': [], 'terms': [], 'expressions': [], 'style_rules': [],
+            'semantic_retrieval': {'status': 'not_applicable', 'reason': 'no references'},
+        })
+        assert memory.returncode == 0, memory.stderr
+        matching = self._valid_matching(manifest)
+        matched = self._publish(manifest, ws, 'source_matching', 'occurrence_ledger', matching)
+        assert matched.returncode == 0, matched.stderr
+        tampered = self._publish(manifest, ws, 'translation', 'translation', {
+            'translation_sha256': __import__('hashlib').sha256('# 标题\n\n错误\n'.encode('utf-8')).hexdigest(),
+            'chunks': [{'chunk': 1, 'translated_markdown': '# 标题\n\n你好\n',
+                        'occurrence_ids': [item['occurrence_id'] for item in matching['occurrences']]}],
+        })
+        assert tampered.returncode == 1
+        assert 'canonical chunk assembly' in tampered.stderr
+
+    def test_empty_or_malformed_artifacts_cannot_be_published(self, tmp_path):
+        _src, ws, result = self._prepare(str(tmp_path))
+        assert result.returncode == 0
+        manifest = os.path.join(ws, 'run_manifest.json')
+        published = self._publish(manifest, ws, 'reference_mining', 'reference_memory', {
+            'passages': [], 'terms': [], 'expressions': [], 'style_rules': [],
+        })
+        assert published.returncode == 1
+        assert 'semantic_retrieval' in published.stderr
+
+    def test_empty_occurrence_ledger_needs_complete_empty_scan_accounting(self, tmp_path):
+        _src, ws, result = self._prepare(str(tmp_path))
+        assert result.returncode == 0
+        manifest = os.path.join(ws, 'run_manifest.json')
+        memory = self._publish(manifest, ws, 'reference_mining', 'reference_memory', {
+            'passages': [], 'terms': [], 'expressions': [], 'style_rules': [],
+            'semantic_retrieval': {'status': 'not_applicable', 'reason': 'no references'},
+        })
+        assert memory.returncode == 0, memory.stderr
+        empty = self._publish(manifest, ws, 'source_matching', 'occurrence_ledger', {
+            'scan_chunks': [{'chunk': 1, 'status': 'completed'}],
+            'source_candidates': [], 'occurrences': [],
+        })
+        assert empty.returncode == 1
+        assert 'empty source scan' in empty.stderr
+
+    def test_semantic_error_and_tampered_qa_report_block_strict_write(self, tmp_path):
+        src, ws, result = self._prepare(str(tmp_path))
+        assert result.returncode == 0
+        manifest = os.path.join(ws, 'run_manifest.json')
+        translation_text = '# \u6807\u9898\n\n\u4f60\u597d\n'
+        translation = os.path.join(ws, 'translation.zh.md')
+        open(translation, 'w', encoding='utf-8').write(translation_text)
+        matching = self._publish_valid_pre_qa(manifest, ws, translation_text)
+        qa = subprocess.run(SCRIPT + CONFIG_ARG + ['qa', '--source', src, '--translation', translation,
+                                                    '--language', 'zh', '--manifest', manifest],
+                            capture_output=True, text=True)
+        assert qa.returncode == 0, qa.stdout + qa.stderr
+        semantic = self._publish(manifest, ws, 'semantic_qa', 'semantic_qa', {
+            'translation_sha256': __import__('hashlib').sha256(translation_text.encode('utf-8')).hexdigest(),
+            'checked_occurrence_ids': [item['occurrence_id'] for item in matching['occurrences']],
+            'issues': [{'severity': 'error', 'issue': 'terminology drift'}],
+            'checks': {
+                'reference_expression': 'pass', 'chunk_seams': 'pass', 'register_style': 'pass',
+                'context_rules': 'pass', 'source_residual': 'pass',
+            },
+        })
+        assert semantic.returncode == 1
+        qa_report = os.path.join(ws, 'qa_report.json')
+        report = json.load(open(qa_report, encoding='utf-8'))
+        report['status'] = 'pass'
+        with open(qa_report, 'w', encoding='utf-8') as f:
+            json.dump(report, f)
+        written = subprocess.run(SCRIPT + CONFIG_ARG + ['write', '--input', src, '--translation', translation,
+                                                         '--language', 'zh', '--manifest', manifest],
+                                 capture_output=True, text=True)
+        assert written.returncode == 1
+        assert 'Missing QA report' in written.stderr
+
+    def test_resume_rejects_reference_runtime_or_config_drift(self, tmp_path, monkeypatch):
+        src, ws, result = self._prepare(str(tmp_path))
+        assert result.returncode == 0
+        manifest = os.path.join(ws, 'run_manifest.json')
+        monkeypatch.setenv('TRANSLATE_PROMPT_DIGEST', 'changed')
+        resumed = subprocess.run(SCRIPT + CONFIG_ARG + ['resume', '--manifest', manifest],
+                                capture_output=True, text=True)
+        assert resumed.returncode == 1
+        assert 'runtime changed' in resumed.stderr
+
+    def test_resume_rejects_manifest_digest_tampering(self, tmp_path):
+        _src, ws, result = self._prepare(str(tmp_path))
+        assert result.returncode == 0
+        manifest = os.path.join(ws, 'run_manifest.json')
+        data = json.load(open(manifest, encoding='utf-8'))
+        data['language'] = 'en'
+        with open(manifest, 'w', encoding='utf-8') as f:
+            json.dump(data, f)
+        resumed = subprocess.run(SCRIPT + CONFIG_ARG + ['resume', '--manifest', manifest],
+                                capture_output=True, text=True)
+        assert resumed.returncode == 1
+        assert 'manifest digest' in resumed.stderr
+
+    def test_reference_memory_must_complete_every_planned_passage(self, tmp_path):
+        src = os.path.join(str(tmp_path), 'source.md')
+        ref = os.path.join(str(tmp_path), 'reference.md')
+        ws = os.path.join(str(tmp_path), 'run')
+        open(src, 'w', encoding='utf-8').write('# Title\n\nhello\n')
+        open(ref, 'w', encoding='utf-8').write('hello = \\u4f60\\u597d\n')
+        prepared = subprocess.run(
+            SCRIPT + CONFIG_ARG + ['prepare', '--input', src, '--language', 'zh', '--references', ref,
+                                   '--workspace', ws, '--runtime-mode', 'orchestrated'],
+            capture_output=True, text=True,
+        )
+        assert prepared.returncode == 0, prepared.stderr
+        manifest = os.path.join(ws, 'run_manifest.json')
+        rejected = self._publish(manifest, ws, 'reference_mining', 'reference_memory', {
+            'passages': [], 'terms': [], 'expressions': [], 'style_rules': [],
+            'semantic_retrieval': {'status': 'completed', 'provider': 'mock', 'results': []},
+        })
+        assert rejected.returncode == 1
+        assert 'passages do not exactly match' in rejected.stderr

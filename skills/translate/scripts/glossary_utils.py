@@ -279,6 +279,39 @@ def load_glossary_structured(path: str) -> list[dict]:
     return [{'source': s, 'target': t, 'confidence': 'high'} for s, t in flat.items()]
 
 
+def load_glossary_v3(path: str) -> list[dict]:
+    """Load any supported glossary as v3 user-seed entries.
+
+    Legacy glossary formats contain no reference evidence.  Marking them as
+    ``user_seed`` retains their authority without falsely improving reference
+    coverage metrics.
+    """
+    entries = load_glossary_structured(path)
+    result = []
+    for entry in entries:
+        copied = dict(entry)
+        copied.setdefault('schema_version', '3.0')
+        copied.setdefault('origin', 'user_seed')
+        copied.setdefault('evidence', [])
+        copied.setdefault('allowed_targets', [copied.get('target')] if copied.get('target') else [])
+        result.append(copied)
+    return result
+
+
+def partition_relevance_batches(items: list[dict], max_items: int) -> list[list[dict]]:
+    """Partition an already-complete relevance universe without dropping items.
+
+    The ordering is deterministic by the stable id (or source as a fallback),
+    which lets the orchestrator persist and audit every batch.  Unlike the v2
+    glossary slice cap, no item is silently discarded.
+    """
+    if max_items <= 0:
+        raise ValueError('max_items must be positive')
+    ordered = sorted(items, key=lambda x: (str(x.get('occurrence_id') or x.get('term_id') or x.get('source') or ''),
+                                            str(x.get('source') or '')))
+    return [ordered[i:i + max_items] for i in range(0, len(ordered), max_items)]
+
+
 def save_glossary_structured(terms: list[dict], path: str) -> None:
     """Write structured glossary {"terms": [...]}."""
     save_glossary(terms, path)

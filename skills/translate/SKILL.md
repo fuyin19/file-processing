@@ -11,16 +11,15 @@ description: |
   Even if they don't say "translate", if they mention converting content to another language,
   making a Chinese/English version, or localizing a document, use this skill.
 metadata:
-  version: 2.0.0
+  version: 3.0.0
 ---
 
 # Translate
 
 Translate files to a target language. **Accuracy / terminology match is the top
-priority; speed and token cost are secondary.** In `orchestrated` mode it runs a
-source-driven two-phase glossary + chunked parallel translation + forced
-per-occurrence application QA with a re-translation loop. Falls back to the
-original single-pass translate when the runtime has no sub-agent tool.
+priority; speed and token cost are secondary.** v3 is reference-first and
+manifest-bound: source occurrences, reference evidence, agent artifacts, and QA
+are tied to one isolated run before a formal translation may be written.
 
 ## Commands
 
@@ -37,6 +36,8 @@ original single-pass translate when the runtime has no sub-agent tool.
 - `--overwrite`: Overwrite existing output file
 - `--rename`: Rename output if file exists (append timestamp)
 - `--chunk-lines`: Override chunk size (default 300, from `scripts/config.json`)
+- `--quality-mode`: `strict` (default) or `report-only`
+- `--runtime-mode`: set by the orchestrator after runtime preflight
 
 **Supported file types:** `.md`, `.txt`, and all formats supported by markdown-conversion (`.pdf`, `.docx`, `.html`, etc.).
 
@@ -52,8 +53,49 @@ original single-pass translate when the runtime has no sub-agent tool.
 
 Record `runtime_mode` before translating:
 
-- **`orchestrated`** if the main agent has a sub-agent tool (`Agent`/legacy `Task`). Run the workflow below. This tool is core; this skill must NOT set `allowed-tools` that removes it.
-- **`legacy_single_agent`** otherwise. Run the original single-pass flow (prepare → translate → qa → write) and stamp the output **"legacy-single-agent; no matrix guarantee"**.
+- **`orchestrated`** if the main agent has a sub-agent tool (`Agent`/legacy `Task`). Run the v3 workflow below. This tool is core; this skill must NOT set `allowed-tools` that removes it.
+- **`report-only`** otherwise. Do not use `legacy_single_agent` to produce a formal output. Create only an `INCOMPLETE` diagnostic run with `--quality-mode report-only --runtime-mode unavailable`.
+
+## V3 Manifest Contract
+
+`prepare` is the only command that creates a v3 run. It creates an isolated
+`.translate-runs/<run-id>/` workspace and prints `=== RUN MANIFEST ===`; retain
+that path for every later step.
+
+```bash
+python scripts/translate_pipeline.py prepare --input "<file>" --language <lang> \
+  --runtime-mode orchestrated --quality-mode strict
+```
+
+Agents must not edit a manifest directly. After the orchestrator validates each
+agent JSON result, it publishes it atomically through the Python boundary:
+
+```bash
+python scripts/translate_pipeline.py publish-stage --manifest "<manifest>" \
+  --stage <reference_mining|source_matching|translation|semantic_qa> \
+  --artifact <name> --input "<validated-agent-json>"
+```
+
+Published JSON requires `schema_version:"3.0"`, the manifest `run_id`, an
+attempt number within the configured retry budget, and the Python-computed
+`stage_input_hash` for that exact stage (including upstream artifact hashes).
+The publisher validates stage-specific schemas, complete passage/occurrence
+coverage, and semantic-QA errors before atomically recording both raw-response
+and parsed-artifact hashes. V3 `qa` and `write` must receive
+`--manifest`; never scan a previous `.translate-workspace` or auto-discover
+cross-run artifacts.
+
+```bash
+python scripts/translate_pipeline.py qa --source "<file>" --translation "<assembled>" \
+  --language <lang> --manifest "<manifest>"
+python scripts/translate_pipeline.py write --input "<file>" --translation "<assembled>" \
+  --language <lang> --manifest "<manifest>"
+python scripts/translate_pipeline.py resume --manifest "<manifest>"
+```
+
+Exit codes: `0` strict formal output written; `1` permanent input/schema/QA/gate
+failure; `2` recoverable run awaiting orchestration; `3` report-only
+`INCOMPLETE` artifact written; `4` strict mode without orchestrated runtime.
 
 ## Workflow (orchestrated — source-driven glossary + chunked translation)
 
@@ -68,10 +110,11 @@ python scripts/translate_pipeline.py prepare \
   [--references <ref1> [ref2 ...]] \
   [--glossary <seed1> ...] \
   [--glossary-output "<glossary_path>"] \
-  [--chunk-lines <N>]
+  [--chunk-lines <N>] \
+  --runtime-mode orchestrated --quality-mode strict
 ```
 
-Gate: exit `0`. Prints the legacy `=== SOURCE TEXT ===` / `=== REFERENCES ===` / `=== INSTRUCTIONS ===` sections AND the new `=== CHUNK PLAN ===` (structure-safe chunks, written to `.translate-workspace/chunk_NNN.md`) and `=== PASSAGE MANIFEST ===` (references chunked into stable passage ids like `ref2#p12`). Source is chunked once; extraction and translation reuse the same boundaries.
+Gate: exit `0`. Prints the legacy `=== SOURCE TEXT ===` / `=== REFERENCES ===` / `=== INSTRUCTIONS ===` sections plus `=== CHUNK PLAN ===`, `=== PASSAGE MANIFEST ===`, and `=== RUN MANIFEST ===`. The run workspace is isolated under `.translate-runs/`; extraction and translation reuse the manifest-bound chunk boundaries.
 
 ### Step 2: Build the glossary (source-driven, two phases — only with `--references` or `--glossary`)
 
@@ -79,9 +122,15 @@ Gate: exit `0`. Prints the legacy `=== SOURCE TEXT ===` / `=== REFERENCES ===` /
 2. **G2 — reference grounding:** for each term, Python pre-selects the top-K relevant reference passages (`select_reference_passages`); dispatch `reference-grounder` agents over batches. Each returns `{source, target, alternatives, context_note, evidence (passage id), confidence, source_chunks}`. Terms with no reference basis get `target:null, confidence:"none"` — they are NOT fabricated and NOT silently dropped.
 3. **Merge + save:** write the structured glossary `{"terms":[...]}` with `save_glossary_structured` to `derive_glossary_path` (and `--glossary-output`). Pre-made `--glossary` terms merge in as `confidence:"high"` seeds.
 
+After validating G1/G2 payloads, publish the `reference_mining` and
+`source_matching` artifacts through `publish-stage`. The latter must contain a
+completed scan acknowledgement for every source chunk, deterministic relevance
+batches whose union exactly equals the occurrence ledger, and an explicit reason
+for every empty scan. It is not valid to claim coverage from a truncated slice.
+
 ### Step 3: Translate (chunked, parallel)
 
-Per source chunk, slice the glossary with `slice_glossary_for_chunk` (occurrence terms for that chunk + global protected terms, capped by `max_terms_per_chunk_prompt`), then dispatch one `translator-chunk` with the chunk + its slice + `references/translation-guidelines.md`. Each returns `{translated_markdown, self_audit}`. The orchestrator validates the payload (`validate_translator_payload`) and writes `chunk_NNN.<lang>.md` + `self_audit_NNN.json`. Invalid/missing → re-dispatch up to **2×** → still failing marks the chunk `FAILED` (blocks `write`).
+Per source chunk, build the complete relevance ledger, then use deterministic batches rather than silently truncating a glossary slice. Dispatch one initial `translator-chunk` plus bounded occurrence-specific repair batches with `references/translation-guidelines.md`. Each returns `{translated_markdown, self_audit}` with occurrence IDs. The orchestrator validates and publishes each artifact through `publish-stage`; invalid/missing payloads re-dispatch up to **2×**, then mark the stage `FAILED` (blocks strict `write`).
 
 **`confidence:none` terms must still be translated** (the translator picks a rendering, marks `human_confirm:true`); QA verifies they were handled, not dropped.
 
@@ -94,11 +143,10 @@ python scripts/translate_pipeline.py qa \
   --source "<filepath>" \
   --translation "<temp_assembled>" \
   --language "<target_lang>" \
-  [--glossary "<glossary_path>"] \
-  [--workspace .translate-workspace]
+  --manifest "<run_manifest.json>"
 ```
 
-`qa` auto-discovers the glossary at `derive_glossary_path` if `--glossary` is not given. It enforces **per-occurrence application**: each grounded term's target must appear in the chunk(s) where its source occurs (convergence-gated — it only requires the target where the source is actually present). It checks `confidence:none` consistency (rendered non-empty, source not residual, cross-chunk consistent). Output is tiered (`error` / `warning`) and includes a **FIX MAP** (`term → chunk`).
+`qa` reads only the manifest-bound ledger, translation, and published artifacts. It enforces **per-occurrence application**: every eligible occurrence has one terminal disposition and each grounded target is checked in its mapped chunk. Output is tiered (`error` / `warning`) and includes a **FIX MAP** (`term → chunk`).
 
 Gate: exit `1` means errors present. If `error`s or a required stage is `FAILED`, **`write` is blocked** unless the user accepts a partial artifact.
 
@@ -106,19 +154,26 @@ Gate: exit `1` means errors present. If `error`s or a required stage is `FAILED`
 
 For each FIX MAP entry, re-translate that chunk with a forced prompt listing the required term(s); re-assemble; re-run `qa`. Cap **2** re-translates per chunk. Remaining issues → a human-handoff list.
 
-### Step 6: (Optional) consistency pass + write
+### Step 6: Required semantic consistency pass + write
 
-Optionally dispatch a `consistency-QA` agent over the assembled translation for cross-chunk drift/fluency (its failure is a warning, not a block). Then:
+After deterministic `qa` passes, dispatch a `consistency-QA` agent over the
+assembled translation for cross-chunk drift/fluency. Publish its validated result
+as the `semantic_qa` stage, bound to the assembled translation hash and complete
+occurrence-ID set; an error blocks strict write. Then:
 
 ```bash
 python scripts/translate_pipeline.py write \
   --input "<filepath>" --translation "<final>" --language "<target_lang>" \
+  --manifest "<run_manifest.json>" \
   [--overwrite | --rename]
 ```
 
-## Workflow (legacy_single_agent — fallback)
+## Workflow (report-only — no agent runtime)
 
-When preflight records `legacy_single_agent`: `prepare` → translate the whole document in one pass (apply `--glossary`/references as before) → `qa` → `write`. Stamp the output **"legacy-single-agent; no matrix guarantee"**.
+When preflight cannot establish `orchestrated`, run only `prepare --quality-mode
+report-only --runtime-mode unavailable`, record the missing capability, and do
+not write a formal translation. A later report-only write is explicitly stamped
+`INCOMPLETE` and exits `3`.
 
 ## Translation Guidelines
 
