@@ -16,7 +16,9 @@ import hashlib
 import json
 import os
 import re
+import shutil
 import sys
+import tempfile
 import time
 import uuid
 from typing import Any, NoReturn
@@ -396,6 +398,14 @@ def _reference_passages(text: str, reference_id: str, max_chars: int = 20_000) -
     current: list[str] = []
     chars = 0
     for line_number, line in enumerate(lines, 1):
+        # Passage identifiers are line-ranged.  A single oversized line cannot
+        # be split without inventing a finer-grained location contract, and it
+        # would otherwise fail only after local/claim work has been dispatched.
+        if len(line) > max_chars:
+            raise _V4CapacityError(
+                f"Reference line {line_number} exceeds the {max_chars}-character "
+                "passage budget and cannot be split while preserving line-range coverage."
+            )
         line_chars = len(line) + 1
         if current and chars + line_chars > max_chars:
             body = "\n".join(current)
@@ -1833,7 +1843,11 @@ def _build_diff(plan: dict[str, Any], findings: list[dict[str, Any]]) -> str:
     deletion_marker = "[删除该文本]" if document_language == "zh" else "[Delete this text]"
     edits = []
     for finding in findings:
-        if not finding.get("fixable"):
+        # v4 payloads deliberately contain only stage-specific review data;
+        # a five-field finding is therefore fixable unless it explicitly says
+        # otherwise.  This keeps opt-in diffs useful without asking agents to
+        # echo a legacy envelope flag.
+        if finding.get("fixable", True) is False:
             continue
         locations = finding.get("locations", [])
         if not locations:
@@ -1950,8 +1964,1138 @@ def cmd_assemble(args: argparse.Namespace) -> None:
         print(json.dumps(output, ensure_ascii=False, indent=2))
 
 
+###############################################################################
+# ReviewRun/v4
+#
+# The v3 implementation above is intentionally left in place as a small set of
+# compatibility helpers (chunking, conversion, and the report renderer).  The
+# command surface below is the active protocol.  Keeping the deterministic
+# helpers avoids reimplementing input conversion while deliberately refusing to
+# load a v3 workspace.
+###############################################################################
+
+RUN_SCHEMA = "ReviewRun/v4"
+RUN_STATUS_SCHEMA = "ReviewStatus/v4"
+ASSEMBLY_SCHEMA = "ReviewAssembly/v4"
+STATE_FILENAME = "run-state.json"
+STATE_BACKUP_SUFFIX = ".bak"
+CLAIM_INPUT_MAX_CHARS = 20_000
+PROMPT_DIR = os.path.normpath(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "references"))
+
+
+class _V4CapacityError(RuntimeError):
+    """A deterministic planning bound was reached, not an agent failure."""
+
+
+class _V4StateError(RuntimeError):
+    """A run state cannot safely be read."""
+
+
+def _v4_json(value: Any) -> str:
+    return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+
+
+def _v4_hash(value: Any) -> str:
+    return _sha256_text(_v4_json(value))
+
+
+def _v4_state_hash(state: dict[str, Any]) -> str:
+    material = dict(state)
+    material.pop("state_hash", None)
+    material.pop("_recovered_from_backup", None)
+    return _v4_hash(material)
+
+
+def _v4_write_bytes(path: str, payload: bytes) -> None:
+    """Durably replace one file using a sibling temporary file."""
+    directory = os.path.dirname(os.path.abspath(path))
+    os.makedirs(directory, exist_ok=True)
+    temporary = os.path.join(directory, f".{os.path.basename(path)}.{uuid.uuid4().hex}.tmp")
+    try:
+        with open(temporary, "wb") as handle:
+            handle.write(payload)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, path)
+    finally:
+        if os.path.exists(temporary):
+            try:
+                os.remove(temporary)
+            except OSError:
+                pass
+
+
+def _v4_write_text(path: str, text: str) -> None:
+    _v4_write_bytes(path, text.encode("utf-8"))
+
+
+def _v4_save_state(path: str, state: dict[str, Any]) -> None:
+    """Persist one generation and retain exactly one last-known-good backup."""
+    state.pop("_recovered_from_backup", None)
+    state["state_generation"] = int(state.get("state_generation", 0)) + 1
+    state["state_hash"] = _v4_state_hash(state)
+    if os.path.exists(path):
+        with open(path, "rb") as handle:
+            previous = handle.read()
+        # The previous file was verified on load before this save.  Replacing
+        # the backup first means a crash cannot leave an unverified new state as
+        # the only recoverable copy.
+        _v4_write_bytes(path + STATE_BACKUP_SUFFIX, previous)
+    _v4_write_bytes(path, (_v4_json(state) + "\n").encode("utf-8"))
+
+
+def _v4_read_state(path: str) -> dict[str, Any]:
+    try:
+        with open(path, "r", encoding="utf-8") as handle:
+            data = json.load(handle)
+    except (OSError, json.JSONDecodeError) as exc:
+        raise _V4StateError(str(exc)) from exc
+    if not isinstance(data, dict):
+        raise _V4StateError("state root is not an object")
+    if data.get("schema") == PLAN_SCHEMA:
+        raise _V4StateError("ReviewPlan/v3 workspace detected; re-run the review (v3 workspaces are not migrated).")
+    if data.get("schema") != RUN_SCHEMA:
+        raise _V4StateError(f"expected {RUN_SCHEMA}, got {data.get('schema')!r}")
+    if not isinstance(data.get("state_generation"), int) or not isinstance(data.get("state_hash"), str):
+        raise _V4StateError("state generation or state hash is missing")
+    if data["state_hash"] != _v4_state_hash(data):
+        raise _V4StateError("state hash mismatch")
+    return data
+
+
+def _v4_load_state(path: str, *, restore_backup: bool) -> tuple[dict[str, Any], bool]:
+    state_path = os.path.abspath(path)
+    try:
+        return _v4_read_state(state_path), False
+    except _V4StateError as primary_error:
+        backup_path = state_path + STATE_BACKUP_SUFFIX
+        try:
+            recovered = _v4_read_state(backup_path)
+        except _V4StateError as backup_error:
+            message = str(primary_error)
+            if "ReviewPlan/v3 workspace" in message:
+                raise _V4StateError(message)
+            raise _V4StateError(
+                f"state_corrupt: primary={primary_error}; backup={backup_error}"
+            ) from backup_error
+        if restore_backup:
+            with open(backup_path, "rb") as handle:
+                _v4_write_bytes(state_path, handle.read())
+        recovered["_recovered_from_backup"] = True
+        return recovered, True
+
+
+def _v4_read_text(path: str) -> str:
+    with open(path, "r", encoding="utf-8") as handle:
+        return handle.read()
+
+
+def _v4_text_descriptor(
+    value: str, *, workspace: str, label: str, number: int = 0,
+) -> tuple[dict[str, Any], str]:
+    """Return a source/reference descriptor without copying direct text files."""
+    resolved, kind = _resolve_input(value)
+    text = read_source(resolved)
+    ext = _extension(resolved)
+    direct = kind == "file" and ext in {".md", ".markdown", ".txt"}
+    if direct:
+        read_path = resolved
+        snapshot = None
+    else:
+        name = "source.md" if label == "source" else f"reference_{number:03d}.md"
+        read_path = os.path.join(workspace, "artifacts", name)
+        _v4_write_text(read_path, text)
+        snapshot = _norm(read_path)
+    descriptor = {
+        "original": _norm(resolved),
+        "input_kind": kind,
+        "extension": ext,
+        "read_path": _norm(read_path),
+        "canonical_snapshot": snapshot,
+        "content_sha256": _sha256_text(text),
+        "input_sha256": _original_input_hash(resolved, text),
+        "diff_applicable": direct,
+    }
+    return descriptor, text
+
+
+def _v4_claim_blocks(text: str) -> list[dict[str, Any]]:
+    """Pack complete parser blocks into independently reviewable 20k inputs."""
+    groups: list[dict[str, Any]] = []
+    active: list[list[int]] = []
+    active_chars = 0
+    line = 1
+    for _, block_lines in parse_blocks(text):
+        end = line + len(block_lines) - 1
+        block_text = "\n".join(block_lines)
+        block_chars = len(block_text)
+        if block_chars > CLAIM_INPUT_MAX_CHARS:
+            raise _V4CapacityError(
+                f"A structure-safe claim block at lines {line}-{end} exceeds "
+                f"{CLAIM_INPUT_MAX_CHARS} characters and cannot be split."
+            )
+        separator = 1 if active else 0
+        if active and active_chars + separator + block_chars > CLAIM_INPUT_MAX_CHARS:
+            groups.append({"units": active})
+            active, active_chars = [], 0
+        active.append([line, end])
+        active_chars += (1 if active_chars else 0) + block_chars
+        line = end + 1
+    if active:
+        groups.append({"units": active})
+    return groups or [{"units": [[1, 1]]}]
+
+
+def _v4_create_cell(
+    run: dict[str, Any], *, cell_id: str, stage: str, dimension: str,
+    checks: list[str], dependencies: list[str], input_data: dict[str, Any],
+    required: bool = True,
+) -> dict[str, Any]:
+    if cell_id in run["cells"]:
+        raise RuntimeError(f"duplicate dynamic cell id: {cell_id}")
+    cell = {
+        "id": cell_id,
+        "stage": stage,
+        "dimension": dimension,
+        "checks": list(checks),
+        "dependencies": list(dependencies),
+        "input": input_data,
+        "input_hash": _v4_hash({"id": cell_id, "input": input_data, "checks": checks}),
+        "required": required,
+        "status": "pending",
+        "attempts": [],
+    }
+    run["cells"][cell_id] = cell
+    return cell
+
+
+def _v4_cell_values(run: dict[str, Any], *, stage: str | None = None) -> list[dict[str, Any]]:
+    cells = list(run["cells"].values())
+    if stage is not None:
+        cells = [cell for cell in cells if cell["stage"] == stage]
+    return sorted(cells, key=lambda cell: cell["id"])
+
+
+def _v4_dependencies_accepted(run: dict[str, Any], cell: dict[str, Any]) -> bool:
+    return all(run["cells"].get(dep, {}).get("status") == "accepted" for dep in cell["dependencies"])
+
+
+def _v4_dependency_hash(run: dict[str, Any], cell: dict[str, Any]) -> str:
+    values = []
+    for dep in sorted(cell["dependencies"]):
+        upstream = run["cells"][dep]
+        values.append([dep, upstream.get("accepted_payload_hash")])
+    return _v4_hash({"input_hash": cell["input_hash"], "dependencies": values})
+
+
+def _v4_dispatch_ready(run: dict[str, Any]) -> list[str]:
+    """Bind ready cells to the generation that will be written next."""
+    generation = int(run["state_generation"]) + 1
+    dispatched: list[str] = []
+    for cell in _v4_cell_values(run):
+        if cell["status"] != "pending" or not _v4_dependencies_accepted(run, cell):
+            continue
+        cell["status"] = "dispatched"
+        cell["dispatch"] = {
+            "dispatch_id": uuid.uuid4().hex,
+            "dependency_hash": _v4_dependency_hash(run, cell),
+            "state_generation": generation,
+        }
+        dispatched.append(cell["id"])
+    return dispatched
+
+
+def _v4_manifest_text(descriptor: dict[str, Any]) -> str:
+    return _v4_read_text(descriptor["read_path"])
+
+
+def _v4_validate_manifest(run: dict[str, Any]) -> list[str]:
+    """Recheck only immutable sources, references, and transient chunks."""
+    errors: list[str] = []
+    descriptors = [run["manifest"]["source"]] + list(run["manifest"].get("references", []))
+    for descriptor in descriptors:
+        try:
+            text = _v4_manifest_text(descriptor)
+        except OSError as exc:
+            errors.append(f"missing artifact {descriptor.get('read_path')}: {exc}")
+            continue
+        if _sha256_text(text) != descriptor.get("content_sha256"):
+            errors.append(f"artifact hash changed: {descriptor.get('original')}")
+    for chunk in run["manifest"].get("chunks", []):
+        try:
+            text = _v4_read_text(chunk["path"])
+        except OSError as exc:
+            errors.append(f"missing chunk {chunk.get('path')}: {exc}")
+            continue
+        if _sha256_text(text) != chunk.get("sha256"):
+            errors.append(f"chunk hash changed: {chunk.get('id')}")
+    return errors
+
+
+def _v4_source_lines(run: dict[str, Any]) -> list[str]:
+    return _v4_manifest_text(run["manifest"]["source"]).splitlines()
+
+
+def _v4_passage_map(run: dict[str, Any]) -> dict[str, tuple[dict[str, Any], dict[str, Any]]]:
+    output: dict[str, tuple[dict[str, Any], dict[str, Any]]] = {}
+    for reference in run["manifest"].get("references", []):
+        for passage in reference.get("passages", []):
+            output[passage["id"]] = (reference, passage)
+    return output
+
+
+def _v4_passage_payload(run: dict[str, Any], passage_id: str) -> dict[str, Any]:
+    reference, passage = _v4_passage_map(run)[passage_id]
+    lines = _v4_manifest_text(reference).splitlines()
+    text = "\n".join(lines[passage["start_line"] - 1:passage["end_line"]])
+    if _sha256_text(text) != passage["sha256"]:
+        raise _V4StateError(f"passage hash changed: {passage_id}")
+    return {
+        "id": passage_id,
+        "reference": _display_name(reference["original"]),
+        "start_line": passage["start_line"],
+        "end_line": passage["end_line"],
+        "text": text,
+    }
+
+
+def _v4_task_input(run: dict[str, Any], cell: dict[str, Any]) -> dict[str, Any]:
+    data = cell["input"]
+    if cell["stage"] == "local":
+        return {
+            "core_lines": data["core_lines"],
+            "checks": cell["checks"],
+            "text": _v4_read_text(data["chunk_path"]),
+        }
+    if cell["stage"] == "claim":
+        lines = _v4_source_lines(run)
+        parts = []
+        for start, end in data["units"]:
+            parts.append("\n".join(lines[start - 1:end]))
+        return {"line_units": data["units"], "text": "\n".join(parts)}
+    if cell["stage"] == "global":
+        return {"checks": cell["checks"], "observations": data["observations"]}
+    if cell["stage"] == "semantic":
+        claims = {item["claim_id"]: item["claim"] for item in run["coverage"].get("claims", [])}
+        return {
+            "claims": [{"id": key, **claims[key]} for key in data["claim_ids"]],
+            "passages": [_v4_passage_payload(run, value) for value in data["passage_ids"]],
+            "collect_reference_facts": data["collect_reference_facts"],
+        }
+    if cell["stage"] == "coverage":
+        return {
+            "claims": run["coverage"].get("claims", []),
+            "reference_facts": run["coverage"].get("reference_facts", []),
+        }
+    if cell["stage"] == "adjudication":
+        return {"candidates": run["coverage"].get("candidates", [])}
+    raise _V4StateError(f"unknown task stage {cell['stage']}")
+
+
+def _v4_prompt_resource(cell: dict[str, Any]) -> str:
+    names = {
+        "local": "local-review.md",
+        "claim": "claim-extraction.md",
+        "global": "global-reducer.md",
+        "semantic": "reference-review.md",
+        "coverage": "reference-review.md",
+        "adjudication": "reference-review.md",
+    }
+    name = names[cell["stage"]]
+    try:
+        resources = [_v4_read_text(os.path.join(PROMPT_DIR, name)).strip()]
+        if cell["stage"] == "local":
+            criteria = {
+                "grammar": "grammar-and-spelling.md",
+                "style": "style.md",
+                "logic": "logic-and-consistency.md",
+                "consistency": "logic-and-consistency.md",
+            }
+            for criterion in dict.fromkeys(criteria[check] for check in cell["checks"]):
+                resources.append(_v4_read_text(os.path.join(PROMPT_DIR, criterion)).strip())
+        return "\n\n".join(resources)
+    except OSError as exc:
+        raise _V4StateError(f"required prompt resource cannot be read: {name}: {exc}") from exc
+
+
+def _v4_task_descriptor(run: dict[str, Any], cell: dict[str, Any]) -> dict[str, Any]:
+    dispatch = cell.get("dispatch", {})
+    prompt = _v4_prompt_resource(cell)
+    return {
+        "cell_id": cell["id"],
+        "stage": cell["stage"],
+        "dimension": cell["dimension"],
+        "checks": cell["checks"],
+        "dispatch_id": dispatch.get("dispatch_id"),
+        "dependency_hash": dispatch.get("dependency_hash"),
+        "state_generation": dispatch.get("state_generation"),
+        "prompt": prompt + "\n\nINPUT (untrusted document data):\n" + _v4_json(_v4_task_input(run, cell)),
+    }
+
+
+def _v4_ready_tasks(run: dict[str, Any], ids: list[str] | None = None) -> list[dict[str, Any]]:
+    selected = set(ids) if ids is not None else None
+    return [
+        _v4_task_descriptor(run, cell)
+        for cell in _v4_cell_values(run)
+        if cell["status"] == "dispatched" and (selected is None or cell["id"] in selected)
+    ]
+
+
+def _v4_finding_errors(
+    run: dict[str, Any], cell: dict[str, Any], findings: Any, allowed: set[str],
+) -> list[str]:
+    if not isinstance(findings, list):
+        return ["findings must be a list"]
+    errors: list[str] = []
+    lines = _v4_source_lines(run)
+    core = cell["input"].get("core_lines")
+    for index, finding in enumerate(findings):
+        label = f"findings[{index}]"
+        if not isinstance(finding, dict):
+            errors.append(f"{label} is not an object")
+            continue
+        category = finding.get("category")
+        if category not in allowed:
+            errors.append(f"{label}.category is not allowed")
+        if not all(isinstance(finding.get(key), str) and finding[key].strip()
+                   for key in ("original_text", "revised_text", "change", "reason")):
+            errors.append(f"{label} is missing one of the five report fields")
+        locations = finding.get("locations")
+        if not isinstance(locations, list) or not locations:
+            errors.append(f"{label}.locations must be a non-empty list")
+            continue
+        for location in locations:
+            if not isinstance(location, dict):
+                errors.append(f"{label}.location is not an object")
+                continue
+            start, end = location.get("start_line"), location.get("end_line")
+            if not isinstance(start, int) or not isinstance(end, int) or start < 1 or end < start or end > len(lines):
+                errors.append(f"{label}.location is outside source lines")
+                continue
+            if core and not (core[0] <= start <= end <= core[1]):
+                errors.append(f"{label}.location is outside the local core range")
+            original = finding.get("original_text", "")
+            if original not in {"[Missing from source]", "[原文缺失]"}:
+                span = "\n".join(lines[start - 1:end])
+                if original not in span:
+                    errors.append(f"{label}.original_text is not verbatim at its location")
+    return errors
+
+
+def _v4_observation_errors(observations: Any) -> list[str]:
+    if not isinstance(observations, list):
+        return ["observations must be a list"]
+    errors = []
+    for index, observation in enumerate(observations):
+        if not isinstance(observation, dict) or observation.get("kind") not in ALLOWED_OBSERVATION_KINDS:
+            errors.append(f"observations[{index}] is not a supported observation")
+    return errors
+
+
+def _v4_validate_payload(run: dict[str, Any], cell: dict[str, Any], payload: Any) -> list[str]:
+    if not isinstance(payload, dict):
+        return ["payload must be a JSON object"]
+    if cell["stage"] == "local":
+        expected = cell["checks"]
+        errors = [] if payload.get("checks_completed") == expected else ["checks_completed does not match the task"]
+        categories = set().union(*(CHECK_FINDING_CATEGORIES[check] for check in expected))
+        return errors + _v4_finding_errors(run, cell, payload.get("findings"), categories) + _v4_observation_errors(payload.get("observations"))
+    if cell["stage"] == "global":
+        errors = []
+        if payload.get("checks_completed") != cell["checks"]:
+            errors.append("checks_completed does not match the task")
+        allowed = {"style", "logic", "consistency"} if cell["checks"] else set()
+        return errors + _v4_finding_errors(run, cell, payload.get("findings"), allowed) + _v4_observation_errors(payload.get("observations"))
+    if cell["stage"] == "claim":
+        claims = payload.get("claims")
+        if not isinstance(claims, list):
+            return ["claims must be a list"]
+        return [f"claims[{index}] is not an object" for index, item in enumerate(claims) if not isinstance(item, dict)]
+    if cell["stage"] == "semantic":
+        assessments = payload.get("assessments")
+        facts = payload.get("reference_facts")
+        if not isinstance(assessments, list) or not isinstance(facts, list):
+            return ["assessments and reference_facts must be lists"]
+        expected = {(claim, passage) for claim in cell["input"]["claim_ids"] for passage in cell["input"]["passage_ids"]}
+        actual: list[tuple[Any, Any]] = []
+        errors = []
+        for index, assessment in enumerate(assessments):
+            if not isinstance(assessment, dict):
+                errors.append(f"assessments[{index}] is not an object")
+                continue
+            pair = (assessment.get("claim_id"), assessment.get("passage_id"))
+            actual.append(pair)
+            if assessment.get("status") not in ASSESSMENT_STATUSES - {"not-established", "unverified/incomplete"}:
+                errors.append(f"assessments[{index}] has an invalid status")
+        if len(actual) != len(set(actual)) or set(actual) != expected:
+            errors.append("semantic coverage does not check every claim-passage pair exactly once")
+        for index, fact in enumerate(facts):
+            if not isinstance(fact, dict) or fact.get("passage_id") not in cell["input"]["passage_ids"]:
+                errors.append(f"reference_facts[{index}] is not tied to this passage batch")
+        return errors
+    if cell["stage"] == "coverage":
+        return _v4_finding_errors(run, cell, payload.get("findings"), {"omission"})
+    if cell["stage"] == "adjudication":
+        return _v4_finding_errors(run, cell, payload.get("findings"), {"fact", "contradiction", "unsupported"})
+    return [f"unknown stage {cell['stage']}"]
+
+
+def _v4_output_within_bound(cell: dict[str, Any], payload: dict[str, Any]) -> bool:
+    if cell["stage"] == "claim":
+        return len(_v4_json(payload.get("claims", []))) <= MAX_REDUCER_OUTPUT_CHARS
+    return len(_v4_json(payload)) <= MAX_REDUCER_OUTPUT_CHARS
+
+
+def _v4_stage_count(run: dict[str, Any], stage: str) -> int:
+    return sum(1 for cell in run["cells"].values() if cell["stage"] == stage)
+
+
+def _v4_require_stage_room(run: dict[str, Any], stage: str, adding: int) -> None:
+    if _v4_stage_count(run, stage) + adding > HARD_MAX_CELLS_PER_STAGE:
+        raise _V4CapacityError(
+            f"{stage} dynamic cell count would exceed per-stage max_cells={HARD_MAX_CELLS_PER_STAGE}."
+        )
+
+
+def _v4_split_claim_cell(run: dict[str, Any], cell: dict[str, Any]) -> None:
+    units = cell["input"].get("units", [])
+    if len(units) < 2:
+        raise _V4CapacityError(
+            f"Claim output for {cell['id']} exceeds {MAX_REDUCER_OUTPUT_CHARS} characters and its input cannot be split safely."
+        )
+    _v4_require_stage_room(run, "claim", 2)
+    midpoint = len(units) // 2
+    cell["status"] = "split"
+    cell["required"] = False
+    for suffix, part in (("a", units[:midpoint]), ("b", units[midpoint:])):
+        _v4_create_cell(
+            run,
+            cell_id=f"{cell['id']}.{suffix}",
+            stage="claim",
+            dimension="claim-extraction",
+            checks=[],
+            dependencies=cell["dependencies"],
+            input_data={"units": part, "parent": cell["id"]},
+        )
+
+
+def _v4_dedupe_observations(values: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    unique: dict[str, dict[str, Any]] = {}
+    for value in values:
+        if isinstance(value, dict):
+            unique.setdefault(_v4_hash(value), value)
+    return [unique[key] for key in sorted(unique)]
+
+
+def _v4_schedule_global_layer(run: dict[str, Any], observations: list[dict[str, Any]], depth: int) -> None:
+    batches = batch_observations(observations, MAX_REDUCER_INPUT_CHARS)
+    _v4_require_stage_room(run, "global", len(batches))
+    checks = [check for check in run["config"]["checks"] if check in {"style", "logic", "consistency"}]
+    ids = []
+    for index, batch in enumerate(batches, 1):
+        is_final = len(batches) == 1
+        cell = _v4_create_cell(
+            run,
+            cell_id=f"global:d{depth}:b{index:03d}",
+            stage="global",
+            dimension="document-global" if is_final else "observation-reduce",
+            checks=checks if is_final else [],
+            dependencies=run["progress"].get("global_dependencies", []),
+            input_data={"depth": depth, "observations": batch["observations"], "serialized_chars": batch["serialized_chars"]},
+        )
+        ids.append(cell["id"])
+    run["progress"]["global_active_layer"] = ids
+    run["progress"]["global_depth"] = depth
+
+
+def _v4_advance_global(run: dict[str, Any]) -> bool:
+    progress = run["progress"]
+    local = _v4_cell_values(run, stage="local")
+    if not local or any(cell["status"] != "accepted" for cell in local):
+        return False
+    checks = [check for check in run["config"]["checks"] if check in {"style", "logic", "consistency"}]
+    if progress.get("global_complete"):
+        return False
+    if len(run["manifest"]["chunks"]) <= 1 or not checks:
+        progress["global_complete"] = True
+        progress["global_skip_reason"] = "single_chunk_or_no_cross_chunk_check"
+        return True
+    active = progress.get("global_active_layer", [])
+    if not active:
+        observations = _v4_dedupe_observations([
+            item for cell in local for item in cell.get("accepted_payload", {}).get("observations", [])
+        ])
+        if not observations:
+            progress["global_complete"] = True
+            progress["global_skip_reason"] = "no_observations"
+            return True
+        progress["global_dependencies"] = [cell["id"] for cell in local]
+        _v4_schedule_global_layer(run, observations, 1)
+        return True
+    layer = [run["cells"][cell_id] for cell_id in active]
+    if any(cell["status"] != "accepted" for cell in layer):
+        return False
+    if len(layer) == 1 and layer[0]["dimension"] == "document-global":
+        progress["global_complete"] = True
+        return True
+    depth = int(progress["global_depth"])
+    if depth >= MAX_REDUCER_DEPTH:
+        raise _V4CapacityError("hierarchical reducer did not converge within max depth=3")
+    observations = _v4_dedupe_observations([
+        item for cell in layer for item in cell.get("accepted_payload", {}).get("observations", [])
+    ])
+    if not observations:
+        progress["global_complete"] = True
+        return True
+    progress["global_dependencies"] = [cell["id"] for cell in layer]
+    _v4_schedule_global_layer(run, observations, depth + 1)
+    return True
+
+
+def _v4_claim_records(run: dict[str, Any]) -> list[dict[str, Any]]:
+    """Deduplicate accepted claims while retaining the originating claim cell."""
+    unique: dict[str, tuple[dict[str, Any], str]] = {}
+    for cell in _v4_cell_values(run, stage="claim"):
+        if cell["status"] != "accepted":
+            continue
+        for claim in cell.get("accepted_payload", {}).get("claims", []):
+            key = _v4_hash(claim)
+            unique.setdefault(key, (claim, cell["id"]))
+    output = []
+    for number, key in enumerate(sorted(unique), 1):
+        claim, origin = unique[key]
+        output.append({"claim_id": f"claim-{number:04d}", "claim": claim, "origin": origin})
+    return output
+
+
+def _v4_pack_passages(run: dict[str, Any], claims: list[dict[str, Any]]) -> list[list[str]]:
+    passage_ids = sorted(_v4_passage_map(run))
+    groups: list[list[str]] = []
+    active: list[str] = []
+    claim_data = [item["claim"] for item in claims]
+    for passage_id in passage_ids:
+        candidate = active + [passage_id]
+        body = {
+            "claims": claim_data,
+            "passages": [_v4_passage_payload(run, value) for value in candidate],
+        }
+        if len(_v4_json(body)) > MAX_REDUCER_INPUT_CHARS:
+            if not active:
+                raise _V4CapacityError(f"semantic input cannot fit passage {passage_id} within 50,000 characters")
+            groups.append(active)
+            active = [passage_id]
+        else:
+            active = candidate
+    if active:
+        groups.append(active)
+    return groups
+
+
+def _v4_schedule_reference_semantics(run: dict[str, Any]) -> None:
+    claims = _v4_claim_records(run)
+    run["coverage"]["claims"] = claims
+    claim_groups: list[list[dict[str, Any]]] = []
+    if claims:
+        by_origin: dict[str, list[dict[str, Any]]] = {}
+        for claim in claims:
+            by_origin.setdefault(claim["origin"], []).append(claim)
+        claim_groups = [by_origin[key] for key in sorted(by_origin)]
+    else:
+        claim_groups = [[]]
+    jobs: list[tuple[list[dict[str, Any]], list[str], bool]] = []
+    for group_index, claim_group in enumerate(claim_groups, 1):
+        for passages in _v4_pack_passages(run, claim_group):
+            jobs.append((claim_group, passages, group_index == 1))
+    _v4_require_stage_room(run, "semantic", len(jobs))
+    expected: list[list[str]] = []
+    for index, (claim_group, passages, collect_facts) in enumerate(jobs, 1):
+        claim_ids = [item["claim_id"] for item in claim_group]
+        dependencies = sorted({item["origin"] for item in claim_group})
+        input_chars = len(_v4_json({
+            "claims": [item["claim"] for item in claim_group],
+            "passages": [_v4_passage_payload(run, value) for value in passages],
+        }))
+        cell = _v4_create_cell(
+            run,
+            cell_id=f"reference:semantic:{index:03d}",
+            stage="semantic",
+            dimension="facts-only" if not claim_ids else "semantic-routing",
+            checks=[],
+            dependencies=dependencies,
+            input_data={
+                "claim_ids": claim_ids,
+                "passage_ids": passages,
+                "collect_reference_facts": collect_facts,
+                "serialized_chars": input_chars,
+            },
+        )
+        expected.extend([[claim_id, passage] for claim_id in claim_ids for passage in passages])
+    run["coverage"]["expected_matrix"] = expected
+    run["progress"]["semantic_scheduled"] = True
+
+
+def _v4_dedupe_facts(cells: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    unique: dict[str, dict[str, Any]] = {}
+    for cell in cells:
+        for fact in cell.get("accepted_payload", {}).get("reference_facts", []):
+            unique.setdefault(_v4_hash(fact), fact)
+    return [unique[key] for key in sorted(unique)]
+
+
+def _v4_schedule_reference_final(run: dict[str, Any]) -> None:
+    semantic = _v4_cell_values(run, stage="semantic")
+    claims = run["coverage"].get("claims", [])
+    expected = {(claim, passage) for claim, passage in run["coverage"].get("expected_matrix", [])}
+    actual: dict[tuple[str, str], str] = {}
+    for cell in semantic:
+        for assessment in cell.get("accepted_payload", {}).get("assessments", []):
+            actual[(assessment["claim_id"], assessment["passage_id"])] = assessment["status"]
+    groundings = []
+    candidates = []
+    all_passages = sorted(_v4_passage_map(run))
+    for claim in claims:
+        claim_id = claim["claim_id"]
+        statuses = [actual.get((claim_id, passage)) for passage in all_passages]
+        if any(value is None for value in statuses):
+            status = "unverified/incomplete"
+        elif "contradicted" in statuses:
+            status = "contradicted"
+        elif statuses and all(value == "no-basis" for value in statuses):
+            status = "no-basis"
+        else:
+            status = "supported"
+        grounding = {"claim_id": claim_id, "status": status, "passages": all_passages}
+        groundings.append(grounding)
+        if status in {"contradicted", "no-basis"}:
+            candidates.append({"claim": claim, "grounding": grounding})
+    run["coverage"]["groundings"] = groundings
+    run["coverage"]["reference_facts"] = _v4_dedupe_facts(semantic)
+    run["coverage"]["candidates"] = candidates
+    dependencies = [cell["id"] for cell in semantic]
+    _v4_require_stage_room(run, "coverage", 1)
+    _v4_create_cell(
+        run,
+        cell_id="reference:coverage",
+        stage="coverage",
+        dimension="reference-coverage",
+        checks=[],
+        dependencies=dependencies,
+        input_data={"claim_count": len(claims), "fact_count": len(run["coverage"]["reference_facts"])},
+    )
+    if candidates:
+        _v4_require_stage_room(run, "adjudication", 1)
+        _v4_create_cell(
+            run,
+            cell_id="reference:adjudication",
+            stage="adjudication",
+            dimension="reference-adjudication",
+            checks=[],
+            dependencies=dependencies,
+            input_data={"candidate_count": len(candidates)},
+        )
+    run["progress"]["reference_final_scheduled"] = True
+
+
+def _v4_mark_incomplete_groundings(run: dict[str, Any]) -> bool:
+    """Preserve explicit unverified coverage when a semantic batch is lost."""
+    semantic = _v4_cell_values(run, stage="semantic")
+    actual: dict[tuple[str, str], str] = {}
+    for cell in semantic:
+        if cell["status"] != "accepted":
+            continue
+        for assessment in cell.get("accepted_payload", {}).get("assessments", []):
+            actual[(assessment["claim_id"], assessment["passage_id"])] = assessment["status"]
+    passages = sorted(_v4_passage_map(run))
+    groundings = []
+    for claim in run["coverage"].get("claims", []):
+        statuses = [actual.get((claim["claim_id"], passage)) for passage in passages]
+        if any(status is None for status in statuses):
+            status = "unverified/incomplete"
+        elif "contradicted" in statuses:
+            status = "contradicted"
+        elif statuses and all(status == "no-basis" for status in statuses):
+            status = "no-basis"
+        else:
+            status = "supported"
+        groundings.append({"claim_id": claim["claim_id"], "status": status, "passages": passages})
+    changed = run["coverage"].get("groundings") != groundings
+    run["coverage"]["groundings"] = groundings
+    run["coverage"]["reference_facts"] = _v4_dedupe_facts(
+        [cell for cell in semantic if cell["status"] == "accepted"]
+    )
+    return changed
+
+
+def _v4_advance_reference(run: dict[str, Any]) -> bool:
+    if not run["manifest"].get("references"):
+        return False
+    progress = run["progress"]
+    claims = _v4_cell_values(run, stage="claim")
+    active_claims = [cell for cell in claims if cell["required"]]
+    if not progress.get("semantic_scheduled"):
+        if any(cell["status"] not in {"accepted", "split"} for cell in claims):
+            return False
+        if any(cell["status"] != "accepted" for cell in active_claims):
+            return False
+        _v4_schedule_reference_semantics(run)
+        return True
+    semantic = _v4_cell_values(run, stage="semantic")
+    if semantic and not progress.get("reference_final_scheduled"):
+        if all(cell["status"] == "accepted" for cell in semantic):
+            _v4_schedule_reference_final(run)
+            return True
+        if any(cell["status"] == "failed" for cell in semantic):
+            return _v4_mark_incomplete_groundings(run)
+    return False
+
+
+def _v4_advance(run: dict[str, Any]) -> None:
+    while True:
+        changed = _v4_advance_global(run)
+        changed = _v4_advance_reference(run) or changed
+        if not changed:
+            return
+
+
+def _v4_new_run(args: argparse.Namespace) -> tuple[dict[str, Any], str]:
+    cfg = load_config()
+    chunk_lines = args.chunk_lines or int(cfg["chunk_lines"])
+    max_chunks = min(int(cfg["max_chunks"]), HARD_MAX_CHUNKS)
+    if chunk_lines < 1 or max_chunks < 1:
+        die("Configured chunk_lines and max_chunks must be positive")
+    if args.workspace:
+        workspace = os.path.abspath(args.workspace)
+        os.makedirs(workspace, exist_ok=True)
+        if os.path.exists(os.path.join(workspace, STATE_FILENAME)):
+            die(f"Workspace already contains {STATE_FILENAME}; use its --state to resume.")
+    else:
+        workspace = tempfile.mkdtemp(prefix="content-review-")
+    source, source_text = _v4_text_descriptor(args.input, workspace=workspace, label="source")
+    chunks = chunk_text(source_text, chunk_lines)
+    if len(chunks) > max_chunks:
+        die(f"Chunk count {len(chunks)} exceeds max_chunks={max_chunks}; increase --chunk-lines or split the document.", code=2)
+    manifest_chunks = []
+    for chunk in chunks:
+        if len(chunk["text"]) > MAX_CHUNK_CHARS:
+            die(f"Chunk {chunk['index']} exceeds max chunk character budget {MAX_CHUNK_CHARS}.", code=2)
+        path = os.path.join(workspace, "chunks", f"chunk_{chunk['index']:03d}.md")
+        _v4_write_text(path, chunk["text"])
+        manifest_chunks.append({
+            "id": f"chunk-{chunk['index']:03d}", "index": chunk["index"],
+            "start_line": chunk["start"], "end_line": chunk["end"],
+            "path": _norm(path), "sha256": _sha256_text(chunk["text"]),
+        })
+    references = []
+    for number, raw in enumerate(_expand_references(args.references), 1):
+        try:
+            descriptor, reference_text = _v4_text_descriptor(raw, workspace=workspace, label="reference", number=number)
+            descriptor["id"] = f"reference-{number:03d}"
+            descriptor["passages"] = _reference_passages(reference_text, descriptor["id"])
+        except _V4CapacityError as exc:
+            die(str(exc), code=2)
+        references.append(descriptor)
+    checks = compute_checks(args.focus)
+    run = {
+        "schema": RUN_SCHEMA,
+        "run_id": uuid.uuid4().hex,
+        "created_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+        "state_generation": 0,
+        "manifest": {
+            "source": source,
+            "chunks": manifest_chunks,
+            "references": references,
+            "requested_language": args.language,
+            "resolved_language": resolve_language(args.language, source_text),
+            "document_language": detect_language(source_text),
+        },
+        "config": {"focus": args.focus, "checks": checks, "chunk_lines": chunk_lines, "keep_workspace": bool(args.keep_workspace)},
+        "cells": {},
+        "coverage": {"claims": [], "expected_matrix": [], "groundings": [], "reference_facts": [], "candidates": []},
+        "progress": {},
+    }
+    local_dimensions = compute_local_dimensions(args.focus)
+    _v4_require_stage_room(run, "local", len(local_dimensions) * len(manifest_chunks))
+    for chunk in manifest_chunks:
+        for dimension, dimension_checks in local_dimensions:
+            _v4_create_cell(
+                run,
+                cell_id=f"local:{dimension}:{chunk['index']:03d}",
+                stage="local",
+                dimension=dimension,
+                checks=dimension_checks,
+                dependencies=[],
+                input_data={"chunk_id": chunk["id"], "chunk_path": chunk["path"], "core_lines": [chunk["start_line"], chunk["end_line"]]},
+            )
+    if references:
+        try:
+            blocks = _v4_claim_blocks(source_text)
+        except _V4CapacityError as exc:
+            die(str(exc), code=2)
+        _v4_require_stage_room(run, "claim", len(blocks))
+        for index, block in enumerate(blocks, 1):
+            _v4_create_cell(
+                run,
+                cell_id=f"reference:claim:{index:03d}",
+                stage="claim",
+                dimension="claim-extraction",
+                checks=[],
+                dependencies=[],
+                input_data=block,
+            )
+    return run, os.path.join(workspace, STATE_FILENAME)
+
+
+def _v4_counts(run: dict[str, Any]) -> dict[str, int]:
+    cells = list(run["cells"].values())
+    return {
+        "planned": len(cells),
+        "dispatched": sum(cell["status"] == "dispatched" for cell in cells),
+        "accepted": sum(cell["status"] == "accepted" for cell in cells),
+        "retryable": sum(cell["status"] == "pending" and cell["attempts"] for cell in cells),
+        "failed": sum(cell["status"] == "failed" for cell in cells),
+        "split": sum(cell["status"] == "split" for cell in cells),
+    }
+
+
+def _v4_status_payload(run: dict[str, Any], state_path: str, *, recovered: bool = False) -> dict[str, Any]:
+    cells = []
+    for cell in _v4_cell_values(run):
+        cells.append({
+            "cell_id": cell["id"], "stage": cell["stage"], "dimension": cell["dimension"],
+            "status": cell["status"], "attempt_count": len(cell["attempts"]),
+            "retry_remaining": max(0, RESULT_MAX_ATTEMPTS - len(cell["attempts"])),
+        })
+    required = [cell for cell in run["cells"].values() if cell["required"]]
+    unverified = any(item.get("status") == "unverified/incomplete" for item in run["coverage"].get("groundings", []))
+    return {
+        "schema": RUN_STATUS_SCHEMA,
+        "run_id": run["run_id"],
+        "state": _norm(os.path.abspath(state_path)),
+        "state_generation": run["state_generation"],
+        "recovered_from_backup": recovered,
+        "complete": bool(required) and all(cell["status"] == "accepted" for cell in required) and not unverified and not run.get("stop_reason"),
+        "counts": _v4_counts(run),
+        "cells": cells,
+        "stop_reason": run.get("stop_reason"),
+    }
+
+
+def cmd_plan_v4(args: argparse.Namespace) -> None:
+    run, state_path = _v4_new_run(args)
+    dispatched = _v4_dispatch_ready(run)
+    _v4_save_state(state_path, run)
+    output = _v4_status_payload(run, state_path)
+    output["ready"] = _v4_ready_tasks(run, dispatched)
+    print(json.dumps(output, ensure_ascii=False, indent=2))
+
+
+def _v4_read_results(path: str) -> list[dict[str, Any]]:
+    try:
+        text = sys.stdin.read() if path == "-" else _v4_read_text(path)
+        raw = json.loads(text)
+    except (OSError, json.JSONDecodeError) as exc:
+        die(f"Cannot read --results: {exc}")
+    if isinstance(raw, dict):
+        raw = raw.get("results")
+    if not isinstance(raw, list) or not all(isinstance(item, dict) for item in raw):
+        die("--results must be a JSON array or an object with a results array")
+    return raw
+
+
+def _v4_record_invalid(cell: dict[str, Any], dispatch_id: str, payload_hash: str, errors: list[str]) -> None:
+    cell["attempts"].append({
+        "dispatch_id": dispatch_id,
+        "payload_hash": payload_hash,
+        "at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+        "errors": errors,
+    })
+    cell["status"] = "failed" if len(cell["attempts"]) >= RESULT_MAX_ATTEMPTS else "pending"
+
+
+def cmd_ingest_v4(args: argparse.Namespace) -> None:
+    try:
+        run, recovered = _v4_load_state(args.state, restore_backup=True)
+    except _V4StateError as exc:
+        die(str(exc))
+    manifest_errors = _v4_validate_manifest(run)
+    if manifest_errors:
+        die("Immutable source/reference validation failed: " + "; ".join(manifest_errors))
+    results = _v4_read_results(args.results)
+    outcomes = []
+    changed = False
+    for item in results:
+        cell_id = item.get("cell_id")
+        dispatch_id = item.get("dispatch_id")
+        payload = item.get("payload")
+        payload_hash = _v4_hash(payload)
+        cell = run["cells"].get(cell_id) if isinstance(cell_id, str) else None
+        if cell is None:
+            outcomes.append({"cell_id": cell_id, "status": "stale", "reason": "unknown cell"})
+            continue
+        dispatch = cell.get("dispatch", {})
+        if cell["status"] == "accepted":
+            if dispatch_id == dispatch.get("dispatch_id") and payload_hash == cell.get("accepted_payload_hash"):
+                outcomes.append({"cell_id": cell_id, "status": "idempotent"})
+            else:
+                outcomes.append({"cell_id": cell_id, "status": "conflict", "reason": "accepted dispatch has a different payload"})
+            continue
+        if cell["status"] != "dispatched" or dispatch_id != dispatch.get("dispatch_id"):
+            outcomes.append({"cell_id": cell_id, "status": "stale", "reason": "not the current dispatch"})
+            continue
+        if (item.get("state_generation") != run["state_generation"]
+                or item.get("dependency_hash") != dispatch.get("dependency_hash")):
+            outcomes.append({"cell_id": cell_id, "status": "stale", "reason": "old state generation or dependency hash"})
+            continue
+        if cell["stage"] == "claim" and isinstance(payload, dict) and isinstance(payload.get("claims"), list) and not _v4_output_within_bound(cell, payload):
+            try:
+                _v4_split_claim_cell(run, cell)
+            except _V4CapacityError as exc:
+                run["stop_reason"] = str(exc)
+                changed = True
+                _v4_save_state(args.state, run)
+                die(str(exc), code=2)
+            outcomes.append({"cell_id": cell_id, "status": "split", "reason": "claim payload exceeded output budget"})
+            changed = True
+            continue
+        errors = _v4_validate_payload(run, cell, payload)
+        if not errors and not _v4_output_within_bound(cell, payload):
+            errors.append(f"payload exceeds {MAX_REDUCER_OUTPUT_CHARS} characters")
+        if errors:
+            _v4_record_invalid(cell, str(dispatch_id), payload_hash, errors)
+            outcomes.append({"cell_id": cell_id, "status": "invalid", "errors": errors})
+            changed = True
+            continue
+        cell["status"] = "accepted"
+        cell["accepted_payload"] = payload
+        cell["accepted_payload_hash"] = payload_hash
+        outcomes.append({"cell_id": cell_id, "status": "accepted"})
+        changed = True
+    if changed:
+        try:
+            _v4_advance(run)
+            dispatched = _v4_dispatch_ready(run)
+        except _V4CapacityError as exc:
+            run["stop_reason"] = str(exc)
+            _v4_save_state(args.state, run)
+            die(str(exc), code=2)
+        _v4_save_state(args.state, run)
+    else:
+        dispatched = []
+    output = _v4_status_payload(run, args.state, recovered=recovered)
+    output["outcomes"] = outcomes
+    output["ready"] = _v4_ready_tasks(run, dispatched)
+    print(json.dumps(output, ensure_ascii=False, indent=2))
+
+
+def cmd_status_v4(args: argparse.Namespace) -> None:
+    try:
+        run, recovered = _v4_load_state(args.state, restore_backup=False)
+    except _V4StateError as exc:
+        die(str(exc))
+    output = _v4_status_payload(run, args.state, recovered=recovered)
+    output["ready"] = _v4_ready_tasks(run)
+    print(json.dumps(output, ensure_ascii=False, indent=2))
+
+
+def _v4_uncovered_results(run: dict[str, Any]) -> list[dict[str, Any]]:
+    output = []
+    for cell in _v4_cell_values(run):
+        if cell["required"] and cell["status"] != "accepted":
+            output.append({"cell": cell, "status": "FAILED", "errors": [cell["status"]]})
+    for grounding in run["coverage"].get("groundings", []):
+        if grounding.get("status") == "unverified/incomplete":
+            output.append({"cell": {"dimension": "claim-grounding", "stage": "reference"}, "status": "FAILED", "errors": ["unverified/incomplete"]})
+    return output
+
+
+def _v4_assemble_findings(run: dict[str, Any]) -> list[dict[str, Any]]:
+    values = []
+    for cell in _v4_cell_values(run):
+        if cell["status"] == "accepted" and cell["stage"] in {"local", "global", "coverage", "adjudication"}:
+            values.extend(cell.get("accepted_payload", {}).get("findings", []))
+    return _dedupe(values)
+
+
+def _v4_cleanup_workspace(state_path: str) -> None:
+    workspace = os.path.dirname(os.path.abspath(state_path))
+    expected_state = os.path.join(workspace, STATE_FILENAME)
+    if os.path.normcase(os.path.abspath(state_path)) != os.path.normcase(expected_state):
+        raise _V4StateError("refusing to clean a workspace whose state file is not run-state.json")
+    # workspace is the explicit run directory selected by plan, never a
+    # computed parent; resolving it before deletion prevents path traversal.
+    resolved = os.path.realpath(workspace)
+    if not os.path.isfile(os.path.join(resolved, STATE_FILENAME)):
+        raise _V4StateError("refusing to clean workspace without its run-state.json")
+    shutil.rmtree(resolved)
+
+
+def cmd_assemble_v4(args: argparse.Namespace) -> None:
+    try:
+        run, recovered = _v4_load_state(args.state, restore_backup=True)
+    except _V4StateError as exc:
+        die(str(exc))
+    manifest_errors = _v4_validate_manifest(run)
+    if manifest_errors:
+        die("Immutable source/reference validation failed: " + "; ".join(manifest_errors))
+    findings = _v4_assemble_findings(run)
+    findings.sort(key=lambda item: (_first_line(item.get("locations", [])) or sys.maxsize,
+                                   SEVERITY_RANK.get(item.get("severity", "medium"), 1)))
+    uncovered = _v4_uncovered_results(run)
+    incomplete = bool(uncovered or run.get("stop_reason"))
+    source = run["manifest"]["source"]
+    pseudo_plan = {
+        "resolved_language": run["manifest"]["resolved_language"],
+        "document_language": run["manifest"]["document_language"],
+        "input": source["original"],
+        "source": {"diff_applicable": source["diff_applicable"], "original": source["read_path"]},
+        "reference_artifacts": run["manifest"].get("references", []),
+    }
+    diff_status, diff_reason, diff = "not_requested", "", ""
+    if args.diff:
+        if not source["diff_applicable"]:
+            diff_status = "not_applicable"
+            diff_reason = "Diffs apply only to direct .md/.markdown/.txt sources, not converted or URL inputs."
+        elif incomplete:
+            diff_status = "suppressed_incomplete"
+            diff_reason = "Diff suppressed because required review cells are incomplete."
+        else:
+            diff = _build_diff(pseudo_plan, findings)
+            diff_status = "generated" if diff else "no_applicable_edits"
+    report = _build_report(pseudo_plan, [], findings, incomplete, diff, uncovered_results=uncovered)
+    output = {
+        "schema": ASSEMBLY_SCHEMA,
+        "run_id": run["run_id"],
+        "state": _norm(os.path.abspath(args.state)),
+        "state_recovered_from_backup": recovered,
+        "status": "partial" if incomplete else "complete",
+        "complete": not incomplete,
+        "incomplete": incomplete,
+        "report": report,
+        "deduped_count": len(findings),
+        "diff_status": diff_status,
+        "diff_reason": diff_reason,
+    }
+    if incomplete and args.output and not args.accept_partial:
+        die("Required cells are incomplete; pass --accept-partial to write a visibly partial artifact")
+    if args.output:
+        _v4_write_text(os.path.abspath(args.output), report)
+        stdout_output = {key: value for key, value in output.items() if key != "report"}
+        stdout_output["output"] = _norm(os.path.abspath(args.output))
+        print(json.dumps(stdout_output, ensure_ascii=False, indent=2))
+    else:
+        print(json.dumps(output, ensure_ascii=False, indent=2))
+    sys.stdout.flush()
+    keep = bool(args.keep_workspace or run["config"].get("keep_workspace"))
+    if not incomplete and not keep:
+        try:
+            _v4_cleanup_workspace(args.state)
+        except _V4StateError as exc:
+            print(f"WARNING: report succeeded but workspace was retained: {exc}", file=sys.stderr)
+
+
 def show_version() -> None:
-    print(f"content-review review_plan v{VERSION}")
+    print(f"content-review review_plan v{VERSION} ({RUN_SCHEMA})")
 
 
 def main() -> None:
@@ -1967,46 +3111,43 @@ def main() -> None:
         CONFIG_PATH = os.path.abspath(early.config)
     load_config()
 
-    parser = argparse.ArgumentParser(description="content-review v3 deterministic planner and validator")
+    parser = argparse.ArgumentParser(description="content-review v4 dynamic review-run planner")
     parser.add_argument("--config", default="", help="Path to config.json")
     parser.add_argument("--version", action="store_true", help="Show version")
     sub = parser.add_subparsers(dest="command")
 
-    plan = sub.add_parser("plan", help="Prepare canonical artifacts and enumerate the full review DAG")
+    plan = sub.add_parser("plan", help="Create one ReviewRun/v4 state and emit its initial ready tasks")
     plan.add_argument("--input", required=True)
     plan.add_argument("--focus", choices=sorted(FOCUS_CHECKS), default="all")
     plan.add_argument("--references", nargs="*", default=None)
     plan.add_argument("--language", choices=("auto", "en", "zh"), default="auto")
     plan.add_argument("--chunk-lines", type=int, default=None)
-    plan.add_argument("--workspace", default=None, help="Base directory; a unique run_id child is always created")
-    plan.add_argument("--plan-output", default=None)
-    plan.add_argument("--dry-run", action="store_true")
+    plan.add_argument("--workspace", default=None, help="Run directory; defaults to a system temporary directory")
+    plan.add_argument("--keep-workspace", action="store_true")
 
-    validate = sub.add_parser("validate-cell", help="Strictly validate one v3 result and record its attempt")
-    validate.add_argument("--plan", required=True)
-    validate.add_argument("--result", required=True)
-    validate.add_argument("--cell-id", default=None)
+    ingest = sub.add_parser("ingest", help="Validate a batch of stage payloads and advance the dynamic DAG")
+    ingest.add_argument("--state", required=True)
+    ingest.add_argument("--results", required=True, help="JSON file path or - for stdin")
 
-    status = sub.add_parser("status", help="Report deterministic coverage and retry state")
-    status.add_argument("--plan", required=True)
-    status.add_argument("--cells-dir", required=True)
+    status = sub.add_parser("status", help="Read state, retry accounting, and currently ready tasks")
+    status.add_argument("--state", required=True)
 
-    assemble = sub.add_parser("assemble", help="Assemble only accepted v3 cell results")
-    assemble.add_argument("--plan", required=True)
-    assemble.add_argument("--cells-dir", required=True)
+    assemble = sub.add_parser("assemble", help="Verify final artifacts and render a ReviewRun/v4 report")
+    assemble.add_argument("--state", required=True)
     assemble.add_argument("--output", default=None)
     assemble.add_argument("--accept-partial", action="store_true")
     assemble.add_argument("--diff", action="store_true", help="Opt in to a diff for direct text sources")
+    assemble.add_argument("--keep-workspace", action="store_true")
 
     args = parser.parse_args()
     if args.command == "plan":
-        cmd_plan(args)
-    elif args.command == "validate-cell":
-        cmd_validate_cell(args)
+        cmd_plan_v4(args)
+    elif args.command == "ingest":
+        cmd_ingest_v4(args)
     elif args.command == "status":
-        cmd_status(args)
+        cmd_status_v4(args)
     elif args.command == "assemble":
-        cmd_assemble(args)
+        cmd_assemble_v4(args)
     else:
         parser.print_help()
         raise SystemExit(1)
