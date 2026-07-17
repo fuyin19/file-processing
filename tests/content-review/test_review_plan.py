@@ -125,6 +125,29 @@ class TestRoutingAndCoreHelpers:
         for excluded in ("source code", "prs or diffs", "tests", "configs", "logs", "apis", "skill.md", "agents.md", "prompts"):
             assert excluded in lowered
 
+    def test_completion_handoff_contract(self):
+        skill_dir = HERE.parent.parent / "skills" / "content-review"
+        text = (skill_dir / "SKILL.md").read_text(encoding="utf-8")
+        lowered = text.lower()
+
+        assert "## completion handoff" in lowered
+        for required in (
+            "reviewassembly/v4",
+            "status: complete",
+            "complete: true",
+            "status: partial",
+            "incomplete: true",
+            "legacy_single_agent",
+            "outside the rendered report",
+            "explicitly selects",
+            "acknowledgement or thanks is not authorization",
+            "non-zero exit",
+        ):
+            assert required in lowered
+
+        template = (skill_dir / "assets" / "report-template.md").read_text(encoding="utf-8")
+        assert "completion handoff" not in template.lower()
+
     def test_chunking_keeps_fences_and_tables_atomic(self):
         text = "intro\n\n```python\n" + "\n".join(f"x{i}" for i in range(30)) + "\n```\n\n| h |\n|---|\n| v |"
         chunks = review_plan.chunk_text(text, 5)
