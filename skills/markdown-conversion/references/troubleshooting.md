@@ -63,6 +63,37 @@ pip install markitdown
 - Consider splitting very large PDFs first
 - Use `--no-frontmatter` for slightly faster processing
 
+## OKF Run Is Waiting Instead of Writing a File
+
+**Symptoms:** `--okf` or `--workspace` exits `3`, prints `[READY]`, and the final
+Markdown path does not exist.
+
+**Meaning:** This is the expected review boundary. Conversion succeeded into an
+isolated temporary run, but semantic frontmatter has not been approved or
+applied.
+
+**Next step:** Open the printed `run.json` and continue with
+`/file-processing:okf-frontmatter` to create a proposal, seal a plan, review it,
+and apply that exact plan. Failures and `--plan-only` retain the printed run
+directory for recovery. A successful Apply removes it unless retention was
+requested.
+
+## Cortex Mode Exits 4
+
+**Cause:** Cortex is missing from `PATH`, the workspace is invalid, its method
+contract is not compatible with 2.1, or its active policy is invalid or changed.
+
+**Solution:** Repair the Cortex installation/workspace/policy and start a new
+OKF run. The plugin does not install Cortex and does not downgrade
+`--workspace` to generic OKF.
+
+## ruamel.yaml Version Is Incompatible
+
+OKF mode requires `ruamel.yaml>=0.17,<0.18`. If it is absent, the pipeline
+installs that range. If another installed version is incompatible, use an
+isolated Python environment with the supported range; the pipeline will not
+downgrade the existing environment automatically.
+
 ## FFmpeg Warning (Media Files)
 
 **Symptoms:** `RuntimeWarning: Couldn't find ffmpeg or avconv - defaulting to ffmpeg, but may not work`

@@ -1,5 +1,5 @@
 """
-Tests for pipeline.py (v4.0.0 — document-based architecture).
+Tests for pipeline.py (v4.1.0 — document-based architecture).
 
 Run from project root: pytest scripts/test_pipeline.py -v
 
@@ -9,6 +9,8 @@ Architecture note:
   are tested directly. Integration tests use real temp files.
 """
 import os
+import json
+from pathlib import Path
 import subprocess
 import tempfile
 import pytest
@@ -529,6 +531,9 @@ def test_version_flag():
     assert 'Dependencies:' in stdout
     # Should show pip install names (not import names)
     assert 'opencc-python-reimplemented' in stdout
+    assert 'markdown-conversion v4.1.0' in stdout
+    assert 'ruamel.yaml:' in stdout
+    assert 'cortex:' in stdout
 
 
 def test_config_flag_uses_alternate_config(tmp_path):
@@ -709,6 +714,89 @@ def test_keep_images_flag_in_help():
     assert result.returncode == 0
     stdout = result.stdout.decode('utf-8', errors='replace')
     assert '--keep-images' in stdout
+
+
+def test_okf_flags_in_help():
+    """OKF integration flags must be real pipeline CLI arguments."""
+    result = subprocess.run(SCRIPT + ['--help'], capture_output=True)
+    assert result.returncode == 0
+    stdout = result.stdout.decode('utf-8', errors='replace')
+    assert '--okf' in stdout
+    assert '--workspace' in stdout
+    assert '--okf-run-dir' in stdout
+
+
+def test_okf_and_no_frontmatter_are_mutually_exclusive(tmp_path):
+    src = tmp_path / 'source.txt'
+    src.write_text('Hello', encoding='utf-8')
+    result = subprocess.run(
+        SCRIPT + CONFIG_ARG + ['--input', str(src), '--okf', '--no-frontmatter'],
+        capture_output=True,
+    )
+    assert result.returncode == 1
+    assert 'mutually exclusive' in result.stderr.decode('utf-8', errors='replace').lower()
+
+
+def test_okf_mode_stages_without_creating_final_output(tmp_path):
+    src = tmp_path / 'source.txt'
+    src.write_text('# Title\n\nBody.', encoding='utf-8')
+    out = tmp_path / 'final.md'
+    run_dir = tmp_path / 'okf-run'
+    result = subprocess.run(
+        SCRIPT + CONFIG_ARG + [
+            '--input', str(src), '--output-path', str(out), '--okf',
+            '--okf-run-dir', str(run_dir),
+        ],
+        capture_output=True,
+    )
+    assert result.returncode == 3, result.stderr.decode('utf-8', errors='replace')
+    assert not out.exists()
+    assert (run_dir / 'run.json').exists()
+    stdout = result.stdout.decode('utf-8', errors='replace')
+    assert '[READY]' in stdout
+    assert 'awaiting' in stdout.lower()
+
+
+def test_workspace_implies_okf_and_missing_workspace_exits_4(tmp_path):
+    src = tmp_path / 'source.txt'
+    src.write_text('Hello', encoding='utf-8')
+    out = tmp_path / 'final.md'
+    result = subprocess.run(
+        SCRIPT + CONFIG_ARG + [
+            '--input', str(src), '--output-path', str(out),
+            '--workspace', str(tmp_path / 'missing-workspace'),
+        ],
+        capture_output=True,
+    )
+    assert result.returncode == 4
+    assert not out.exists()
+    assert 'workspace' in result.stderr.decode('utf-8', errors='replace').lower()
+
+
+def test_okf_batch_stages_all_converted_files_without_final_outputs(tmp_path):
+    source_dir = tmp_path / 'source'
+    source_dir.mkdir()
+    (source_dir / 'one.txt').write_text('# One\n', encoding='utf-8')
+    nested = source_dir / 'nested'
+    nested.mkdir()
+    (nested / 'two.txt').write_text('# Two\n', encoding='utf-8')
+    output_dir = tmp_path / 'final'
+    run_dir = tmp_path / 'okf-run'
+    result = subprocess.run(
+        SCRIPT + CONFIG_ARG + [
+            '--input-dir', str(source_dir), '--output-path', str(output_dir),
+            '--okf', '--okf-run-dir', str(run_dir),
+        ],
+        capture_output=True,
+    )
+    assert result.returncode == 3, result.stderr.decode('utf-8', errors='replace')
+    assert not output_dir.exists()
+    run = json.loads((run_dir / 'run.json').read_text(encoding='utf-8'))
+    assert len(run['items']) == 2
+    assert {Path(item['target_path']).relative_to(output_dir).as_posix() for item in run['items']} == {
+        'one.md',
+        'nested/two.md',
+    }
 
 
 def test_default_strips_images_subprocess(tmp_path):
