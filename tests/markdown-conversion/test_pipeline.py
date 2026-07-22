@@ -1,5 +1,5 @@
 """
-Tests for pipeline.py (v4.1.0 — document-based architecture).
+Tests for pipeline.py (v5.0.0 — deterministic draft frontmatter architecture).
 
 Run from project root: pytest scripts/test_pipeline.py -v
 
@@ -84,25 +84,43 @@ def test_convert_chinese_mixed_all_converted():
     assert '歡' not in result
 
 
-def test_inject_frontmatter_defaults():
-    """Frontmatter template should contain all required fields."""
+def _frontmatter_lines(document):
+    return document.split('---\n', 2)[1].splitlines()
+
+
+def test_inject_frontmatter_is_exact_five_field_draft():
+    """Default frontmatter has exactly the required fields in stable order."""
     from pipeline import inject_frontmatter
-    result = inject_frontmatter('Hello', '/path/to/file.pdf', '2026-03-23T10:00:00')
+    result = inject_frontmatter('Hello', '/path/to/file.pdf', '2026-03-23')
     assert result.startswith('---')
-    assert 'source: "/path/to/file.pdf"' in result
-    assert 'converted_at: "2026-03-23T10:00:00"' in result
-    assert 'converted_by: "markitdown"' in result
+    assert _frontmatter_lines(result) == [
+        'type: ""',
+        'title: "file"',
+        'description: ""',
+        'tags: []',
+        'timestamp: "2026-03-23"',
+    ]
+    assert 'resource:' not in result
     assert 'Hello' in result
 
 
-def test_inject_frontmatter_slashes_normalized():
-    """Backslashes in source path should be normalized to forward slashes."""
+def test_inject_frontmatter_prefers_first_h1_for_title():
     from pipeline import inject_frontmatter
-    result = inject_frontmatter('x', 'C:\\Users\\user\\doc.pdf', '2026-01-01T00:00:00')
-    assert 'C:/Users/user/doc.pdf' in result
-    # no backslashes in frontmatter
-    frontmatter = result.split('---')[1]
-    assert '\\' not in frontmatter
+    result = inject_frontmatter('# Report Title\n\nBody', '/path/to/file.pdf', '2026-03-23T10:00:00')
+    assert 'title: "Report Title"' in result
+
+
+def test_inject_frontmatter_ignores_fenced_code_and_trims_closing_hashes():
+    from pipeline import inject_frontmatter
+    body = '```markdown\n# Not a heading\n```\n\n# Actual Title ###\n'
+    result = inject_frontmatter(body, '/path/to/file.pdf', '2026-03-23')
+    assert 'title: "Actual Title"' in result
+
+
+def test_inject_frontmatter_uses_source_stem_without_h1():
+    from pipeline import inject_frontmatter
+    result = inject_frontmatter('Body only', '/path/to/quarterly.report.pdf', '2026-03-23')
+    assert 'title: "quarterly.report"' in result
 
 
 # --- Vault write tests (pure function) ---------------------------------------
@@ -148,7 +166,7 @@ def test_write_to_vault_rename_creates_dated_copy(tmp_path):
 
 # --- Integration tests (real files, full pipeline) -----------------------------
 
-def _run_pipeline(input_path, source='', extra_args=None, output_path=None):
+def _run_pipeline(input_path, extra_args=None, output_path=None):
     """Run pipeline.py with a real file. Returns (returncode, stdout, stderr)."""
     if output_path is None:
         fd, output_path = tempfile.mkstemp(suffix='.md')
@@ -158,8 +176,6 @@ def _run_pipeline(input_path, source='', extra_args=None, output_path=None):
         '--input', input_path,
         '--output-path', output_path,
     ]
-    if source:
-        args += ['--source', source]
     if extra_args:
         args += extra_args
     result = subprocess.run(args, capture_output=True)
@@ -173,13 +189,18 @@ def test_full_pipeline_creates_vault_file(tmp_path):
     src.write_text('Hello world', encoding='utf-8')
     out = tmp_path / 'note.md'
 
-    code, out_str, err, _ = _run_pipeline(str(src), source=str(src), output_path=str(out))
+    code, out_str, err, _ = _run_pipeline(str(src), output_path=str(out))
     assert code == 0, err
     assert out.exists()
     content = out.read_text(encoding='utf-8')
     assert content.startswith('---')
-    assert 'source:' in content
-    assert 'converted_by: "markitdown"' in content
+    assert _frontmatter_lines(content)[:4] == [
+        'type: ""',
+        'title: "source"',
+        'description: ""',
+        'tags: []',
+    ]
+    assert 'resource:' not in content
     assert 'Hello world' in content
 
 
@@ -189,7 +210,7 @@ def test_full_pipeline_no_frontmatter_flag(tmp_path):
     src.write_text('Content here', encoding='utf-8')
     out = tmp_path / 'note.md'
 
-    code, _, err, _ = _run_pipeline(str(src), source=str(src), output_path=str(out), extra_args=['--no-frontmatter'])
+    code, _, err, _ = _run_pipeline(str(src), output_path=str(out), extra_args=['--no-frontmatter'])
     assert code == 0, err
     content = out.read_text(encoding='utf-8')
     assert not content.startswith('---')
@@ -201,7 +222,7 @@ def test_full_pipeline_preserves_chinese(tmp_path):
     src.write_text('你好世界', encoding='utf-8')
     out = tmp_path / 'note.md'
 
-    code, _, err, _ = _run_pipeline(str(src), source=str(src), output_path=str(out))
+    code, _, err, _ = _run_pipeline(str(src), output_path=str(out))
     assert code == 0, err
     content = out.read_text(encoding='utf-8')
     assert '你好世界' in content
@@ -213,9 +234,65 @@ def test_success_message_printed_to_stdout(tmp_path):
     src.write_text('content', encoding='utf-8')
     out = tmp_path / 'note.md'
 
-    code, stdout, err, _ = _run_pipeline(str(src), source=str(src), output_path=str(out))
+    code, stdout, err, _ = _run_pipeline(str(src), output_path=str(out))
     assert code == 0, err
     assert '[OK]' in stdout or 'Converted' in stdout
+
+
+@pytest.mark.parametrize('timestamp', [
+    '2026-07-22',
+    '2026-07-22T14:05:06+08:00',
+    '2026-07-22T14:05:06.123456-04:30',
+    '2026-07-22T06:05:06Z',
+])
+def test_timestamp_override_is_validated_and_preserved_exactly(tmp_path, timestamp):
+    src = tmp_path / 'source.txt'
+    src.write_text('Body', encoding='utf-8')
+    out = tmp_path / 'note.md'
+
+    code, _, err, _ = _run_pipeline(
+        str(src), output_path=str(out), extra_args=['--timestamp', timestamp]
+    )
+
+    assert code == 0, err
+    assert f'timestamp: "{timestamp}"' in out.read_text(encoding='utf-8')
+
+
+@pytest.mark.parametrize('timestamp', [
+    '2026-07-22T14:05:06',
+    '2026-07-22 14:05:06+08:00',
+    '2026-07-22T14:05:06+0800',
+    '2026-07-22T14:05:06z',
+    '2026/07/22',
+    'not-a-time',
+])
+def test_timestamp_override_rejects_naive_datetime_and_non_iso_values(tmp_path, timestamp):
+    src = tmp_path / 'source.txt'
+    src.write_text('Body', encoding='utf-8')
+    out = tmp_path / 'note.md'
+
+    code, _, err, _ = _run_pipeline(
+        str(src), output_path=str(out), extra_args=['--timestamp', timestamp]
+    )
+
+    assert code == 1
+    assert '--timestamp' in err
+    assert not out.exists()
+
+
+def test_default_timestamp_is_timezone_aware(tmp_path):
+    src = tmp_path / 'source.txt'
+    src.write_text('Body', encoding='utf-8')
+    out = tmp_path / 'note.md'
+
+    code, _, err, _ = _run_pipeline(str(src), output_path=str(out))
+
+    assert code == 0, err
+    timestamp_line = _frontmatter_lines(out.read_text(encoding='utf-8'))[-1]
+    value = timestamp_line.removeprefix('timestamp: "').removesuffix('"')
+    parsed = __import__('datetime').datetime.fromisoformat(value.replace('Z', '+00:00'))
+    assert parsed.tzinfo is not None
+    assert parsed.utcoffset() is not None
 
 
 # --- Config loading tests -------------------------------------------------------
@@ -319,18 +396,32 @@ def test_batch_converts_multiple_files(tmp_path):
     """Batch mode should convert all supported files in a directory."""
     src_dir = tmp_path / 'input'
     src_dir.mkdir()
-    (src_dir / 'a.txt').write_text('File A', encoding='utf-8')
+    (src_dir / 'a.txt').write_text('![Chart](chart.png)\n\nFile A', encoding='utf-8')
     (src_dir / 'b.txt').write_text('File B', encoding='utf-8')
 
     out_dir = tmp_path / 'output'
     out_dir.mkdir()
 
-    code, stdout, stderr = _run_batch(str(src_dir), str(out_dir))
+    timestamp = '2026-07-22T14:05:06+08:00'
+    code, stdout, stderr = _run_batch(
+        str(src_dir), str(out_dir), extra_args=['--timestamp', timestamp]
+    )
     assert code == 0, stderr
     assert (out_dir / 'a.md').exists()
     assert (out_dir / 'b.md').exists()
-    assert 'File A' in (out_dir / 'a.md').read_text(encoding='utf-8')
+    first = (out_dir / 'a.md').read_text(encoding='utf-8')
+    assert 'File A' in first
     assert 'File B' in (out_dir / 'b.md').read_text(encoding='utf-8')
+    assert _frontmatter_lines(first) == [
+        'type: ""',
+        'title: "a"',
+        'description: ""',
+        'tags: []',
+        f'timestamp: "{timestamp}"',
+    ]
+    assert 'chart.png' not in first
+    assert '![' not in first
+    assert 'resource:' not in first
 
 
 def test_batch_mirrors_subdirectory_structure(tmp_path):
@@ -531,9 +622,9 @@ def test_version_flag():
     assert 'Dependencies:' in stdout
     # Should show pip install names (not import names)
     assert 'opencc-python-reimplemented' in stdout
-    assert 'markdown-conversion v4.1.0' in stdout
-    assert 'ruamel.yaml:' in stdout
-    assert 'cortex:' in stdout
+    assert 'markdown-conversion v5.0.0' in stdout
+    assert 'ruamel.yaml:' not in stdout
+    assert 'cortex:' not in stdout
 
 
 def test_config_flag_uses_alternate_config(tmp_path):
@@ -705,108 +796,61 @@ def test_precheck_url_not_accepted_with_input_dir(tmp_path):
     assert code == 1
 
 
-# --- --keep-images integration tests -------------------------------------------
+# --- Removed runtime-coupling options ------------------------------------------
 
 
-def test_keep_images_flag_in_help():
-    """--keep-images flag should appear in --help output."""
+def test_removed_flags_are_not_advertised():
     result = subprocess.run(SCRIPT + ['--help'], capture_output=True)
     assert result.returncode == 0
     stdout = result.stdout.decode('utf-8', errors='replace')
-    assert '--keep-images' in stdout
+    for option in (
+        '--keep-images', '--okf', '--workspace', '--okf-run-dir',
+        '--accept-partial', '--source', '--converted-at',
+    ):
+        assert option not in stdout
 
 
-def test_okf_flags_in_help():
-    """OKF integration flags must be real pipeline CLI arguments."""
-    result = subprocess.run(SCRIPT + ['--help'], capture_output=True)
-    assert result.returncode == 0
-    stdout = result.stdout.decode('utf-8', errors='replace')
-    assert '--okf' in stdout
-    assert '--workspace' in stdout
-    assert '--okf-run-dir' in stdout
-
-
-def test_okf_and_no_frontmatter_are_mutually_exclusive(tmp_path):
-    src = tmp_path / 'source.txt'
-    src.write_text('Hello', encoding='utf-8')
-    result = subprocess.run(
-        SCRIPT + CONFIG_ARG + ['--input', str(src), '--okf', '--no-frontmatter'],
-        capture_output=True,
-    )
-    assert result.returncode == 1
-    assert 'mutually exclusive' in result.stderr.decode('utf-8', errors='replace').lower()
-
-
-def test_okf_mode_stages_without_creating_final_output(tmp_path):
-    src = tmp_path / 'source.txt'
-    src.write_text('# Title\n\nBody.', encoding='utf-8')
-    out = tmp_path / 'final.md'
-    run_dir = tmp_path / 'okf-run'
-    result = subprocess.run(
-        SCRIPT + CONFIG_ARG + [
-            '--input', str(src), '--output-path', str(out), '--okf',
-            '--okf-run-dir', str(run_dir),
-        ],
-        capture_output=True,
-    )
-    assert result.returncode == 3, result.stderr.decode('utf-8', errors='replace')
-    assert not out.exists()
-    assert (run_dir / 'run.json').exists()
-    stdout = result.stdout.decode('utf-8', errors='replace')
-    assert '[READY]' in stdout
-    assert 'awaiting' in stdout.lower()
-
-
-def test_workspace_implies_okf_and_missing_workspace_exits_4(tmp_path):
+@pytest.mark.parametrize('option', [
+    '--keep-images', '--okf', '--workspace', '--okf-run-dir', '--accept-partial',
+    '--source', '--converted-at',
+])
+def test_removed_flags_are_rejected(tmp_path, option):
     src = tmp_path / 'source.txt'
     src.write_text('Hello', encoding='utf-8')
     out = tmp_path / 'final.md'
+    extra = [option]
+    if option in {'--workspace', '--okf-run-dir', '--source', '--converted-at'}:
+        extra.append(str(tmp_path / 'value'))
     result = subprocess.run(
-        SCRIPT + CONFIG_ARG + [
-            '--input', str(src), '--output-path', str(out),
-            '--workspace', str(tmp_path / 'missing-workspace'),
-        ],
+        SCRIPT + CONFIG_ARG + ['--input', str(src), '--output-path', str(out), *extra],
         capture_output=True,
     )
-    assert result.returncode == 4
+    assert result.returncode == 2
     assert not out.exists()
-    assert 'workspace' in result.stderr.decode('utf-8', errors='replace').lower()
+    assert 'unrecognized arguments' in result.stderr.decode('utf-8', errors='replace').lower()
 
 
-def test_okf_batch_stages_all_converted_files_without_final_outputs(tmp_path):
-    source_dir = tmp_path / 'source'
-    source_dir.mkdir()
-    (source_dir / 'one.txt').write_text('# One\n', encoding='utf-8')
-    nested = source_dir / 'nested'
-    nested.mkdir()
-    (nested / 'two.txt').write_text('# Two\n', encoding='utf-8')
-    output_dir = tmp_path / 'final'
-    run_dir = tmp_path / 'okf-run'
-    result = subprocess.run(
-        SCRIPT + CONFIG_ARG + [
-            '--input-dir', str(source_dir), '--output-path', str(output_dir),
-            '--okf', '--okf-run-dir', str(run_dir),
-        ],
-        capture_output=True,
-    )
-    assert result.returncode == 3, result.stderr.decode('utf-8', errors='replace')
-    assert not output_dir.exists()
-    run = json.loads((run_dir / 'run.json').read_text(encoding='utf-8'))
-    assert len(run['items']) == 2
-    assert {Path(item['target_path']).relative_to(output_dir).as_posix() for item in run['items']} == {
-        'one.md',
-        'nested/two.md',
-    }
+@pytest.mark.parametrize('option', [
+    '--keep-images', '--okf', '--workspace', '--okf-run-dir', '--accept-partial',
+    '--source', '--converted-at',
+])
+def test_removed_flags_are_rejected_even_with_version(option):
+    args = ['--version', option]
+    if option in {'--workspace', '--okf-run-dir', '--source', '--converted-at'}:
+        args.append('value')
+    result = subprocess.run(SCRIPT + args, capture_output=True)
+    assert result.returncode == 2
+    assert 'unrecognized arguments' in result.stderr.decode('utf-8', errors='replace').lower()
 
 
 def test_default_strips_images_subprocess(tmp_path):
-    """Without --keep-images, pipeline should strip image syntax from output."""
+    """The converter should always strip image syntax from output."""
     src = tmp_path / 'images.txt'
     src.write_text('# Title\n\n![Chart](chart.png)\n\nSome text.\n\n![Graph](graph.jpg)\n\nMore text.', encoding='utf-8')
     out = tmp_path / 'out.md'
 
     code, stdout, stderr, _ = _run_pipeline(
-        str(src), source=str(src), output_path=str(out),
+        str(src), output_path=str(out),
     )
     assert code == 0, stderr
     content = out.read_text(encoding='utf-8')
@@ -814,23 +858,6 @@ def test_default_strips_images_subprocess(tmp_path):
     assert 'chart.png' not in content
     assert 'Some text.' in content
     assert 'More text.' in content
-
-
-def test_keep_images_flag_preserves_images(tmp_path):
-    """With --keep-images, pipeline should preserve image syntax in output."""
-    src = tmp_path / 'images.txt'
-    src.write_text('# Title\n\n![Chart](chart.png)\n\nSome text.\n\n![Graph](graph.jpg)\n\nMore text.', encoding='utf-8')
-    out = tmp_path / 'out.md'
-
-    code, stdout, stderr, _ = _run_pipeline(
-        str(src), source=str(src), output_path=str(out),
-        extra_args=['--keep-images'],
-    )
-    assert code == 0, stderr
-    content = out.read_text(encoding='utf-8')
-    assert '![' in content
-    assert 'chart.png' in content
-    assert 'Some text.' in content
 
 
 # --- Additional unit tests ------------------------------------------------------

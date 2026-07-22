@@ -4,17 +4,16 @@ pipeline.py - markdown-conversion pipeline.
 
 Steps:
   1. Convert document using markitdown Python API (basic)
-  2. Fix encoding (single-pass chardet + compiled regex mojibake scan)
-  3. Convert Traditional → Simplified Chinese (two-pass opencc with stability gate)
-  4. Inject legacy YAML frontmatter (unless --no-frontmatter/--okf)
-  5. Write directly, or stage an OKF run for reviewed Plan -> Apply
+  2. Strip image markers
+  3. Fix encoding (single-pass chardet + compiled regex mojibake scan)
+  4. Convert Traditional → Simplified Chinese (two-pass opencc with stability gate)
+  5. Inject deterministic draft YAML frontmatter (unless --no-frontmatter)
+  6. Write the final Markdown directly
 
 Exit codes:
   0 - success
   1 - gate failure or error (message on stderr)
   2 - output file exists and neither --overwrite nor --rename passed
-  3 - OKF conversion staged; metadata review and apply are required
-  4 - Cortex CLI unavailable/incompatible or active policy invalid
 """
 import sys
 import os
@@ -23,14 +22,10 @@ import json
 import argparse
 import datetime
 import urllib.parse
-import importlib.metadata
-import shutil
-import subprocess
-import tempfile
 from pathlib import Path
 from typing import NoReturn
 
-VERSION = '4.1.0'
+VERSION = '5.0.0'
 
 # (pkg_import_name, pip_install_name, required)
 DEPS = [
@@ -51,6 +46,11 @@ _orphan_image_re = re.compile(
 )
 # Regex for collapsing 3+ blank lines into 2
 _blank_lines_re = re.compile(r'\n{3,}')
+_h1_re = re.compile(r'^ {0,3}#(?!#)\s+(.+?)(?:\s+#+\s*)?$')
+_fence_re = re.compile(r'^ {0,3}(`{3,}|~{3,})')
+_rfc3339_datetime_re = re.compile(
+    r'^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$'
+)
 
 
 def is_url(path: str) -> bool:
@@ -84,24 +84,10 @@ def strip_images(text: str) -> str:
     text = _blank_lines_re.sub('\n\n', text)
     return text
 
-FRONTMATTER_TEMPLATE = (
-    '---\n'
-    'source: "{source}"\n'
-    'converted_at: "{converted_at}"\n'
-    'converted_by: "markitdown"\n'
-    '---\n\n'
-)
-
 
 def die(msg: str) -> NoReturn:
     print(f'ERROR: {msg}', file=sys.stderr)
     sys.exit(1)
-
-
-def die_code(msg: str, code: int) -> NoReturn:
-    """Print a gate error and exit with an explicit public exit code."""
-    print(f'ERROR: {msg}', file=sys.stderr)
-    sys.exit(code)
 
 
 def _ensure_package(pkg: str, install_name: str | None = None):
@@ -180,16 +166,82 @@ def convert_chinese(text: str) -> str:
     return pass2
 
 
-def inject_frontmatter(text: str, source: str, converted_at: str) -> str:
-    """Prepend YAML frontmatter. Normalizes backslashes in source to forward slashes."""
-    source = source.replace('\\', '/').replace('"', '\\"')
-    fm = FRONTMATTER_TEMPLATE.format(source=source, converted_at=converted_at)
+def _title_from_text_or_source(text: str, source: str) -> str:
+    fence_char = None
+    fence_length = 0
+    for line in text.splitlines():
+        if fence_char is not None:
+            closing_fence = re.fullmatch(
+                rf' {{0,3}}{re.escape(fence_char)}{{{fence_length},}}\s*', line
+            )
+            if closing_fence is not None:
+                fence_char = None
+                fence_length = 0
+            continue
+        fence = _fence_re.match(line)
+        if fence is not None:
+            marker = fence.group(1)
+            fence_char = marker[0]
+            fence_length = len(marker)
+            continue
+        match = _h1_re.match(line)
+        if match is not None:
+            title = match.group(1).strip()
+            title = re.sub(r'\[([^]]+)\]\([^)]*\)', r'\1', title)
+            title = re.sub(r'[*_`]+', '', title).strip()
+            if title:
+                return title
+    if is_url(source):
+        path = urllib.parse.unquote(urllib.parse.urlparse(source).path)
+        return Path(path).stem or url_to_slug(source)
+    return Path(source).stem or 'untitled'
+
+
+def resolve_timestamp(value: str) -> str:
+    """Validate an override or return the timezone-aware conversion time.
+
+    ISO dates and timezone-aware ISO datetimes are emitted byte-for-byte as
+    supplied. Naive datetimes are rejected because their instant is ambiguous.
+    """
+    if not value:
+        return datetime.datetime.now().astimezone().isoformat(timespec='seconds')
+
+    if re.fullmatch(r'\d{4}-\d{2}-\d{2}', value):
+        try:
+            datetime.date.fromisoformat(value)
+        except ValueError:
+            die('--timestamp must be an ISO date or a timezone-aware ISO datetime')
+        return value
+
+    if _rfc3339_datetime_re.fullmatch(value) is None:
+        die('--timestamp must be an ISO date or RFC3339 timezone-aware datetime')
+    try:
+        parsed = datetime.datetime.fromisoformat(value[:-1] + '+00:00' if value.endswith('Z') else value)
+    except ValueError:
+        die('--timestamp must be an ISO date or a timezone-aware ISO datetime')
+    if parsed.tzinfo is None or parsed.utcoffset() is None:
+        die('--timestamp datetime must include a timezone offset')
+    return value
+
+
+def inject_frontmatter(text: str, source: str, timestamp: str) -> str:
+    """Prepend the exact five-field deterministic draft frontmatter."""
+    title = _title_from_text_or_source(text, source)
+    fm = (
+        '---\n'
+        'type: ""\n'
+        f'title: {json.dumps(title, ensure_ascii=False)}\n'
+        'description: ""\n'
+        'tags: []\n'
+        f'timestamp: {json.dumps(timestamp, ensure_ascii=False)}\n'
+        '---\n\n'
+    )
     result = fm + text
 
     # Gate: verify required fields present
     if not result.startswith('---'):
         die('Frontmatter injection failed: output does not start with ---')
-    for field in ('source:', 'converted_at:', 'converted_by:'):
+    for field in ('type:', 'title:', 'description:', 'tags:', 'timestamp:'):
         if field not in result:
             die(f'Frontmatter injection failed: missing field {field}')
 
@@ -348,9 +400,8 @@ def run_batch(args) -> None:
             # Convert
             text = convert_basic(input_path)
 
-            # Strip images unless explicitly kept
-            if not args.keep_images:
-                text = strip_images(text)
+            # Image markers are intentionally removed from portable text output.
+            text = strip_images(text)
 
             # Fix encoding
             text = fix_encoding(text.encode('utf-8'))
@@ -361,8 +412,7 @@ def run_batch(args) -> None:
             # Frontmatter
             if not args.no_frontmatter:
                 source = fpath.replace('\\', '/')
-                converted_at = args.converted_at or datetime.datetime.now().isoformat(timespec='seconds')
-                text = inject_frontmatter(text, source, converted_at)
+                text = inject_frontmatter(text, source, args.timestamp)
 
             # Write -- skip if exists (batch mode treats as skip, not fatal)
             if os.path.exists(out_file) and not args.overwrite and not args.rename:
@@ -393,169 +443,6 @@ def run_batch(args) -> None:
     print(f'[BATCH] {converted} converted, {failed} failed, {skipped} skipped')
 
 
-def _okf_pipeline_script() -> str:
-    skills_dir = Path(__file__).resolve().parents[2]
-    script = skills_dir / 'okf-frontmatter' / 'scripts' / 'frontmatter_pipeline.py'
-    if not script.is_file():
-        die('okf-frontmatter pipeline is unavailable; reinstall the file-processing plugin')
-    return str(script)
-
-
-def _okf_run_dir(args) -> Path:
-    if args.okf_run_dir:
-        path = Path(args.okf_run_dir).resolve()
-        path.mkdir(parents=True, exist_ok=True)
-        return path
-    return Path(tempfile.mkdtemp(prefix='file-processing-okf-conversion-')).resolve()
-
-
-def _write_okf_stage(path: Path, text: str) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(text, encoding='utf-8')
-
-
-def _write_okf_metadata(run_dir: Path, items: list[dict]) -> Path:
-    path = run_dir / 'conversion-metadata.json'
-    path.write_text(json.dumps({'items': items}, ensure_ascii=False, indent=2) + '\n', encoding='utf-8')
-    return path
-
-
-def _invoke_okf_prepare(args, staged_input: Path, target: str, metadata_path: Path, run_dir: Path) -> NoReturn:
-    command = [
-        sys.executable,
-        _okf_pipeline_script(),
-        'prepare',
-        '--input', str(staged_input),
-        '--target', str(target),
-        '--metadata-json', str(metadata_path),
-        '--run-dir', str(run_dir),
-    ]
-    if args.workspace:
-        command += ['--workspace', args.workspace]
-    if args.no_recursive:
-        command.append('--no-recursive')
-    if args.accept_partial:
-        command.append('--accept-partial')
-    if args.overwrite:
-        command.append('--overwrite')
-    if args.rename:
-        command.append('--rename')
-    result = subprocess.run(command, text=True, capture_output=True)
-    if result.stdout:
-        print(result.stdout.rstrip())
-    if result.returncode in {0, 2}:
-        state_path = run_dir / 'run.json'
-        print(f'[READY] OKF conversion staged; awaiting metadata review: {state_path}')
-        sys.exit(3)
-    if result.stderr:
-        print(result.stderr.rstrip(), file=sys.stderr)
-    if result.returncode == 4:
-        sys.exit(4)
-    if result.returncode == 3 and 'Target already exists' in result.stderr:
-        sys.exit(2)
-    print(f'[RECOVERY] OKF run retained at {run_dir}', file=sys.stderr)
-    sys.exit(1)
-
-
-def _convert_text_for_okf(source_path: str, keep_images: bool) -> tuple[str, str | None]:
-    """Convert one input and return text plus an optional temporary docx path."""
-    input_path = source_path
-    cleanup_path = None
-    if not is_url(input_path) and input_path.lower().endswith('.doc') and not input_path.lower().endswith('.docx'):
-        input_path = convert_doc_to_docx(input_path)
-        cleanup_path = input_path
-    text = convert_basic(input_path)
-    if not keep_images:
-        text = strip_images(text)
-    text = fix_encoding(text.encode('utf-8'))
-    text = convert_chinese(text)
-    return text, cleanup_path
-
-
-def run_single_okf(args) -> NoReturn:
-    """Convert one source into an isolated run and hand it to okf-frontmatter."""
-    run_dir = _okf_run_dir(args)
-    staged_dir = run_dir / 'converted'
-    staged_name = Path(args.output_path).name or 'converted.md'
-    staged = staged_dir / staged_name
-    cleanup_path = None
-    try:
-        text, cleanup_path = _convert_text_for_okf(args.input, args.keep_images)
-        _write_okf_stage(staged, text)
-        source = args.source if args.source else args.input
-        if not is_url(source):
-            source = os.path.abspath(source)
-        source = source.replace('\\', '/')
-        converted_at = args.converted_at or datetime.datetime.now(datetime.timezone.utc).isoformat(timespec='seconds').replace('+00:00', 'Z')
-        metadata = _write_okf_metadata(
-            run_dir,
-            [{
-                'path': str(staged),
-                'fields': {'source': source, 'converted_at': converted_at, 'converted_by': 'markitdown'},
-            }],
-        )
-        _invoke_okf_prepare(args, staged, args.output_path, metadata, run_dir)
-    except SystemExit:
-        if not (run_dir / 'run.json').exists():
-            print(f'[RECOVERY] OKF run retained at {run_dir}', file=sys.stderr)
-        raise
-    except Exception as exc:
-        print(f'[RECOVERY] OKF run retained at {run_dir}', file=sys.stderr)
-        die(str(exc))
-    finally:
-        if cleanup_path and os.path.exists(cleanup_path):
-            os.unlink(cleanup_path)
-
-
-def run_batch_okf(args) -> NoReturn:
-    """Convert a batch into one isolated OKF review run without final writes."""
-    recursive = not args.no_recursive
-    types = [item.strip() for item in args.types.split(',')] if args.types else None
-    if types is not None:
-        requested = {item.lower() if item.startswith('.') else f'.{item.lower()}' for item in types}
-        if requested.isdisjoint(SUPPORTED_EXTENSIONS):
-            die(f'Unsupported file type in --types: {", ".join(sorted(requested))}')
-    files = collect_files(args.input_dir, recursive, types)
-    if not files:
-        print('[BATCH] 0 converted, 0 failed, 0 skipped')
-        sys.exit(0)
-    run_dir = _okf_run_dir(args)
-    staged_root = run_dir / 'converted'
-    input_root = os.path.abspath(args.input_dir)
-    metadata_items = []
-    failed = []
-    for source_path in files:
-        relative = os.path.relpath(source_path, input_root)
-        staged = staged_root / f'{os.path.splitext(relative)[0]}.md'
-        cleanup_path = None
-        try:
-            text, cleanup_path = _convert_text_for_okf(source_path, args.keep_images)
-            _write_okf_stage(staged, text)
-            converted_at = args.converted_at or datetime.datetime.now(datetime.timezone.utc).isoformat(timespec='seconds').replace('+00:00', 'Z')
-            metadata_items.append({
-                'path': str(staged),
-                'fields': {
-                    'source': os.path.abspath(source_path).replace('\\', '/'),
-                    'converted_at': converted_at,
-                    'converted_by': 'markitdown',
-                },
-            })
-        except SystemExit:
-            failed.append(relative)
-        except Exception as exc:
-            print(f'[FAIL] {relative} - {exc}', file=sys.stderr)
-            failed.append(relative)
-        finally:
-            if cleanup_path and os.path.exists(cleanup_path):
-                os.unlink(cleanup_path)
-    if failed and not args.accept_partial:
-        die(f'OKF batch conversion failed for {len(failed)} file(s); staged run retained at {run_dir}')
-    if not metadata_items:
-        die(f'OKF batch conversion produced no staged files; run retained at {run_dir}')
-    metadata = _write_okf_metadata(run_dir, metadata_items)
-    _invoke_okf_prepare(args, staged_root, args.output_path, metadata, run_dir)
-
-
 def precheck(args):
     """Validate inputs before any conversion. Exits with error on failure."""
     # 1. Mutual exclusivity
@@ -563,17 +450,8 @@ def precheck(args):
         die('--input and --input-dir are mutually exclusive')
     if not args.input and not args.input_dir:
         die('Either --input <file> or --input-dir <directory> is required')
-    if args.workspace:
-        args.okf = True
-    if args.okf and args.no_frontmatter:
-        die('--okf/--workspace and --no-frontmatter are mutually exclusive')
     if args.overwrite and args.rename:
         die('--overwrite and --rename are mutually exclusive')
-    if args.workspace:
-        if not os.path.isdir(args.workspace):
-            die_code(f'Cortex workspace not found: {args.workspace}', 4)
-        if shutil.which('cortex') is None:
-            die_code('Cortex CLI is not available on PATH', 4)
 
     # 2. Input path validation (skip for URLs — markitdown handles fetching)
     if args.input and not is_url(args.input) and not os.path.exists(args.input):
@@ -614,74 +492,48 @@ def show_version():
         except ImportError:
             label = 'NOT INSTALLED' if required else 'not installed (optional)'
         print(f'  {pip_name}: {label}')
-    try:
-        ruamel_version = importlib.metadata.version('ruamel.yaml')
-        ruamel_label = ruamel_version if ruamel_version.startswith('0.17.') else f'{ruamel_version} (incompatible; need >=0.17,<0.18)'
-    except importlib.metadata.PackageNotFoundError:
-        ruamel_label = 'not installed (required for --okf)'
-    print(f'  ruamel.yaml: {ruamel_label}')
-    print(f'  cortex: {"available" if shutil.which("cortex") else "not installed (required for --workspace)"}')
 
 
 def main():
-    # Pre-scan for --config before full argparse (needed because load_config()
-    # runs before other defaults are set from config values).
-    _pre = argparse.ArgumentParser(add_help=False)
-    _pre.add_argument('--config', default='', help='Path to config.json (default: scripts/config.json)')
-    _pre.add_argument('--version', action='store_true')
-    _early, _ = _pre.parse_known_args()
-
-    if _early.version:
-        show_version()
-        sys.exit(0)
-
     global CONFIG_PATH
-    if _early.config:
-        CONFIG_PATH = os.path.abspath(_early.config)
-
-    load_config()  # honor --config / create config.json (markdown-conversion has no settings)
-
     parser = argparse.ArgumentParser(description='markdown-conversion pipeline.')
     parser.add_argument('--config', default='', help='Path to config.json (default: scripts/config.json)')
     parser.add_argument('--version', action='store_true', help='Show version and dependency status')
     parser.add_argument('--input', dest='input', help='Path to source file to convert')
     parser.add_argument('--input-dir', dest='input_dir', help='Directory of files to batch convert')
-    parser.add_argument('--source', default='', help='Original file path (for frontmatter)')
     parser.add_argument('--output-path', dest='output_path', default='',
                         help='Output path (optional — defaults to the source file directory if not given)')
     parser.add_argument('--no-frontmatter', action='store_true', dest='no_frontmatter')
-    parser.add_argument('--okf', action='store_true', help='Stage conversion for reviewed OKF frontmatter')
-    parser.add_argument('--workspace', default='', help='Cortex workspace; implies --okf and requires Cortex CLI')
-    parser.add_argument('--okf-run-dir', default='', dest='okf_run_dir',
-                        help='Retained OKF run directory (default: system temporary directory)')
-    parser.add_argument('--accept-partial', action='store_true', dest='accept_partial',
-                        help='Allow complete items from a partially converted OKF batch')
     parser.add_argument('--overwrite', action='store_true')
     parser.add_argument('--rename', action='store_true')
-    parser.add_argument('--keep-images', action='store_true', dest='keep_images',
-                        help='Preserve markdown image links (default: images are stripped)')
-    parser.add_argument('--converted-at', dest='converted_at', default='')
+    parser.add_argument('--timestamp', default='', help='ISO date or RFC3339 timezone-aware datetime override')
     # Batch-only
     parser.add_argument('--no-recursive', action='store_true', dest='no_recursive')
     parser.add_argument('--types', default='', help='Comma-separated extensions to include (batch only)')
     args = parser.parse_args()
 
+    # Parse the entire argv before honoring --version so removed/unknown options
+    # cannot be silently accepted alongside it.
+    if args.version:
+        show_version()
+        sys.exit(0)
+
+    if args.config:
+        CONFIG_PATH = os.path.abspath(args.config)
+    load_config()  # honor --config / create config.json (markdown-conversion has no settings)
+
     # Pre-flight validation (file existence)
     precheck(args)
+    args.timestamp = resolve_timestamp(args.timestamp)
 
     # Resolve default output path (next to source) if not explicitly given
     if not args.output_path:
         args.output_path = resolve_output_path(args)
 
     if args.input_dir:
-        if args.okf:
-            run_batch_okf(args)
-        else:
-            os.makedirs(args.output_path, exist_ok=True)
-            run_batch(args)
+        os.makedirs(args.output_path, exist_ok=True)
+        run_batch(args)
     else:
-        if args.okf:
-            run_single_okf(args)
         # Single-file mode (existing logic)
         input_path = args.input
         if not is_url(input_path) and input_path.lower().endswith('.doc') and not input_path.lower().endswith('.docx'):
@@ -690,21 +542,17 @@ def main():
 
         text = convert_basic(input_path)
 
-        # Strip images unless explicitly kept
-        if not args.keep_images:
-            text = strip_images(text)
+        # Image markers are intentionally removed from portable text output.
+        text = strip_images(text)
 
         text = fix_encoding(text.encode('utf-8'))
         text = convert_chinese(text)
 
-        source = args.source if args.source else args.input
-        converted_at = args.converted_at or datetime.datetime.now().isoformat(timespec='seconds')
-
         if not args.no_frontmatter:
-            text = inject_frontmatter(text, source, converted_at)
+            text = inject_frontmatter(text, args.input, args.timestamp)
 
         final_path = write_to_vault(text, args.output_path, args.overwrite, args.rename)
-        print(f'[OK] Converted {source} -> {final_path}')
+        print(f'[OK] Converted {args.input} -> {final_path}')
 
 
 if __name__ == '__main__':

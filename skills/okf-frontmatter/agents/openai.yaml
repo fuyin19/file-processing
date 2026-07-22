@@ -1,4 +1,0 @@
-interface:
-  display_name: "OKF Frontmatter"
-  short_description: "Prepare Markdown for OKF and Cortex"
-  default_prompt: "Use $okf-frontmatter to prepare this Markdown file with reviewed OKF frontmatter."

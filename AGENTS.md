@@ -10,7 +10,7 @@ copy of this content there.
 
 ## Project Purpose
 
-`file-processing` is a Claude Code plugin (v3.6.0) that packages five
+`file-processing` is a Claude Code plugin (v4.0.0) that packages four
 file-processing skills as `/file-processing:<name>` commands. It serves
 developers working inside Claude Code who need repeatable, script-backed
 document workflows — convert, review, translate, clean up — where deterministic
@@ -23,10 +23,9 @@ Immutable long-term tradeoff (one line): for `translate`, accuracy / terminology
 match is prioritized over speed and token cost; across all skills,
 structure-safety and testability are prioritized over feature breadth.
 
-The five skills:
+The four skills:
 
-- **markdown-conversion** (v4.1.0) — Convert documents to markdown. Python pipeline with Chinese text processing, encoding detection, optional image stripping, and an explicit `--okf` / `--workspace` staging handoff. Output defaults to the source file's directory; use `--output-path` to write elsewhere.
-- **okf-frontmatter** (v1.0.0) — Prepare, repair, validate, and safely apply reviewed OKF/Cortex YAML frontmatter. Its Python pipeline round-trips YAML, binds source/target/policy hashes into a content-addressed plan, and refuses direct writes to the active Cortex bundle.
+- **markdown-conversion** (v5.0.0) — Convert documents to Markdown. Python pipeline with Chinese text processing, encoding detection, unconditional image-marker stripping, and exact five-field draft YAML frontmatter. Output defaults to the source file's directory; use `--output-path` to write elsewhere.
 - **content-review** (v2.0.0) — Review files for grammar, typos, logic, and stylistic issues. Verify content against reference materials (fact-checking). `scripts/review_plan.py` computes a dimension × chunk matrix and assembles sub-agent results; `references/` (criteria + sub-agent prompts) and `assets/` (report template).
 - **markdown-cleanup** (v1.0.0) — Clean up formatting artifacts in markitdown-converted .md files. Pure Python stdlib.
 - **translate** (v2.0.0) — Translate files to a target language with optional reference-guided terminology. Hybrid architecture: Python pipeline (`translate_pipeline.py`, `glossary_utils.py`) for deterministic work (structure-safe chunking, source-driven glossary slicing, per-occurrence forced-application QA); Claude/sub-agents for linguistic work.
@@ -78,9 +77,6 @@ per goal.
 # Markdown-conversion tests
 python -m pytest tests/markdown-conversion/test_pipeline.py -v
 
-# OKF-frontmatter tests
-python -m pytest tests/okf-frontmatter/test_frontmatter_pipeline.py -v
-
 # Markdown-cleanup tests
 python -m pytest tests/markdown-cleanup/test_cleanup_pipeline.py -v
 
@@ -121,16 +117,6 @@ python skills/markdown-conversion/scripts/pipeline.py --input-dir <dir> --output
 python skills/markdown-conversion/scripts/pipeline.py --config <path> --input <file> --output-path <out.md>
 python skills/markdown-conversion/scripts/pipeline.py --version
 
-# Markdown-conversion — stage an OKF/Cortex review run (exit 3 is the handoff)
-python skills/markdown-conversion/scripts/pipeline.py --input <file> --output-path <out.md> --okf
-python skills/markdown-conversion/scripts/pipeline.py --input <file> --output-path <out.md> --workspace <cortex-root>
-
-# OKF-frontmatter — reviewed prepare -> plan -> apply -> validate
-python skills/okf-frontmatter/scripts/frontmatter_pipeline.py prepare --input <file-or-dir> [--workspace <cortex-root>]
-python skills/okf-frontmatter/scripts/frontmatter_pipeline.py plan --state <run.json> --proposal <proposal.json>
-python skills/okf-frontmatter/scripts/frontmatter_pipeline.py apply --plan <sealed-plan.json>
-python skills/okf-frontmatter/scripts/frontmatter_pipeline.py validate --input <file-or-dir> [--workspace <cortex-root>]
-
 # Markdown-cleanup — single file or directory
 python skills/markdown-cleanup/scripts/cleanup_pipeline.py --input <file.md>
 python skills/markdown-cleanup/scripts/cleanup_pipeline.py --input <dir>
@@ -141,8 +127,7 @@ python skills/markdown-cleanup/scripts/cleanup_pipeline.py --input <file.md> --o
 python skills/markdown-cleanup/scripts/cleanup_pipeline.py --list-fixers
 ```
 
-**Exit codes (markdown-conversion)**: 0=success, 1=error, 2=output file exists (needs `--overwrite` or `--rename`), 3=OKF staging complete and awaiting metadata review/apply, 4=Cortex prerequisite/workspace/policy failure. `--overwrite` replaces; `--rename` appends a suffix.
-**Exit codes (okf-frontmatter)**: 0=success, 1=invalid input/YAML/proposal, 2=incomplete metadata or coverage, 3=stale/conflicting/tampered plan, 4=Cortex prerequisite/workspace/policy failure.
+**Exit codes (markdown-conversion)**: 0=success, 1=error, 2=output file exists (needs `--overwrite` or `--rename`). `--overwrite` replaces; `--rename` appends a suffix.
 
 **Exit codes (markdown-cleanup)**: 0=success, 1=error. Output writes to same directory as source by default.
 
@@ -176,34 +161,17 @@ python skills/translate/scripts/translate_pipeline.py qa --source <file> --trans
 
 ### Skill Structure
 
-The plugin lives in `skills/` with one subdirectory per skill. Each skill has a `SKILL.md` defining the `/file-processing:<name>` command and workflow. All five skills are script-backed. `content-review` and `translate` additionally keep sub-agent prompt templates in `references/subagent-prompts.md`.
+The plugin lives in `skills/` with one subdirectory per skill. Each skill has a `SKILL.md` defining the `/file-processing:<name>` command and workflow. All four skills are script-backed. `content-review` and `translate` additionally keep sub-agent prompt templates in `references/subagent-prompts.md`.
 
 ### Pipeline Flow (markdown-conversion)
 
 1. **Precheck** — validates inputs and mutual exclusivity (`--input` vs `--input-dir`). URLs skip file-existence checks.
 2. **Conversion** — markitdown Python API via `convert_basic()`.
-3. **Image handling** — two mutually exclusive modes:
-   - **Default**: `strip_images()` removes `![...](...)` and orphaned image filename lines
-   - **`--keep-images`**: Pass through raw markitdown output unchanged
+3. **Image handling** — `strip_images()` always removes `![...](...)` and orphaned image filename lines.
 4. **Encoding fix** — chardet detection, UTF-8 normalization, mojibake rejection (`_mojibake_re`)
 5. **Chinese conversion** — two-pass opencc t2s with stability gate
-6. **Frontmatter injection** — YAML header with source path, timestamp, converter
+6. **Frontmatter injection** — exact `type`, `title`, `description`, `tags`, and `timestamp` draft; `title` uses the first H1 or source stem, while `--timestamp` accepts an ISO date or aware datetime.
 7. **Write output** — file creation (defaults to the source file's directory) with overwrite/rename conflict resolution
-
-With `--okf` or `--workspace`, step 6 is replaced by an isolated handoff: write
-the converted body and provenance to a system-temporary run, invoke
-`okf-frontmatter prepare`, and exit 3 without creating the final target.
-
-### Pipeline Flow (okf-frontmatter)
-
-1. **Prepare** — collect Markdown inputs, round-trip parse existing YAML, derive deterministic title/timestamp candidates, and optionally verify the Cortex 2.1 method and active policy.
-2. **Plan** — strictly validate one `FrontmatterProposal/v1` item per selected file, preserve non-empty fields unless explicitly replaceable, render staged output, and seal paths plus source/target/output/policy hashes into `FrontmatterPlan/v1`.
-3. **Apply** — accept only the exact sealed plan, recheck every digest and Cortex policy, perform per-file atomic writes, and emit `FrontmatterApplyReceipt/v1`. Repeated application is idempotent while the retained run exists.
-4. **Validate** — read-only verification that required authoring and policy fields are complete; report `okf_ready`, `cortex_authoring_ready`, `cortex_policy_ready`, or `blocked`.
-
-`ruamel.yaml>=0.17,<0.18` is installed only when absent; an incompatible installed
-version is a hard stop. Cortex mode never installs Cortex, silently falls back,
-or writes inside the active bundle.
 
 ### Cleanup Pipeline Flow (markdown-cleanup)
 
@@ -243,13 +211,12 @@ Anti-skip levers (both skills): (1) narrow per-cell/per-chunk mandates; (2) prom
 - **Auto-dependency management**: `_ensure_package()` installs missing packages on demand via pip
 - **Gate-based error handling**: Each step validates output and calls `die()` on failure
 - **Code block/frontmatter protection**: Used by both cleanup and translate pipelines
-- **Path resolution**: `config.json` resolved relative to pipeline script's directory (not CWD), unless overridden by `--config`. Source paths in frontmatter have backslashes normalized to forward slashes.
+- **Path resolution**: `config.json` is resolved relative to the pipeline script's directory (not CWD), unless overridden by `--config`.
 
 ## Configuration
 
 Each skill stores its own `scripts/config.json` (gitignored):
 - `skills/markdown-conversion/scripts/config.json` — currently no settings (reserved; output defaults to the source file's directory)
-- `okf-frontmatter` has no config file; each content-addressed run records its effective generic/Cortex policy context and required fields.
 - `skills/markdown-cleanup/scripts/config.json` — fixer enable/disable settings
 - `skills/content-review/scripts/config.json` — `chunk_lines` (400), `max_chunks` (20), `max_cells` (60)
 - `skills/translate/scripts/config.json` — `default_target_language` (zh), `chunk_lines` (300), `max_chunks` (30), `max_terms` (800), `max_terms_per_chunk_prompt` (120), `max_reference_passages_per_term` (5), `max_workspace_mb` (100)
@@ -258,11 +225,9 @@ Each skill stores its own `scripts/config.json` (gitignored):
 
 `.claude/settings.json` pre-allows:
 - `python -m pytest tests/markdown-conversion/test_pipeline.py *`
-- `python -m pytest tests/okf-frontmatter/test_frontmatter_pipeline.py *`
 - `python -m pytest tests/markdown-cleanup/test_cleanup_pipeline.py *`
 - `python -m pytest tests/content-review/test_review_plan.py *`
 - `python *pipeline.py*`
-- `python *frontmatter_pipeline.py*`
 - `python *cleanup_pipeline.py*`
 - `python *translate_pipeline.py*`
 - `python *review_plan.py*`

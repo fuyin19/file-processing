@@ -63,36 +63,21 @@ pip install markitdown
 - Consider splitting very large PDFs first
 - Use `--no-frontmatter` for slightly faster processing
 
-## OKF Run Is Waiting Instead of Writing a File
+## Empty Draft Fields
 
-**Symptoms:** `--okf` or `--workspace` exits `3`, prints `[READY]`, and the final
-Markdown path does not exist.
+**Symptoms:** The converted Markdown contains `description: ""` and `tags: []`.
 
-**Meaning:** This is the expected review boundary. Conversion succeeded into an
-isolated temporary run, but semantic frontmatter has not been approved or
-applied.
+**Meaning:** This is intentional. The converter emits an exact five-field draft
+and does not invent a type, summary, or classification. Only the title and
+timestamp receive deterministic values.
 
-**Next step:** Open the printed `run.json` and continue with
-`/file-processing:okf-frontmatter` to create a proposal, seal a plan, review it,
-and apply that exact plan. Failures and `--plan-only` retain the printed run
-directory for recovery. A successful Apply removes it unless retention was
-requested.
+## Timestamp Override Is Rejected
 
-## Cortex Mode Exits 4
+**Cause:** `--timestamp` received a non-ISO value or a datetime without a
+timezone offset.
 
-**Cause:** Cortex is missing from `PATH`, the workspace is invalid, its method
-contract is not compatible with 2.1, or its active policy is invalid or changed.
-
-**Solution:** Repair the Cortex installation/workspace/policy and start a new
-OKF run. The plugin does not install Cortex and does not downgrade
-`--workspace` to generic OKF.
-
-## ruamel.yaml Version Is Incompatible
-
-OKF mode requires `ruamel.yaml>=0.17,<0.18`. If it is absent, the pipeline
-installs that range. If another installed version is incompatible, use an
-isolated Python environment with the supported range; the pipeline will not
-downgrade the existing environment automatically.
+**Solution:** Supply an ISO date such as `2026-07-22`, or a timezone-aware ISO
+datetime such as `2026-07-22T14:05:06+08:00`.
 
 ## FFmpeg Warning (Media Files)
 
@@ -143,7 +128,7 @@ Common error scenarios and how the skill handles them:
 
 | Limitation | Details | Workaround |
 |------------|---------|------------|
-| **Images** | Embedded images are stripped by default | Use `--keep-images` to preserve image links |
+| **Images** | MarkItDown inline image markers and orphan image-filename lines are stripped | Extract or manage image assets in a separate media workflow |
 | **Read-only source directory** | Default output writes next to the source and fails if that directory is not writable | Pass `--output-path` pointing to a writable location |
 | **Formatting** | Complex formatting may be simplified | Review and adjust markdown after conversion |
 | **Password-protected files** | Cannot convert encrypted documents | Remove password protection first |

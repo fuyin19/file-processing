@@ -1,31 +1,32 @@
-# Frontmatter Template
+# Draft Frontmatter Template
 
-Converted files include this legacy provenance frontmatter when neither
-`--no-frontmatter` nor `--okf` is selected. OKF mode stages the converted body
-and delegates reviewed semantic metadata to `/file-processing:okf-frontmatter`.
+Converted files use this exact five-field YAML draft by default.
 
 ## Template
 
 ```yaml
 ---
-source: "{source}"
-converted_at: "{converted_at}"
-converted_by: "markitdown"
+type: ""
+title: "<first H1 or source stem>"
+description: ""
+tags: []
+timestamp: "<timezone-aware conversion time>"
 ---
 
-[Converted markdown content...]
+[Converted Markdown content...]
 ```
 
-## Field Definitions
+## Field definitions
 
-| Field | Value | Example |
-|-------|-------|---------|
-| `source` | Absolute path to original file, forward slashes | `C:/Users/user/Downloads/report.pdf` |
-| `converted_at` | ISO 8601 timestamp | `2026-03-21T14:30:00` |
-| `converted_by` | Fixed: `markitdown` | `markitdown` |
+| Field | Conversion behavior |
+|---|---|
+| `type` | Empty string. |
+| `title` | First H1 after conversion, otherwise the input source stem. |
+| `description` | Empty string. |
+| `tags` | Empty list. |
+| `timestamp` | Timezone-aware conversion time, or the exact valid `--timestamp` value. |
 
-Skip frontmatter with `--no-frontmatter`.
-
-Do not treat this three-field template as OKF-ready: OKF/Cortex preparation also
-requires semantic authoring fields such as `type`, `title`, `description`, and
-`timestamp`, plus any active Cortex policy fields.
+The converter never writes `resource`. `--timestamp` accepts an ISO date or an
+RFC3339 timezone-aware datetime (`T`, seconds, and `Z` or `±HH:MM`); naive
+datetimes are rejected. Use
+`--no-frontmatter` only when a consumer explicitly requires body-only Markdown.

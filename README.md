@@ -1,6 +1,6 @@
 # file-processing
 
-A Claude Code plugin for document conversion, OKF/Cortex frontmatter preparation, content review, markdown cleanup, and translation.
+A Claude Code plugin for document conversion, content review, markdown cleanup, and translation.
 
 ## Installation
 ```bash
@@ -11,41 +11,25 @@ Or manually place the plugin directory in your `.claude/skills/` folder.
 
 ## Skills
 
-### markdown-conversion (v4.1.0)
+### markdown-conversion (v5.0.0)
 
-Convert various file formats (PDF, DOCX, PPTX, URLs, etc.) to markdown. Includes Chinese text processing and encoding detection. Output defaults to the source file's directory; use `--output-path` to store in Obsidian.
+Convert various file formats (PDF, DOCX, PPTX, URLs, etc.) to Markdown. Includes Chinese text processing, encoding detection, image-marker removal, and deterministic draft YAML frontmatter. Output defaults to the source file's directory; use `--output-path` to store elsewhere.
 
 ```
 /file-processing:markdown-conversion ~/Downloads/report.pdf
 /file-processing:markdown-conversion https://example.com/article.html
 /file-processing:markdown-conversion ~/Downloads/papers --types pdf
-/file-processing:markdown-conversion ~/Downloads/report.pdf --okf
-/file-processing:markdown-conversion ~/Downloads/report.pdf --workspace ~/knowledge-workspace
 ```
+
+The converter writes exactly `type/title/description/tags/timestamp` by default.
+`title` uses the first H1 or source stem, `timestamp` is timezone-aware, and the
+remaining draft fields are empty. Use `--timestamp` for an exact ISO date or
+RFC3339 aware datetime (`T`, seconds, and `Z` or `±HH:MM`),
+timezone-aware datetime override; `resource` is never written.
 
 **Supported formats:** .pdf, .docx, .doc, .pptx, .ppt, .xlsx, .xls, .html, .csv, .json, .jsonl, .xml, .epub, .jpg/.jpeg, .png, .gif, .mp3, .wav, .mp4, .zip, .txt, .rtf, .odt, .ods, .odp, and HTTP/HTTPS URLs.
 
  See [skills/markdown-conversion/SKILL.md](skills/markdown-conversion/SKILL.md) for full documentation.
-
-### okf-frontmatter (v1.0.0)
-
-Prepare, repair, validate, and safely apply reviewed YAML frontmatter for
-portable OKF Markdown or a Cortex 2.1 workspace. Existing metadata and Markdown
-content are round-tripped; semantic proposals are sealed into a content-addressed
-plan before writing.
-
-```
-/file-processing:okf-frontmatter ~/Documents/note.md
-/file-processing:okf-frontmatter ~/Documents/notes --plan-only
-/file-processing:okf-frontmatter ~/Documents/note.md --workspace ~/knowledge-workspace
-```
-
-Generic mode requires `ruamel.yaml>=0.17,<0.18` (installed when absent). Cortex
-mode additionally requires a compatible `cortex` executable on `PATH`; the
-plugin never installs Cortex or writes directly to an active bundle.
-
-See [skills/okf-frontmatter/SKILL.md](skills/okf-frontmatter/SKILL.md) for the
-reviewed `prepare -> plan -> apply -> validate` workflow.
 
 ### content-review (v1.0.0)
 
