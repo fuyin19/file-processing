@@ -25,7 +25,7 @@ structure-safety and testability are prioritized over feature breadth.
 
 The four skills:
 
-- **markdown-conversion** (v5.0.0) — Convert documents to Markdown. Python pipeline with Chinese text processing, encoding detection, unconditional image-marker stripping, and exact five-field draft YAML frontmatter. Output defaults to the source file's directory; use `--output-path` to write elsewhere.
+- **markdown-conversion** (v6.0.0) — Convert local PDFs, Office documents, supported files, URLs, or directories through one canonical model. Born-digital PDFs use a native PDFium adapter; Office formats continue through MarkItDown. The default output is a JSON + Markdown bundle, while `--output-mode markdown` emits one clean Markdown file. Canonical output preserves raw/cleaned/normalized text, uses exact five-field YAML frontmatter, defaults Chinese normalization to simplified, and publishes transactionally.
 - **content-review** (v2.0.0) — Review files for grammar, typos, logic, and stylistic issues. Verify content against reference materials (fact-checking). `scripts/review_plan.py` computes a dimension × chunk matrix and assembles sub-agent results; `references/` (criteria + sub-agent prompts) and `assets/` (report template).
 - **markdown-cleanup** (v1.0.0) — Clean up formatting artifacts in markitdown-converted .md files. Pure Python stdlib.
 - **translate** (v2.0.0) — Translate files to a target language with optional reference-guided terminology. Hybrid architecture: Python pipeline (`translate_pipeline.py`, `glossary_utils.py`) for deterministic work (structure-safe chunking, source-driven glossary slicing, per-occurrence forced-application QA); Claude/sub-agents for linguistic work.
@@ -91,10 +91,10 @@ python -m pytest tests/markdown-conversion/test_pipeline.py -k "test_fix_encodin
 python -m pytest tests/translate/test_translate_pipeline.py -k "glossary" -v
 
 # Categories (markdown-conversion)
-python -m pytest tests/markdown-conversion/test_pipeline.py -k "overwrite or rename" -v    # output write / conflict resolution
-python -m pytest tests/markdown-conversion/test_pipeline.py -k "integration or full_pipeline" -v    # end-to-end
-python -m pytest tests/markdown-conversion/test_pipeline.py -k "precheck" -v     # validation
-python -m pytest tests/markdown-conversion/test_pipeline.py -k "config" -v                          # config loading
+python -m pytest tests/markdown-conversion/test_pipeline.py -k "pdf or ocr or rotation or cross_page" -v    # native PDF extraction
+python -m pytest tests/markdown-conversion/test_pipeline.py -k "bundle or markdown_only or replace_failure" -v    # publication / rollback
+python -m pytest tests/markdown-conversion/test_pipeline.py -k "canonical or semantic_validator or normalization" -v    # schema / text fidelity
+python -m pytest tests/markdown-conversion/test_pipeline.py -k "markitdown or ooxml or office" -v    # Office regression
 ```
 
 All test files use the same pattern: `sys.path` includes the skill's `scripts/` dir, and integration tests run the pipeline as a subprocess via `SCRIPT = [sys.executable, <pipeline.py path>]`.
@@ -104,17 +104,20 @@ All test files use the same pattern: `sys.path` includes the skill's `scripts/` 
 ### Running Pipelines Directly
 
 ```bash
-# Markdown-conversion — single file
-python skills/markdown-conversion/scripts/pipeline.py --input <file> --output-path <out.md>
+# Markdown-conversion — single file, default bundle beside the source
+python skills/markdown-conversion/scripts/pipeline.py --input <file>
 
-# Markdown-conversion — URL (markitdown fetches automatically)
-python skills/markdown-conversion/scripts/pipeline.py --input <url> --output-path <out.md>
+# Markdown-conversion — one clean Markdown file
+python skills/markdown-conversion/scripts/pipeline.py --input <file> --output-mode markdown --output-path <out.md>
+
+# Markdown-conversion — URL
+python skills/markdown-conversion/scripts/pipeline.py --input <url> --output-mode markdown --output-path <out.md>
 
 # Markdown-conversion — batch
-python skills/markdown-conversion/scripts/pipeline.py --input-dir <dir> --output-path <outdir> [--types pdf,docx] [--no-recursive] [--overwrite|--rename]
+python skills/markdown-conversion/scripts/pipeline.py --input-dir <dir> [--output-dir <outdir>] [--output-mode bundle|markdown] [--types pdf,docx] [--no-recursive] [--overwrite|--rename]
 
 # Markdown-conversion — alternate config / version
-python skills/markdown-conversion/scripts/pipeline.py --config <path> --input <file> --output-path <out.md>
+python skills/markdown-conversion/scripts/pipeline.py --config <path> --input <file> [--output-dir <outdir>]
 python skills/markdown-conversion/scripts/pipeline.py --version
 
 # Markdown-cleanup — single file or directory
@@ -127,7 +130,7 @@ python skills/markdown-cleanup/scripts/cleanup_pipeline.py --input <file.md> --o
 python skills/markdown-cleanup/scripts/cleanup_pipeline.py --list-fixers
 ```
 
-**Exit codes (markdown-conversion)**: 0=success, 1=error, 2=output file exists (needs `--overwrite` or `--rename`). `--overwrite` replaces; `--rename` appends a suffix.
+**Exit codes (markdown-conversion)**: 0=success (including publishable warnings/partial output), 1=input/conversion/validation/publication error, 2=single-target collision (needs `--overwrite` or `--rename`). `--overwrite` uses staged replacement with rollback before commit; `--rename` appends a deterministic suffix.
 
 **Exit codes (markdown-cleanup)**: 0=success, 1=error. Output writes to same directory as source by default.
 
@@ -165,13 +168,15 @@ The plugin lives in `skills/` with one subdirectory per skill. Each skill has a 
 
 ### Pipeline Flow (markdown-conversion)
 
-1. **Precheck** — validates inputs and mutual exclusivity (`--input` vs `--input-dir`). URLs skip file-existence checks.
-2. **Conversion** — markitdown Python API via `convert_basic()`.
-3. **Image handling** — `strip_images()` always removes `![...](...)` and orphaned image filename lines.
-4. **Encoding fix** — chardet detection, UTF-8 normalization, mojibake rejection (`_mojibake_re`)
-5. **Chinese conversion** — two-pass opencc t2s with stability gate
-6. **Frontmatter injection** — exact `type`, `title`, `description`, `tags`, and `timestamp` draft; `title` uses the first H1 or source stem, while `--timestamp` accepts an ISO date or aware datetime.
-7. **Write output** — file creation (defaults to the source file's directory) with overwrite/rename conflict resolution
+1. **Precheck and target resolution** — validates `--input` versus `--input-dir`, CLI combinations, output roots, source/output aliasing, and collisions before loading expensive adapters.
+2. **Adapter selection** — born-digital PDF uses the native PDFium adapter; Office and other supported inputs use one reusable MarkItDown instance. A lightweight OOXML preflight records unsupported-feature warnings.
+3. **Canonical assembly** — builds Canonical JSON v1 with source hash, stable document/node ids, source units/locators, authoritative `content` order, general tables, assets, relationships, and quality warnings.
+4. **Language normalization** — preserves `raw_text` and cleaned `text`, then produces `normalized_text` in one batched OpenCC pass while protecting code, URLs, paths, ids, hashes, locators, and formulas.
+5. **Validation and rendering** — validates JSON Schema plus semantic references, paths, hashes, output manifests, and quality state; renders Markdown from canonical content with exact five-field frontmatter unless disabled.
+6. **Publication** — default `bundle` writes `<stem>/<stem>.json`, `<stem>.md`, and optional `assets/images/`; `--output-mode markdown` writes exactly one clean `.md` and omits image binaries/dead links.
+7. **Transactional replace** — stages complete output beside the target, validates before commit, rolls back pre-commit replacement failures, and treats post-commit backup cleanup failure as a non-fatal maintenance warning.
+
+PDF v6 intentionally ships without an OCR engine. OCR-required pages remain as source units and produce publishable `partial` output when other usable content exists. RAG chunk schemas, native Office adapters, advanced formulas, tracked-change preservation, and model enrichment remain non-goals.
 
 ### Cleanup Pipeline Flow (markdown-cleanup)
 
@@ -216,7 +221,7 @@ Anti-skip levers (both skills): (1) narrow per-cell/per-chunk mandates; (2) prom
 ## Configuration
 
 Each skill stores its own `scripts/config.json` (gitignored):
-- `skills/markdown-conversion/scripts/config.json` — currently no settings (reserved; output defaults to the source file's directory)
+- `skills/markdown-conversion/scripts/config.json` — currently no settings (reserved; single-file bundle output defaults beside the source and batch output defaults to `<input-dir>/_converted`)
 - `skills/markdown-cleanup/scripts/config.json` — fixer enable/disable settings
 - `skills/content-review/scripts/config.json` — `chunk_lines` (400), `max_chunks` (20), `max_cells` (60)
 - `skills/translate/scripts/config.json` — `default_target_language` (zh), `chunk_lines` (300), `max_chunks` (30), `max_terms` (800), `max_terms_per_chunk_prompt` (120), `max_reference_passages_per_term` (5), `max_workspace_mb` (100)

@@ -1,74 +1,79 @@
 # file-processing
 
-A Claude Code plugin for document conversion, content review, markdown cleanup, and translation.
+A Claude Code plugin for deterministic document conversion, content review,
+Markdown cleanup, and translation.
 
 ## Installation
+
 ```bash
 claude skill add /path/to/file-processing
 ```
 
-Or manually place the plugin directory in your `.claude/skills/` folder.
-
 ## Skills
 
-### markdown-conversion (v5.0.0)
+### markdown-conversion (v6.0.0)
 
-Convert various file formats (PDF, DOCX, PPTX, URLs, etc.) to Markdown. Includes Chinese text processing, encoding detection, image-marker removal, and deterministic draft YAML frontmatter. Output defaults to the source file's directory; use `--output-path` to store elsewhere.
+Convert local PDFs, Office documents, supported files, URLs, or directories
+through one canonical pipeline. Local PDFs use native PDFium extraction;
+Office formats continue through MarkItDown. The default output is a movable
+bundle:
 
+```text
+report/
+├── report.json
+├── report.md
+└── assets/images/     # only when images exist
 ```
+
+```text
 /file-processing:markdown-conversion ~/Downloads/report.pdf
-/file-processing:markdown-conversion https://example.com/article.html
-/file-processing:markdown-conversion ~/Downloads/papers --types pdf
+/file-processing:markdown-conversion ~/Downloads/report.docx --output-mode markdown
+/file-processing:markdown-conversion ~/Downloads/papers --types pdf,docx
 ```
 
-The converter writes exactly `type/title/description/tags/timestamp` by default.
-`title` uses the first H1 or source stem, `timestamp` is timezone-aware, and the
-remaining draft fields are empty. Use `--timestamp` for an exact ISO date or
-RFC3339 aware datetime (`T`, seconds, and `Z` or `±HH:MM`),
-timezone-aware datetime override; `resource` is never written.
+Use `--output-mode markdown` or single-file `--output-path` for exactly one clean
+Markdown file. Bundle batch output defaults to `<input-dir>/_converted/`; use
+`--output-dir` to choose another root.
 
-**Supported formats:** .pdf, .docx, .doc, .pptx, .ppt, .xlsx, .xls, .html, .csv, .json, .jsonl, .xml, .epub, .jpg/.jpeg, .png, .gif, .mp3, .wav, .mp4, .zip, .txt, .rtf, .odt, .ods, .odp, and HTTP/HTTPS URLs.
+Canonical JSON v1 preserves source text and stable locators/IDs while Markdown
+defaults to simplified Chinese. Change this with
+`--language-normalization preserve|traditional`. Markdown keeps exactly the
+`type/title/description/tags/timestamp` frontmatter fields unless
+`--no-frontmatter` is supplied.
 
- See [skills/markdown-conversion/SKILL.md](skills/markdown-conversion/SKILL.md) for full documentation.
+OCR is not bundled in v6. OCR-required pages and detected unsupported Office
+features produce publishable `partial` output when other usable content exists.
+The converter does not emit RAG chunks or bind an ingestion library.
 
-### content-review (v1.0.0)
+See [the skill contract](skills/markdown-conversion/SKILL.md) and
+[Canonical JSON v1 reference](skills/markdown-conversion/references/canonical-schema-v1.md).
 
-Review documents for grammar, typos, logic issues, and verify content against reference materials (fact-checking). Produces structured reports with unified diffs.
+### content-review (v2.0.0)
+
+Review documents for grammar, style, logic, consistency, and reference-backed
+fact checking through a deterministic dimension × chunk matrix.
+
+```text
+/file-processing:content-review ~/Documents/report.md --focus all
+/file-processing:content-review ~/Documents/report.md --references ~/Documents/sources
 ```
-/file-processing:content-review ~/Documents/report.md
-/file-processing:content-review ~/Documents/summary.md --references ~/Documents/source.pdf
-/file-processing:content-review ~/Downloads/article.pdf --focus grammar --language zh
-```
-
-**Supported formats:** .md, .txt, .html, .rtf, .docx, .pdf
-
- See [skills/content-review/SKILL.md](skills/content-review/SKILL.md) for full documentation.
 
 ### markdown-cleanup (v1.0.0)
 
-Clean up formatting artifacts in markitdown-converted .md files -- removes base64 blobs, empty rows, dead links, and other noise while preserving meaningful structure.
-```
+Clean MarkItDown formatting artifacts while preserving meaningful Markdown
+structure.
+
+```text
 /file-processing:markdown-cleanup ~/Documents/report.md
-/file-processing:markdown-cleanup ~/Obsidian\ Vault/03-Projects --dry-run --diff
+/file-processing:markdown-cleanup ~/Documents/notes --dry-run --diff
 ```
 
-No external dependencies (只 Python stdlib). 12 fixers: 9 enabled by default, 3 opt-in.
+### translate (v2.0.0)
 
- See [skills/markdown-cleanup/SKILL.md](skills/markdown-cleanup/SKILL.md) for full documentation.
- See [references/fixer-reference.md](references/fixer-reference.md) for detailed fixer documentation.
+Translate with structure-safe chunking, source-driven terminology, reference
+grounding, and deterministic per-occurrence QA.
 
- examples.
-### translate (v1.0.0)
-
-Translate files to a target language with optional reference-guided terminology. Supports direct translation and reference-guided translation with auto-generated glossary and and structured QA verification.
-
-```
+```text
 /file-processing:translate ~/Documents/report.md --language zh
-/file-processing:translate ~/Downloads/article.pdf --language en
-/file-processing:translate ~/Documents/meeting-notes.md --language zh --references ~/Documents/parallel-zh-summary.md
-/file-processing:translate ~/Documents/report.md --language zh --references ~/Documents/reference-folder/
+/file-processing:translate ~/Documents/report.md --language en --references ~/Documents/reference
 ```
-
-**Supported formats:** All formats supported by markdown-conversion (via markitdown), plus .md and .txt. Non-.md files are converted via markitdown first.
-
- See [skills/translate/SKILL.md](skills/translate/SKILL.md) for full documentation.

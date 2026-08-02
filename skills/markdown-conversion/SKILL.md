@@ -1,101 +1,109 @@
 ---
 name: markdown-conversion
 description: |
-  Convert office documents, PDFs, web pages, media, and other supported files to Markdown for Obsidian or ordinary file workflows. Use for single-file, URL, or directory conversion, text extraction, deterministic draft YAML frontmatter, version/dependency checks, and output conflict handling.
+  Convert local PDF and Office documents, supported files, URLs, or directories into a canonical JSON plus Markdown bundle, or one clean Markdown file. Use for native born-digital PDF extraction, MarkItDown-backed Office conversion, deterministic five-field frontmatter, Chinese language normalization, batch conversion, and transactional output handling.
 metadata:
-  version: 5.0.0
+  version: 6.0.0
 ---
 
-# Convert files to Markdown
+# Convert files to canonical JSON and Markdown
 
-Use `scripts/pipeline.py` for deterministic conversion, encoding repair,
-Traditional-to-Simplified Chinese conversion, image-marker removal, draft YAML
-frontmatter, and output handling.
+Use `scripts/pipeline.py`. Local PDFs use the native PDFium adapter; Office and
+other supported formats use a reused MarkItDown adapter. Both adapters produce
+the same Canonical JSON v1 model and shared Markdown rendering.
 
 ## Interface
 
 ```text
 /file-processing:markdown-conversion <file-url-or-directory>
-  [--output-path <path>]
+  [--output-mode bundle|markdown]
+  [--output-dir <directory> | --output-path <markdown-file>]
+  [--language-normalization simplified|preserve|traditional]
   [--timestamp <ISO-date-or-aware-datetime>]
   [--no-frontmatter]
   [--overwrite | --rename]
   [--types pdf,docx] [--no-recursive]
 ```
 
-## Examples
+`bundle` is the default. `--output-path` is the compatibility interface for one
+exact Markdown file and implies `--output-mode markdown`; batch `--output-path`
+is a deprecated alias for `--output-dir`.
+
+## Outputs
+
+Single-file bundle output defaults beside the source:
 
 ```text
-/file-processing:markdown-conversion --version
-/file-processing:markdown-conversion ~/Downloads/report.pdf
-/file-processing:markdown-conversion https://example.com/article.html
-/file-processing:markdown-conversion ~/Downloads/report.pdf --timestamp 2026-07-22
-/file-processing:markdown-conversion ~/Downloads/papers --types pdf
+report/
+├── report.json
+├── report.md
+└── assets/
+    └── images/
 ```
+
+The assets directory is created only when assets exist. Batch output defaults
+to `<input-dir>/_converted/` and mirrors the input hierarchy. An explicit
+`--output-dir` replaces that output root.
+
+Markdown-only mode emits exactly one `.md` file: no JSON, assets, or sidecars.
+Image caption text is retained in reading order; unlabelled images are omitted,
+and no broken image links are emitted.
 
 ## Workflow
 
-Run:
+1. Resolve and preflight every target before loading an expensive adapter.
+2. Extract local PDFs with PDFium; use MarkItDown for Office and other formats.
+3. Build Canonical JSON v1 with source units, one ordered content stream,
+   referenced tables/assets, stable IDs, and quality warnings.
+4. Preserve adapter `raw_text` and cleaned `text`; derive `normalized_text` with
+   one protected OpenCC pass. The default is `simplified`.
+5. Render Markdown from canonical nodes with the exact five-field frontmatter.
+6. Validate schema, references, asset containment, and hashes.
+7. Publish through staging plus replace/rollback. `--rename` uses `_1`, `_2`, ….
 
-```bash
-python scripts/pipeline.py \
-  --input "<source>" --output-path "<output.md>" \
-  [--timestamp "<ISO-date-or-aware-datetime>"] \
-  [--no-frontmatter] [--overwrite | --rename]
-```
+`quality.status` is `complete`, `complete_with_warnings`, or `partial`; all
+three publish successfully. Known loss, including an OCR-required page, is
+`partial`. Structurally invalid output or a document with no usable content is a
+failure and is not published. Markdown-only warnings are reported on stderr,
+not inserted into the clean file.
 
-Directory mode uses `--input-dir`. Every conversion path runs the same
-deterministic sequence:
+## Frontmatter
 
-1. Convert with MarkItDown.
-2. Remove inline Markdown image markers and orphan image-filename lines.
-3. Normalize encoding and reject known mojibake.
-4. Convert Traditional Chinese to Simplified Chinese.
-5. Inject draft frontmatter unless `--no-frontmatter` was supplied.
-6. Write the final Markdown directly.
-
-## Draft frontmatter
-
-The default frontmatter has exactly five fields:
+Unless `--no-frontmatter` is supplied, Markdown begins with exactly:
 
 ```yaml
 ---
 type: ""
-title: "<first H1 or source stem>"
+title: "<first effective H1 or source stem>"
 description: ""
 tags: []
-timestamp: "<conversion timestamp>"
+timestamp: "<timezone-aware conversion time>"
 ---
 ```
 
-`title` uses the first H1 after conversion, falling back to the input source
-stem. `type` and `description` remain empty and `tags` remains an empty list.
-The pipeline never writes a `resource` field.
+`--timestamp` accepts an ISO date or RFC3339 timezone-aware datetime and
+preserves the supplied value. `--no-frontmatter` affects Markdown only; bundle
+JSON still contains document metadata.
 
-By default, `timestamp` is the timezone-aware conversion time. `--timestamp`
-accepts an ISO date or an RFC3339 timezone-aware datetime (`T`, seconds, and
-`Z` or `±HH:MM`) and preserves the supplied
-value exactly. Naive datetimes are rejected.
+## Scope and limitations
 
-## Dependencies
+- PDF v6 targets born-digital text, rotation, conservative two-column ordering,
+  headings, paragraphs, lists, tables, source bboxes, and extractable images.
+- OCR has an internal provider seam but v6 ships with `NullOcrProvider` only.
+- Office keeps MarkItDown. Detected tracked changes, comments, or unexported
+  embedded images become non-blocking quality warnings/partial output.
+- v6 does not emit RAG chunks, bind an ingestion library, implement a native
+  Office adapter, or claim semantic formula recognition.
+- Existing URL input remains a compatibility path through MarkItDown; its source
+  identity hashes extracted adapter text and is outside native PDF guarantees.
 
-- `markitdown`, `chardet`, and `opencc-python-reimplemented` are required and
-  auto-installed when absent.
-- `doc2docx` is installed on demand for legacy `.doc` files.
-
-Use `python scripts/pipeline.py --version` to report dependency status.
+See `references/canonical-schema-v1.md` for the public JSON contract,
+`references/frontmatter-template.md` for frontmatter, and
+`references/troubleshooting.md` for failures.
 
 ## Exit codes
 
-- `0` — output written, or an empty batch completed.
-- `1` — conversion, input, timestamp, or other validation failure.
-- `2` — output already exists without `--overwrite` or `--rename`.
-
-## Output and paths
-
-- Local-file output defaults beside the source; URL output defaults to the
-  current directory; batch output defaults to the input directory.
-- MarkItDown inline image markers and orphan image-filename lines are always
-  removed; there is no preservation switch.
-- See `references/frontmatter-template.md` for field details and
-  `references/troubleshooting.md` for conversion failures.
+- `0` — output published, including warning or partial output.
+- `1` — input, conversion, validation, staging, write, or rollback failure.
+- `2` — output collision without `--overwrite`/`--rename`; in batch, at least one
+  collision and no true failure.

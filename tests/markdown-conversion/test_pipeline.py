@@ -45,13 +45,10 @@ def test_fix_encoding_gbk_detected_and_converted():
 
 
 def test_mojibake_detected_and_rejected():
-    """Known mojibake patterns should cause exit 1."""
-    from pipeline import die, MOJIBAKE_PATTERNS
-    # Find a pattern that won't be confused with valid UTF-8
-    from pipeline import fix_encoding
-    with pytest.raises(SystemExit) as exc_info:
-        fix_encoding('Hello ï¿½ world'.encode('utf-8'))
-    assert exc_info.value.code == 1
+    """Known mojibake patterns should fail the canonical gate."""
+    from pipeline import CanonicalValidationError, MOJIBAKE_PATTERNS, fix_encoding
+    with pytest.raises(CanonicalValidationError):
+        fix_encoding(f'Hello {MOJIBAKE_PATTERNS[0]} world'.encode('utf-8'))
 
 
 def test_convert_chinese_tc_to_simplified():
@@ -348,34 +345,34 @@ def test_load_config_invalid_json_uses_defaults(tmp_path, monkeypatch):
 def _args_ns(**kwargs):
     """Build a minimal argparse.Namespace for resolve_output_path."""
     from argparse import Namespace
-    base = {'input': None, 'input_dir': None}
+    base = {
+        'input': None, 'input_dir': None, 'output_path': '', 'output_dir': '',
+        'output_mode': None,
+    }
     base.update(kwargs)
     return Namespace(**base)
 
 
-def test_resolve_output_path_single_file_next_to_source(tmp_path):
-    """Single local file: default output goes next to the source file."""
+def test_resolve_output_path_single_file_defaults_to_sibling_bundle(tmp_path):
     from pipeline import resolve_output_path
     src = tmp_path / 'doc.pdf'
     src.write_text('x', encoding='utf-8')
     out = resolve_output_path(_args_ns(input=str(src)))
-    assert out == os.path.join(str(tmp_path), 'doc.md')
+    assert out == os.path.join(str(tmp_path), 'doc')
 
 
-def test_resolve_output_path_url_to_cwd():
-    """URL input: default output goes to the current working directory."""
+def test_resolve_output_path_url_to_cwd_bundle():
     from pipeline import resolve_output_path
     out = resolve_output_path(_args_ns(input='https://example.com/page.html'))
-    assert out.endswith('.md')
-    assert 'example' in out
+    assert not out.endswith('.md')
+    assert out.endswith('page')
 
 
-def test_resolve_output_path_batch_is_input_dir(tmp_path):
-    """Batch: default output directory is the input directory itself."""
+def test_resolve_output_path_batch_uses_converted_directory(tmp_path):
     from pipeline import resolve_output_path
     d = tmp_path / 'srcs'
     d.mkdir()
-    assert resolve_output_path(_args_ns(input_dir=str(d))) == str(d)
+    assert resolve_output_path(_args_ns(input_dir=str(d))) == str(d / '_converted')
 
 
 # --- Batch mode tests -----------------------------------------------------------
@@ -407,11 +404,12 @@ def test_batch_converts_multiple_files(tmp_path):
         str(src_dir), str(out_dir), extra_args=['--timestamp', timestamp]
     )
     assert code == 0, stderr
-    assert (out_dir / 'a.md').exists()
-    assert (out_dir / 'b.md').exists()
-    first = (out_dir / 'a.md').read_text(encoding='utf-8')
+    assert (out_dir / 'a' / 'a.json').exists()
+    assert (out_dir / 'a' / 'a.md').exists()
+    assert (out_dir / 'b' / 'b.md').exists()
+    first = (out_dir / 'a' / 'a.md').read_text(encoding='utf-8')
     assert 'File A' in first
-    assert 'File B' in (out_dir / 'b.md').read_text(encoding='utf-8')
+    assert 'File B' in (out_dir / 'b' / 'b.md').read_text(encoding='utf-8')
     assert _frontmatter_lines(first) == [
         'type: ""',
         'title: "a"',
@@ -421,6 +419,7 @@ def test_batch_converts_multiple_files(tmp_path):
     ]
     assert 'chart.png' not in first
     assert '![' not in first
+    assert 'Chart' in first
     assert 'resource:' not in first
 
 
@@ -437,8 +436,8 @@ def test_batch_mirrors_subdirectory_structure(tmp_path):
 
     code, stdout, stderr = _run_batch(str(src_dir), str(out_dir))
     assert code == 0, stderr
-    assert (out_dir / 'top.md').exists()
-    assert (out_dir / 'sub' / 'nested.md').exists()
+    assert (out_dir / 'top' / 'top.md').exists()
+    assert (out_dir / 'sub' / 'nested' / 'nested.md').exists()
 
 
 def test_batch_no_recursive_flattens(tmp_path):
@@ -454,8 +453,8 @@ def test_batch_no_recursive_flattens(tmp_path):
 
     code, stdout, stderr = _run_batch(str(src_dir), str(out_dir), ['--no-recursive'])
     assert code == 0, stderr
-    assert (out_dir / 'top.md').exists()
-    assert not (out_dir / 'sub' / 'nested.md').exists()
+    assert (out_dir / 'top' / 'top.md').exists()
+    assert not (out_dir / 'sub' / 'nested' / 'nested.md').exists()
 
 
 def test_batch_types_filter(tmp_path):
@@ -470,8 +469,8 @@ def test_batch_types_filter(tmp_path):
 
     code, stdout, stderr = _run_batch(str(src_dir), str(out_dir), ['--types', 'txt'])
     assert code == 0, stderr
-    assert (out_dir / 'keep.md').exists()
-    assert not (out_dir / 'skip.md').exists()
+    assert (out_dir / 'keep' / 'keep.md').exists()
+    assert not (out_dir / 'skip').exists()
 
 
 def test_batch_invalid_types_exits_1(tmp_path):
@@ -491,16 +490,16 @@ def test_batch_continues_on_error(tmp_path):
     src_dir = tmp_path / 'input'
     src_dir.mkdir()
     (src_dir / 'good.txt').write_text('Good', encoding='utf-8')
-    # Create a file that will likely fail — not a valid format for markitdown
-    (src_dir / 'bad.xyz').write_text('bad', encoding='utf-8')
+    # Invalid PDF forces the native adapter to fail while the text file succeeds.
+    (src_dir / 'bad.pdf').write_bytes(b'not-a-pdf')
 
     out_dir = tmp_path / 'output'
     out_dir.mkdir()
 
-    code, stdout, stderr = _run_batch(str(src_dir), str(out_dir), ['--types', 'txt,xyz'])
-    # .xyz will fail but .txt should succeed; exit code should be 0
-    assert code == 0, stderr
-    assert (out_dir / 'good.md').exists()
+    code, stdout, stderr = _run_batch(str(src_dir), str(out_dir), ['--types', 'txt,pdf'])
+    # The invalid PDF fails but the TXT is still published; aggregate exit is failure.
+    assert code == 1, stderr
+    assert (out_dir / 'good' / 'good.md').exists()
 
 
 def test_batch_empty_directory(tmp_path):
@@ -533,10 +532,11 @@ def test_batch_file_exists_skip(tmp_path):
 
     out_dir = tmp_path / 'output'
     out_dir.mkdir()
-    (out_dir / 'file.md').write_text('Old content', encoding='utf-8')
+    (out_dir / 'file').mkdir()
+    (out_dir / 'file' / 'file.md').write_text('Old content', encoding='utf-8')
 
     code, stdout, stderr = _run_batch(str(src_dir), str(out_dir))
-    assert code == 0  # not fatal
+    assert code == 2
     assert 'skipped' in stdout.lower() or 'skipped' in stderr.lower()
 
 
@@ -598,7 +598,7 @@ def test_precheck_mutual_exclusivity(tmp_path):
         '--output-path', str(tmp_path / 'out.md'),
     )
     assert code == 1
-    assert 'mutually exclusive' in stderr.lower()
+    assert 'exactly one' in stderr.lower()
 
 
 def test_precheck_neither_input_nor_dir(tmp_path):
@@ -622,7 +622,7 @@ def test_version_flag():
     assert 'Dependencies:' in stdout
     # Should show pip install names (not import names)
     assert 'opencc-python-reimplemented' in stdout
-    assert 'markdown-conversion v5.0.0' in stdout
+    assert 'markdown-conversion v6.0.0' in stdout
     assert 'ruamel.yaml:' not in stdout
     assert 'cortex:' not in stdout
 
@@ -843,8 +843,7 @@ def test_removed_flags_are_rejected_even_with_version(option):
     assert 'unrecognized arguments' in result.stderr.decode('utf-8', errors='replace').lower()
 
 
-def test_default_strips_images_subprocess(tmp_path):
-    """The converter should always strip image syntax from output."""
+def test_markdown_only_replaces_images_with_caption_text(tmp_path):
     src = tmp_path / 'images.txt'
     src.write_text('# Title\n\n![Chart](chart.png)\n\nSome text.\n\n![Graph](graph.jpg)\n\nMore text.', encoding='utf-8')
     out = tmp_path / 'out.md'
@@ -856,6 +855,8 @@ def test_default_strips_images_subprocess(tmp_path):
     content = out.read_text(encoding='utf-8')
     assert '![' not in content
     assert 'chart.png' not in content
+    assert 'Chart' in content
+    assert 'Graph' in content
     assert 'Some text.' in content
     assert 'More text.' in content
 
@@ -881,14 +882,11 @@ def test_url_to_slug_auth():
     assert 'example' in slug
 
 
-def test_strip_images_code_block_not_affected():
-    """strip_images should handle code blocks the same as other text (known behavior)."""
+def test_strip_images_protects_code_blocks():
     from pipeline import strip_images
-    # This documents current behavior: images inside code blocks are also stripped
     raw = '```\n![inside code](img.jpg)\n```\n'
     result = strip_images(raw)
-    # Current behavior: images inside code ARE stripped (documented limitation)
-    assert '![' not in result
+    assert '![inside code](img.jpg)' in result
 
 
 def test_strip_images_preserves_links():
@@ -896,3 +894,578 @@ def test_strip_images_preserves_links():
     from pipeline import strip_images
     raw = 'Check out [this link](https://example.com) for more info.'
     assert strip_images(raw) == raw
+
+
+# --- v6 canonical bundle and adapter acceptance tests -------------------------
+
+
+def _run_bundle(source, output_dir, extra_args=None):
+    args = SCRIPT + CONFIG_ARG + ['--input', str(source), '--output-dir', str(output_dir)]
+    if extra_args:
+        args += list(extra_args)
+    result = subprocess.run(args, capture_output=True)
+    bundle = Path(output_dir) / Path(source).stem
+    return (
+        result.returncode,
+        result.stdout.decode('utf-8', errors='replace'),
+        result.stderr.decode('utf-8', errors='replace'),
+        bundle,
+    )
+
+
+def _load_bundle(bundle):
+    return json.loads((bundle / f'{bundle.name}.json').read_text(encoding='utf-8'))
+
+
+def test_default_bundle_contains_canonical_json_and_markdown(tmp_path):
+    src = tmp_path / 'report.txt'
+    src.write_text('# Report\n\nBody', encoding='utf-8')
+    code, stdout, stderr, bundle = _run_bundle(src, tmp_path / 'out')
+    assert code == 0, stderr
+    assert sorted(path.name for path in bundle.iterdir()) == ['report.json', 'report.md']
+    data = _load_bundle(bundle)
+    assert data['schema_version'] == '1.0'
+    assert data['outputs']['mode'] == 'bundle'
+    assert data['document']['document_id'] == f"sha256:{data['source']['sha256']}"
+    assert data['quality']['status'] == 'complete'
+
+
+def test_single_file_without_output_flags_uses_sibling_bundle(tmp_path):
+    src = tmp_path / 'sibling.txt'
+    src.write_text('Body', encoding='utf-8')
+    result = subprocess.run(SCRIPT + CONFIG_ARG + ['--input', str(src)], capture_output=True)
+    assert result.returncode == 0, result.stderr.decode(errors='replace')
+    assert (tmp_path / 'sibling' / 'sibling.json').exists()
+    assert (tmp_path / 'sibling' / 'sibling.md').exists()
+
+
+def test_output_path_rejects_explicit_bundle_mode(tmp_path):
+    src = tmp_path / 'source.txt'
+    src.write_text('Body', encoding='utf-8')
+    target = tmp_path / 'target.md'
+    result = subprocess.run(
+        SCRIPT + CONFIG_ARG + [
+            '--input', str(src), '--output-mode', 'bundle', '--output-path', str(target),
+        ],
+        capture_output=True,
+    )
+    assert result.returncode == 1
+    assert '--output-path is valid only' in result.stderr.decode(errors='replace')
+    assert not target.exists()
+
+
+def test_markdown_only_emits_exactly_one_file_and_no_dead_image_links(tmp_path):
+    src = tmp_path / 'images.txt'
+    src.write_text('![Caption](missing.png)\n\nBody\n\n![](silent.png)', encoding='utf-8')
+    target = tmp_path / 'clean.md'
+    result = subprocess.run(
+        SCRIPT + CONFIG_ARG + ['--input', str(src), '--output-path', str(target)],
+        capture_output=True,
+    )
+    assert result.returncode == 0, result.stderr.decode(errors='replace')
+    assert sorted(path.name for path in tmp_path.iterdir()) == ['clean.md', 'images.txt']
+    markdown = target.read_text(encoding='utf-8')
+    assert 'Caption' in markdown
+    assert 'missing.png' not in markdown
+    assert 'silent.png' not in markdown
+    assert '![' not in markdown
+
+
+def test_traditional_raw_text_is_preserved_while_markdown_is_simplified(tmp_path):
+    src = tmp_path / 'traditional.txt'
+    src.write_text('繁體中文與軟體', encoding='utf-8')
+    code, _, stderr, bundle = _run_bundle(src, tmp_path / 'out')
+    assert code == 0, stderr
+    data = _load_bundle(bundle)
+    node = data['content'][0]
+    assert node['raw_text'] == '繁體中文與軟體'
+    assert node['text'] == '繁體中文與軟體'
+    assert node['normalized_text'] == '繁体中文与软体'
+    assert '繁体中文与软体' in (bundle / 'traditional.md').read_text(encoding='utf-8')
+
+
+def test_language_normalization_protects_code_url_path_hash_and_formula():
+    from canonical import convert_chinese
+    digest = 'a' * 64
+    value = f'軟體 `繁體` https://example.com/繁體 C:\\繁體\\file sha256:{digest} $變數$'
+    converted = convert_chinese(value, 'simplified')
+    assert converted.startswith('软体 ')
+    assert '`繁體`' in converted
+    assert 'https://example.com/繁體' in converted
+    assert 'C:\\繁體\\file' in converted
+    assert f'sha256:{digest}' in converted
+    assert '$變數$' in converted
+
+
+def test_same_source_produces_stable_document_and_node_ids(tmp_path):
+    src = tmp_path / 'stable.txt'
+    src.write_text('# Stable\n\nSame bytes', encoding='utf-8')
+    first = _run_bundle(src, tmp_path / 'first')[3]
+    second = _run_bundle(src, tmp_path / 'second')[3]
+    left, right = _load_bundle(first), _load_bundle(second)
+    assert left['document']['document_id'] == right['document']['document_id']
+    assert [node['id'] for node in left['content']] == [node['id'] for node in right['content']]
+
+
+def test_content_is_authoritative_order_for_table_reference(tmp_path):
+    src = tmp_path / 'table.md'
+    src.write_text('Before\n\n| Name | Value |\n| --- | --- |\n| A | 1 |\n\nAfter', encoding='utf-8')
+    code, _, stderr, bundle = _run_bundle(src, tmp_path / 'out')
+    assert code == 0, stderr
+    data = _load_bundle(bundle)
+    types = [node['type'] for node in data['content']]
+    assert types == ['paragraph', 'table', 'paragraph']
+    table_node = data['content'][1]
+    assert table_node['table_id'] == data['tables'][0]['table_id']
+    assert data['tables'][0]['rows'][1][1]['value'] == 1
+
+
+def test_semantic_validator_rejects_dangling_reference(tmp_path):
+    from canonical import CanonicalValidationError, validate_canonical
+    src = tmp_path / 'source.txt'
+    src.write_text('Body', encoding='utf-8')
+    bundle = _run_bundle(src, tmp_path / 'out')[3]
+    data = _load_bundle(bundle)
+    data['content'][0].update({'type': 'table', 'table_id': 'table-0000000000000000'})
+    with pytest.raises(CanonicalValidationError, match='dangling table'):
+        validate_canonical(data, bundle)
+
+
+def test_semantic_validator_rejects_asset_path_escape_and_hash_mismatch(tmp_path):
+    from canonical import CanonicalValidationError, stable_id, validate_canonical
+    src = tmp_path / 'source.txt'
+    src.write_text('Body', encoding='utf-8')
+    bundle = _run_bundle(src, tmp_path / 'out')[3]
+    data = _load_bundle(bundle)
+    document_id = data['document']['document_id']
+    locator = {'source_unit_id': data['source_units'][0]['id'], 'index': 1}
+    asset_id = stable_id('asset', document_id, locator, 'image', 1)
+    data['assets'].append({
+        'asset_id': asset_id, 'type': 'image', 'path': '../escape.png',
+        'sha256': '0' * 64, 'media_type': 'image/png', 'source_locator': locator,
+        'alt': '', 'caption': '',
+    })
+    data['content'].append({
+        'id': stable_id('node', document_id, locator, 'image', 99), 'type': 'image',
+        'source_locator': locator, 'asset_id': asset_id,
+    })
+    with pytest.raises(CanonicalValidationError, match='escapes bundle'):
+        validate_canonical(data, bundle)
+    asset_path = bundle / 'assets' / 'images' / 'actual.png'
+    asset_path.parent.mkdir(parents=True)
+    asset_path.write_bytes(b'actual')
+    data['assets'][0]['path'] = 'assets/images/actual.png'
+    with pytest.raises(CanonicalValidationError, match='hash mismatch'):
+        validate_canonical(data, bundle)
+
+
+def test_quality_status_classification():
+    from canonical import quality_from_warnings
+    assert quality_from_warnings([]) == 'complete'
+    assert quality_from_warnings([{'content_loss': False}]) == 'complete_with_warnings'
+    assert quality_from_warnings([{'content_loss': True}]) == 'partial'
+
+
+def test_semantic_validator_rejects_quality_and_output_manifest_mismatch(tmp_path):
+    from canonical import CanonicalValidationError, validate_canonical
+    src = tmp_path / 'source.txt'
+    src.write_text('Body', encoding='utf-8')
+    bundle = _run_bundle(src, tmp_path / 'out')[3]
+    data = _load_bundle(bundle)
+    data['quality']['status'] = 'partial'
+    with pytest.raises(CanonicalValidationError, match='quality status'):
+        validate_canonical(data, bundle)
+    data = _load_bundle(bundle)
+    data['outputs']['markdown']['sha256'] = '0' * 64
+    with pytest.raises(CanonicalValidationError, match='Markdown hash mismatch'):
+        validate_canonical(data, bundle)
+
+
+def test_no_frontmatter_keeps_json_metadata(tmp_path):
+    src = tmp_path / 'plain.txt'
+    src.write_text('Body', encoding='utf-8')
+    code, _, stderr, bundle = _run_bundle(src, tmp_path / 'out', ['--no-frontmatter', '--timestamp', '2026-08-02'])
+    assert code == 0, stderr
+    assert not (bundle / 'plain.md').read_text(encoding='utf-8').startswith('---')
+    assert _load_bundle(bundle)['document']['conversion_timestamp'] == '2026-08-02'
+
+
+def test_bundle_rename_uses_deterministic_suffix_for_folder_and_files(tmp_path):
+    src = tmp_path / 'report.txt'
+    src.write_text('Body', encoding='utf-8')
+    output = tmp_path / 'out'
+    assert _run_bundle(src, output)[0] == 0
+    code, _, stderr, _ = _run_bundle(src, output, ['--rename'])
+    assert code == 0, stderr
+    renamed = output / 'report_1'
+    assert (renamed / 'report_1.json').exists()
+    assert (renamed / 'report_1.md').exists()
+
+
+def test_default_batch_uses_converted_and_does_not_reprocess_outputs(tmp_path):
+    source = tmp_path / 'input'
+    source.mkdir()
+    (source / 'one.txt').write_text('One', encoding='utf-8')
+    args = SCRIPT + CONFIG_ARG + ['--input-dir', str(source)]
+    first = subprocess.run(args, capture_output=True)
+    assert first.returncode == 0, first.stderr.decode(errors='replace')
+    assert (source / '_converted' / 'one' / 'one.json').exists()
+    second = subprocess.run(args, capture_output=True)
+    assert second.returncode == 2
+    assert not (source / '_converted' / '_converted').exists()
+
+
+def test_collision_is_detected_before_adapter_or_normalizer(tmp_path, monkeypatch):
+    from argparse import Namespace
+    import pipeline
+    src = tmp_path / 'early.txt'
+    src.write_text('Body', encoding='utf-8')
+    (tmp_path / 'early').mkdir()
+    args = Namespace(
+        input=str(src), input_dir=None, output_path='', output_dir='', output_mode='bundle',
+        overwrite=False, rename=False, timestamp='2026-08-02', language_normalization='simplified',
+        no_frontmatter=False,
+    )
+    monkeypatch.setattr(pipeline, '_build_document', lambda *a, **k: pytest.fail('adapter was called'))
+    with pytest.raises(pipeline.OutputCollision):
+        pipeline.convert_one(args, str(src))
+
+
+def test_markitdown_instance_is_reused():
+    import adapters
+    adapters._MARKITDOWN = None
+    assert adapters.get_markitdown() is adapters.get_markitdown()
+
+
+def test_opencc_runtime_uses_one_conversion_pass(monkeypatch):
+    import canonical
+    calls = []
+
+    class FakeConverter:
+        def convert(self, value):
+            calls.append(value)
+            return value
+
+    monkeypatch.setattr(canonical, '_opencc_converter', lambda profile: FakeConverter())
+    canonical.convert_chinese('內容', 'simplified')
+    assert len(calls) == 1
+
+
+def test_many_canonical_records_share_one_opencc_pass(monkeypatch):
+    import canonical
+    calls = []
+
+    def fake_convert(value, mode):
+        calls.append((value, mode))
+        return value
+
+    monkeypatch.setattr(canonical, 'convert_chinese', fake_convert)
+    nodes = [
+        {'type': 'paragraph', 'text': f'內容 {index}', 'normalized_text': ''}
+        for index in range(100)
+    ]
+    canonical.normalize_canonical_text(nodes, [], 'simplified')
+    assert len(calls) == 1
+    assert [node['normalized_text'] for node in nodes] == [f'內容 {index}' for index in range(100)]
+
+
+def test_ooxml_feature_preflight_is_lightweight_and_nonblocking(tmp_path):
+    import zipfile
+    from adapters import inspect_ooxml_features
+    package = tmp_path / 'features.docx'
+    with zipfile.ZipFile(package, 'w') as archive:
+        archive.writestr('word/document.xml', '<w:document><w:ins/><w:del/></w:document>')
+        archive.writestr('word/comments.xml', '<w:comments/>')
+        archive.writestr('word/media/image1.png', b'png')
+    warnings = inspect_ooxml_features(package, 'unit-0000000000000000')
+    codes = {item['code'] for item in warnings}
+    assert codes == {
+        'office_embedded_images_not_exported',
+        'office_comments_not_preserved',
+        'office_tracked_changes_not_preserved',
+    }
+    assert all(item['content_loss'] for item in warnings)
+
+
+def _make_pdf(path, draw):
+    from reportlab.pdfgen import canvas
+    document = canvas.Canvas(str(path), pagesize=(612, 792))
+    draw(document)
+    document.save()
+
+
+def test_native_pdf_adapter_emits_page_locators_and_clean_markdown(tmp_path):
+    pdf = tmp_path / 'native.pdf'
+
+    def draw(c):
+        c.setFont('Helvetica-Bold', 18)
+        c.drawString(72, 740, 'Native PDF')
+        c.setFont('Helvetica', 10)
+        c.drawString(72, 710, 'First paragraph line')
+        c.drawString(72, 698, 'continues here.')
+
+    _make_pdf(pdf, draw)
+    code, _, stderr, bundle = _run_bundle(pdf, tmp_path / 'out')
+    assert code == 0, stderr
+    data = _load_bundle(bundle)
+    assert data['adapter']['name'] == 'pdfium'
+    assert data['source_units'][0]['locator']['page'] == 1
+    assert all('bbox' in node['source_locator'] for node in data['content'])
+    markdown = (bundle / 'native.md').read_text(encoding='utf-8')
+    assert 'block:' not in markdown
+    assert 'Native PDF' in markdown
+
+
+def test_native_pdf_two_columns_are_not_interleaved(tmp_path):
+    pdf = tmp_path / 'columns.pdf'
+
+    def draw(c):
+        c.setFont('Helvetica', 10)
+        for index, y in enumerate((720, 700, 680), start=1):
+            c.drawString(60, y, f'L{index} left column')
+            c.drawString(340, y, f'R{index} right column')
+
+    _make_pdf(pdf, draw)
+    bundle = _run_bundle(pdf, tmp_path / 'out')[3]
+    markdown = (bundle / 'columns.md').read_text(encoding='utf-8')
+    positions = [markdown.index(label) for label in ('L1', 'L2', 'L3', 'R1', 'R2', 'R3')]
+    assert positions == sorted(positions)
+    data = _load_bundle(bundle)
+    assert any(warning['code'] == 'multi_column_order_inferred' for warning in data['quality']['warnings'])
+
+
+def test_pdf_line_joining_handles_cjk_hyphen_indent_and_list_continuation():
+    from pdf_adapter import _classify_blocks, _join_lines
+    assert _join_lines(['這是第一行', '接續內容']) == '這是第一行接續內容'
+    assert _join_lines(['inter-', 'national']) == 'international'
+
+    def line(text, left, bottom, top):
+        return {
+            'text': text, 'bbox': [left, bottom, left + 100, top],
+            'layout_bbox': [left, bottom, left + 100, top],
+            'font_size': 10, 'font_weight': 400,
+            'cells': [{'text': text, 'bbox': [left, bottom, left + 100, top], 'layout_bbox': [left, bottom, left + 100, top]}],
+        }
+
+    indented = _classify_blocks([line('First paragraph', 50, 700, 710), line('New paragraph', 90, 688, 698)], 1)
+    assert len(indented) == 2
+    listed = _classify_blocks([line('- List item', 50, 700, 710), line('continued text', 70, 688, 698)], 1)
+    assert len(listed) == 1 and listed[0]['type'] == 'list_item'
+
+
+def test_ocr_required_page_publishes_partial_bundle(tmp_path):
+    pdf = tmp_path / 'partial.pdf'
+
+    def draw(c):
+        c.drawString(72, 720, 'Usable page')
+        c.showPage()
+        c.rect(72, 600, 200, 100, stroke=1, fill=0)
+
+    _make_pdf(pdf, draw)
+    code, stdout, stderr, bundle = _run_bundle(pdf, tmp_path / 'out')
+    assert code == 0, stderr
+    data = _load_bundle(bundle)
+    assert data['quality']['status'] == 'partial'
+    assert data['source_units'][1]['status'] == 'ocr_required'
+    assert '[PARTIAL]' in stdout
+
+
+def test_pdf_without_any_usable_content_fails_without_publication(tmp_path):
+    pdf = tmp_path / 'blank.pdf'
+    _make_pdf(pdf, lambda c: c.showPage())
+    code, _, stderr, bundle = _run_bundle(pdf, tmp_path / 'out')
+    assert code == 1
+    assert 'no usable content' in stderr
+    assert not bundle.exists()
+
+
+def test_pdf_embedded_image_is_published_and_referenced(tmp_path):
+    from PIL import Image
+    image = tmp_path / 'pixel.png'
+    Image.new('RGB', (20, 20), 'red').save(image)
+    pdf = tmp_path / 'picture.pdf'
+
+    def draw(c):
+        c.drawString(72, 720, 'Before image')
+        c.drawImage(str(image), 72, 650, width=40, height=40)
+        c.drawString(72, 620, 'After image')
+
+    _make_pdf(pdf, draw)
+    code, _, stderr, bundle = _run_bundle(pdf, tmp_path / 'out')
+    assert code == 0, stderr
+    data = _load_bundle(bundle)
+    assert len(data['assets']) == 1
+    assert any(node['type'] == 'image' and node['asset_id'] == data['assets'][0]['asset_id'] for node in data['content'])
+    assert [node['type'] for node in data['content']] == ['paragraph', 'image', 'paragraph']
+    asset = bundle / data['assets'][0]['path']
+    assert asset.exists()
+    import hashlib
+    assert hashlib.sha256(asset.read_bytes()).hexdigest() == data['assets'][0]['sha256']
+
+
+def test_table_renderer_uses_null_confidence_without_inventing_headers():
+    from canonical import render_table
+    table = {
+        'confidence': None,
+        'rows': [
+            [{'raw_text': 'A', 'text': 'A', 'normalized_text': 'A', 'rowspan': 1, 'colspan': 1}],
+            [
+                {'raw_text': 'B', 'text': 'B', 'normalized_text': 'B', 'rowspan': 1, 'colspan': 1},
+                {'raw_text': '2', 'text': '2', 'normalized_text': '2', 'rowspan': 1, 'colspan': 1},
+            ],
+        ],
+    }
+    rendered = render_table(table)
+    assert rendered == 'A\nB | 2'
+    assert 'header' not in rendered.lower()
+
+
+def test_bundle_replace_failure_rolls_back_previous_target(tmp_path, monkeypatch):
+    import pipeline
+    target = tmp_path / 'target'
+    target.mkdir()
+    (target / 'old.txt').write_text('old', encoding='utf-8')
+    stage = tmp_path / 'stage'
+    stage.mkdir()
+    (stage / 'new.txt').write_text('new', encoding='utf-8')
+    real_replace = os.replace
+    calls = []
+
+    def flaky(source, destination):
+        calls.append((Path(source), Path(destination)))
+        if len(calls) == 2:
+            raise OSError('simulated replace failure')
+        return real_replace(source, destination)
+
+    monkeypatch.setattr(pipeline.os, 'replace', flaky)
+    with pytest.raises(OSError, match='simulated'):
+        pipeline._publish_directory(stage, target, True)
+    assert (target / 'old.txt').read_text(encoding='utf-8') == 'old'
+    assert not (target / 'new.txt').exists()
+
+
+def test_bundle_overwrite_replaces_regular_file_target(tmp_path):
+    import pipeline
+    target = tmp_path / 'target'
+    target.write_text('old file', encoding='utf-8')
+    stage = tmp_path / 'stage'
+    stage.mkdir()
+    (stage / 'new.txt').write_text('new', encoding='utf-8')
+
+    pipeline._publish_directory(stage, target, True)
+
+    assert target.is_dir()
+    assert (target / 'new.txt').read_text(encoding='utf-8') == 'new'
+    assert not list(tmp_path.glob('.target.backup-*'))
+
+
+def test_bundle_backup_cleanup_failure_is_nonfatal_after_commit(tmp_path, monkeypatch, capsys):
+    import pipeline
+    target = tmp_path / 'target'
+    target.mkdir()
+    (target / 'old.txt').write_text('old', encoding='utf-8')
+    stage = tmp_path / 'stage'
+    stage.mkdir()
+    (stage / 'new.txt').write_text('new', encoding='utf-8')
+    real_remove_path = pipeline._remove_path
+
+    def fail_backup_cleanup(path):
+        if '.target.backup-' in Path(path).name:
+            raise PermissionError('simulated cleanup failure')
+        return real_remove_path(path)
+
+    monkeypatch.setattr(pipeline, '_remove_path', fail_backup_cleanup)
+
+    pipeline._publish_directory(stage, target, True)
+
+    assert (target / 'new.txt').read_text(encoding='utf-8') == 'new'
+    assert not (target / 'old.txt').exists()
+    backups = list(tmp_path.glob('.target.backup-*'))
+    assert len(backups) == 1
+    assert (backups[0] / 'old.txt').read_text(encoding='utf-8') == 'old'
+    stderr = capsys.readouterr().err
+    assert 'published' in stderr
+    assert 'could not remove backup' in stderr
+
+
+def test_office_embedded_image_publishes_partial_without_blocking_text(tmp_path):
+    from docx import Document
+    from PIL import Image
+    picture = tmp_path / 'office.png'
+    Image.new('RGB', (16, 16), 'blue').save(picture)
+    source = tmp_path / 'office.docx'
+    document = Document()
+    document.add_paragraph('Usable Office text')
+    document.add_picture(str(picture))
+    document.save(source)
+    code, stdout, stderr, bundle = _run_bundle(source, tmp_path / 'out')
+    assert code == 0, stderr
+    data = _load_bundle(bundle)
+    assert data['quality']['status'] == 'partial'
+    assert any(item['code'] == 'office_embedded_images_not_exported' for item in data['quality']['warnings'])
+    assert 'Usable Office text' in (bundle / 'office.md').read_text(encoding='utf-8')
+    assert '[PARTIAL]' in stdout
+
+
+def test_pdf_fake_ocr_provider_contract_can_supply_nodes(tmp_path):
+    from canonical import sha256_file
+    from pdf_adapter import PdfAdapter
+    source = tmp_path / 'ocr.pdf'
+
+    def draw(c):
+        c.rect(72, 600, 200, 100, stroke=1, fill=0)
+
+    _make_pdf(source, draw)
+
+    class FakeOcr:
+        name = 'fake-ocr'
+
+        def extract(self, page, page_number):
+            return [{
+                'type': 'paragraph', 'text': 'Recovered OCR text',
+                'bbox': [72.0, 600.0, 272.0, 700.0],
+                'layout_bbox': [72.0, 600.0, 272.0, 700.0],
+            }]
+
+    digest = sha256_file(source)
+    result = PdfAdapter(FakeOcr()).extract(str(source), f'sha256:{digest}', 'simplified')
+    assert result['content'][0]['normalized_text'] == 'Recovered OCR text'
+    assert result['source_units'][0]['status'] == 'warning'
+    assert any(item['code'] == 'ocr_applied' for item in result['warnings'])
+
+
+def test_pdf_rotation_is_normalized_while_source_orientation_is_recorded(tmp_path):
+    source = tmp_path / 'rotated.pdf'
+
+    def draw(c):
+        c.saveState()
+        c.translate(100, 100)
+        c.rotate(90)
+        c.drawString(0, 0, 'Rotated text')
+        c.restoreState()
+
+    _make_pdf(source, draw)
+    code, _, stderr, bundle = _run_bundle(source, tmp_path / 'out')
+    assert code == 0, stderr
+    data = _load_bundle(bundle)
+    locator = data['source_units'][0]['locator']
+    assert locator['orientation_normalized'] is True
+    assert locator['dominant_text_angle'] == 90
+    assert 'Rotated text' in (bundle / 'rotated.md').read_text(encoding='utf-8')
+
+
+def test_cross_page_paragraphs_merge_with_locator_span(tmp_path):
+    source = tmp_path / 'continued.pdf'
+
+    def draw(c):
+        c.drawString(72, 72, 'This paragraph continues')
+        c.showPage()
+        c.drawString(72, 740, 'on the next page.')
+
+    _make_pdf(source, draw)
+    code, _, stderr, bundle = _run_bundle(source, tmp_path / 'out')
+    assert code == 0, stderr
+    paragraphs = [node for node in _load_bundle(bundle)['content'] if node['type'] == 'paragraph']
+    assert len(paragraphs) == 1
+    assert paragraphs[0]['text'] == 'This paragraph continues on the next page.'
+    assert paragraphs[0]['source_locator']['continued_to_page'] == 2

@@ -1,136 +1,33 @@
-# Troubleshooting
+# markdown-conversion troubleshooting
 
-## Garbled Text / Mojibake (Chinese Characters)
+## Output already exists
 
-**Symptoms:** Output shows `????` or garbled text instead of Chinese characters.
+Exit code `2` means the target bundle directory or Markdown file already exists.
+Use `--overwrite` for transactional replacement or `--rename` for `_1`, `_2`, ….
 
-**Cause:** Document encoded in GBK/GB2312. The skill requires `chardet` to detect and fix this automatically (auto-installed if missing).
+## Partial output
 
-**Solution:** The skill handles this automatically. If the issue persists, ensure `chardet` is installed:
-```bash
-pip install chardet
-```
+`partial` is publishable and returns exit code `0`. Inspect
+`report.json -> quality.warnings` for exact page/unit codes. In Markdown-only
+mode the same warnings are printed to stderr because no sidecar is allowed.
 
-**How it works:** Documents with non-UTF-8 encodings (e.g., GBK/GB2312 Chinese text) are automatically detected and converted:
-1. Uses `chardet` to detect source encoding (required dependency)
-2. Decodes with detected encoding, re-encodes to UTF-8
-3. Converts all Traditional Chinese characters to Simplified Chinese via `opencc`
+Common codes include `ocr_required`, `office_embedded_images_not_exported`,
+`office_tracked_changes_not_preserved`, and `table_structure_uncertain`.
 
-## Legacy .doc Files Not Converting
+## No usable content
 
-**Symptoms:** Error "UnsupportedFormatException" for .doc files.
+An all-blank or unsupported source with no accepted text, table, or published
+asset fails and leaves no target. v6 has an OCR provider seam but does not ship
+an OCR engine.
 
-**Solution:** The skill auto-installs `doc2docx` for legacy `.doc` format support. No manual action needed.
+## Bundle validation failure
 
-**How it works:** MarkItDown only supports modern `.docx` format, not legacy `.doc` (Word 97-2003). The skill handles this automatically:
-1. Detects `.doc` file extension
-2. Auto-installs `doc2docx` if not present
-3. Converts to temporary `.docx` using `doc2docx` library
-4. Processes the converted file
-5. Cleans up temporary files
+Publication is blocked if Canonical JSON fails its schema, table/asset references
+are dangling, an asset escapes the bundle, or an asset SHA-256 differs. Existing
+targets are restored when replacement fails.
 
-**Alternative:** Manually convert using Word or LibreOffice:
-```bash
-# LibreOffice (if available)
-soffice --headless --convert-to docx input.doc
-```
+## URL input
 
-## Permission Denied Errors
-
-**Cause:** Windows file locking or insufficient permissions.
-
-**Solutions:**
-- Close the file in other applications before converting
-- Run with appropriate permissions
-- Check if vault folder has write access
-
-## MarkItDown Not Found
-
-**Symptoms:** Error "MarkItDown not found."
-
-**Solution:** The skill auto-installs `markitdown` if missing. If the issue persists:
-```bash
-pip install markitdown
-```
-
-## Large Files Taking Too Long
-
-**Cause:** Conversion of large PDFs or complex documents can take several minutes.
-
-**Solutions:**
-- Wait for progress updates - the skill reports each step for large files
-- Typical times: 10MB file = 1-3 minutes, 50MB file = 5-10 minutes
-- Consider splitting very large PDFs first
-- Use `--no-frontmatter` for slightly faster processing
-
-## Empty Draft Fields
-
-**Symptoms:** The converted Markdown contains `description: ""` and `tags: []`.
-
-**Meaning:** This is intentional. The converter emits an exact five-field draft
-and does not invent a type, summary, or classification. Only the title and
-timestamp receive deterministic values.
-
-## Timestamp Override Is Rejected
-
-**Cause:** `--timestamp` received a non-ISO value or a datetime without a
-timezone offset.
-
-**Solution:** Supply an ISO date such as `2026-07-22`, or a timezone-aware ISO
-datetime such as `2026-07-22T14:05:06+08:00`.
-
-## FFmpeg Warning (Media Files)
-
-**Symptoms:** `RuntimeWarning: Couldn't find ffmpeg or avconv - defaulting to ffmpeg, but may not work`
-
-**Cause:** The `markitdown` tool uses ffmpeg to extract metadata from audio/video files (MP3, MP4, WAV, etc.). This warning appears when ffmpeg is not installed on your system.
-
-**Solution:**
-
-**Windows:**
-```bash
-# Install via winget
-winget install Gyan.FFmpeg
-
-# Or download from https://ffmpeg.org/download.html and add to PATH
-```
-
-**macOS:**
-```bash
-brew install ffmpeg
-```
-
-**Linux:**
-```bash
-sudo apt-get install ffmpeg  # Debian/Ubuntu
-sudo yum install ffmpeg      # RHEL/CentOS
-```
-
-**Note:** This warning is harmless for document conversion (PDF, DOCX, etc.). It only affects media file metadata extraction.
-
-## Error Reference
-
-Common error scenarios and how the skill handles them:
-
-| Scenario | Behavior |
-|----------|----------|
-| File not found | Clear error: `"File not found: {path}"` |
-| Unsupported format | Error with extension, suggest checking markitdown docs |
-| MarkItDown not installed | Auto-installed by pipeline |
-| Vault path doesn't exist | Error: `"Vault not found at {path}"` |
-| Output file exists | Prompt to overwrite, rename, or cancel |
-| Permission denied | Error: `"Permission denied writing to {path}"` |
-| Conversion fails | Error with markitdown's error message |
-| Legacy .doc without doc2docx | Auto-installed by pipeline |
-| URL fetch fails | Error from markitdown's HTTP client |
-
-## Limitations
-
-| Limitation | Details | Workaround |
-|------------|---------|------------|
-| **Images** | MarkItDown inline image markers and orphan image-filename lines are stripped | Extract or manage image assets in a separate media workflow |
-| **Read-only source directory** | Default output writes next to the source and fails if that directory is not writable | Pass `--output-path` pointing to a writable location |
-| **Formatting** | Complex formatting may be simplified | Review and adjust markdown after conversion |
-| **Password-protected files** | Cannot convert encrypted documents | Remove password protection first |
-| **Very large files** | Files > 100MB may take significant time | Split PDFs or process in batches |
-| **Internal links** | Document links are not converted to wikilinks | Manually convert `[]()` to `[[]]` syntax |
+URLs remain a MarkItDown compatibility path. Use an explicit output target for
+predictable automation. Remote download security/caching and native remote-PDF
+guarantees are outside v6.

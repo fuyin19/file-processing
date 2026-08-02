@@ -30,3 +30,4 @@ The converter never writes `resource`. `--timestamp` accepts an ISO date or an
 RFC3339 timezone-aware datetime (`T`, seconds, and `Z` or `±HH:MM`); naive
 datetimes are rejected. Use
 `--no-frontmatter` only when a consumer explicitly requires body-only Markdown.
+In bundle mode this flag does not remove canonical document metadata from JSON.
