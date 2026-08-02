@@ -1,0 +1,10 @@
+{
+  "terminal": null,
+  "prior_terminal": "review_incomplete",
+  "run_id": "rar-4a562a6bc5fc",
+  "status": "dispatch_lenses",
+  "lenses": {
+    "lens_1": "f0336a2a-82ab-458a-b453-37542e12dda7",
+    "lens_2": "171497ce-704b-40b2-b8bf-795505ee9304"
+  }
+}

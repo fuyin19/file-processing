@@ -1,0 +1,124 @@
+{
+  "received_envelope": {
+    "run_id": "rar-cbffad11a831",
+    "config_revision": 1,
+    "config_hash": "sha256:efa9be4b10c458808d825f565dea7d971d0f2cadd83f63ebc5c18efca921efd6",
+    "review_mode": "audit",
+    "full_pass_id": "pass-1",
+    "plan_version_id": "plan-v1",
+    "plan_content_hash": "sha256:1b4ffab5f116a1b5c6a831abb4e33b44e7ff28a511dcfb56fe4f359302f273ac",
+    "context_package_id": "ctx-3879b6a7a72a",
+    "context_package_hash": "sha256:3a6cc94c80ecce4183dcfc11d35fab19a19ef792b7ca85ded332e6ea1c2a171c",
+    "package_identity": {
+      "skill_id": "recursive-adversarial-review",
+      "skill_version": "0.6.0",
+      "workflow_version": "0.6.0",
+      "config_schema_version": "3.0",
+      "suite_release_id": "2026.07.19.1",
+      "manifest_digest": "sha256:6363a2b1c16997870d86d7d46c411189d50b77f8657a068087070e574e8c6592"
+    },
+    "dispatch_id": "pass-1-lens_2",
+    "attempt_id": "pass-1-lens_2-a1",
+    "retry_of_attempt_id": null,
+    "fresh_instance_id": "fresh-21e8842ad74f",
+    "input_artifact_hash": "sha256:2138ca11fe7118709e757a64da7d1065a8c3b7a909b0d1f0b1491bbb247743cc",
+    "role": "adversarial-plan-reviewer",
+    "lens": {
+      "focus_statement": "assumptions, risk, recovery, completeness, and verification",
+      "kind": "universal",
+      "lens_id": "lens_2",
+      "source": "universal",
+      "user_focus_ids": []
+    },
+    "lens_id": "lens_2",
+    "lens_kind": "universal"
+  },
+  "context_sufficiency": "sufficient",
+  "missing_context": [],
+  "thin_haul": false,
+  "raw_findings": [
+    {
+      "raw_finding_id": "pass-1-lens_2-rf01",
+      "severity": "must-fix",
+      "dimension": "recovery",
+      "finding": "The OKF conversion path writes body to a runtime staging area and only creates the final target after plan approval and validation, but the plan never defines recovery for interrupted, rejected, crashed, or partially applied runs: whether staging artifacts are cleaned, retained for resume, or can be mistaken for deliverables; how a mid-batch atomic-write failure rolls back already-applied siblings when --accept-partial is absent; and what the user must re-run after rejection so no orphan staging or half-OKF state remains.",
+      "evidence": {
+        "offending_text": "markdown-conversion --okf \u5148\u628a\u65e0 frontmatter \u7684\u8f6c\u6362\u6b63\u6587\u5199\u5165\u8fd0\u884c\u6682\u5b58\u533a\uff0c\u518d\u628a\u6765\u6e90\u5b57\u6bb5\u4ea4\u7ed9\u65b0 skill\u3002\u53ea\u6709 frontmatter \u8ba1\u5212\u83b7\u6279\u5e76\u901a\u8fc7\u6821\u9a8c\u540e\u624d\u521b\u5efa\u6700\u7ec8\u8f93\u51fa\uff1b\u62d2\u7edd\u5ba1\u6838\u6216\u5931\u8d25\u65f6\u4e0d\u7559\u4e0b\u4f2a\u79f0 OKF-ready \u7684\u76ee\u6807\u6587\u4ef6\u3002",
+        "location_or_expected_section": "Implementation Changes L39; also Test Plan L46 mentions failure reports but no recovery/cleanup contract"
+      },
+      "failure_mechanism": "Without an explicit staging lifecycle and batch rollback/resume rule, a crash after staging write or after applying N of M files leaves undeclared residue. Operators cannot know whether to delete staging, re-prepare, or re-apply; --accept-partial then becomes an accidental recovery path rather than a deliberate policy, undermining the claim that failure never leaves a pseudo-OKF-ready outcome.",
+      "resolution_required": "Specify staging location, retention, cleanup triggers, resume vs re-prepare rules, and batch semantics (all-or-nothing vs --accept-partial) including what remains on disk after reject/fail/crash and which command recovers cleanly.",
+      "confidence": "high",
+      "unresolved_questions": [
+        "Is staging under the target directory, a temp dir, or .okf-workspace, and is it gitignored?",
+        "On batch failure without --accept-partial, are already-applied files reverted or left with a FAILED ledger?"
+      ]
+    },
+    {
+      "raw_finding_id": "pass-1-lens_2-rf02",
+      "severity": "must-fix",
+      "dimension": "assumptions",
+      "finding": "The plan assumes ruamel.yaml round-trip can be adopted as the frontmatter engine, but bounded context states the plugin currently has no ruamel.yaml and that it lives only as a Cortex sibling dependency. There is no packaging assumption, install/ensure path, version pin, or fallback if the dependency is missing or ABI-incompatible\u2014yet YAML fidelity (comments, order, quotes) and reject-on-corrupt behavior are core to the skill.",
+      "evidence": {
+        "offending_text": "okf-frontmatter \u4f7f\u7528 ruamel.yaml round-trip \u89e3\u6790\uff0c\u4fdd\u7559\u5df2\u6709\u5b57\u6bb5\u3001\u672a\u77e5\u6269\u5c55\u3001\u987a\u5e8f\u3001\u5f15\u53f7\u3001\u6ce8\u91ca\u548c\u6b63\u6587\uff1b\u62d2\u7edd\u91cd\u590d\u952e\u3001\u975e mapping \u6216\u635f\u574f\u7684 YAML\u3002",
+        "location_or_expected_section": "Implementation Changes L28; Assumptions section does not address dependency packaging"
+      },
+      "failure_mechanism": "If the plugin ships without declaring/installing ruamel.yaml, prepare/validate/apply fail at runtime on clean installs, or silent use of a different YAML library collapses the preservation guarantees. That invalidates both the completeness of the public interface and the verification suite that assumes round-trip behavior exists.",
+      "resolution_required": "State how ruamel.yaml becomes a declared runtime dependency (or vendor/ensure strategy), minimum version, failure mode when absent, and tests that prove install/precheck behavior\u2014not only YAML semantics once the package is present.",
+      "confidence": "high",
+      "unresolved_questions": [
+        "Will markdown-conversion --okf also require ruamel.yaml transitively, and is that acceptable for users who never use Cortex?"
+      ]
+    },
+    {
+      "raw_finding_id": "pass-1-lens_2-rf03",
+      "severity": "must-fix",
+      "dimension": "verification",
+      "finding": "The Test Plan lists broad coverage themes and three pytest invocations plus an undefined 'skill quick validation', but Definition-of-Done evidence is incomplete: no expected new-test count or named cases for Plan/Apply digest binding, no exit-code contract for validate/apply failures, no command that proves staging leaves no fake OKF-ready target, and no check that AGENTS.md/README/plugin manifest/SKILL.md versions stay coherent despite the noted translate versioning-drift risk.",
+      "evidence": {
+        "offending_text": "\u56de\u5f52\u9a8c\u8bc1\uff1a python -m pytest tests/okf-frontmatter/test_frontmatter_pipeline.py -v ; python -m pytest tests/markdown-conversion/test_pipeline.py -v ; python -m pytest -q ; \u8fd0\u884c skill quick validation\u3002\u5f53\u524d\u57fa\u7ebf\uff1amarkdown-conversion \u6d4b\u8bd5\u4e3a 65 passed\uff1b\u5b9e\u65bd\u540e\u5fc5\u987b\u5168\u90e8\u7ee7\u7eed\u901a\u8fc7\u3002",
+        "location_or_expected_section": "Test Plan L47-L52"
+      },
+      "failure_mechanism": "Implementers can satisfy the written checklist with shallow tests while critical risk controls (source SHA mismatch, plan tamper, stale policy digest, atomic write failure, mutual exclusion with --no-frontmatter) remain unproven. 'Quick validation' and '65 passed' are not reproducible gates without exact commands/assertions, so completeness and recovery claims can ship unverified.",
+      "resolution_required": "Bind DoD to concrete pytest node ids or -k patterns for each risk class, state required exit codes for apply/validate negative paths, define what 'skill quick validation' runs and asserts, and add an explicit version-surface consistency check across plugin + skills + AGENTS.md.",
+      "confidence": "high",
+      "unresolved_questions": [
+        "What exact skill quick validation command and pass criteria are intended?",
+        "Is full-suite pytest -q expected to gain a new minimum pass count including okf-frontmatter?"
+      ]
+    },
+    {
+      "raw_finding_id": "pass-1-lens_2-rf04",
+      "severity": "should-fix",
+      "dimension": "risk",
+      "finding": "Plans bind source SHA-256, rendered SHA-256, target path, and Cortex policy digest, and tests mention stale digest / source change / plan tamper, but the operational recovery path is unspecified: whether apply must hard-fail only, whether re-prepare is mandatory, whether partial field edits require a new plan id, and how --plan-only/--apply-plan interact when policy becomes missing vs invalid between prepare and apply.",
+      "evidence": {
+        "offending_text": "\u65b0\u811a\u672c\u63d0\u4f9b prepare / publish / apply / validate \u5b50\u547d\u4ee4\uff1b\u8ba1\u5212\u7ed1\u5b9a\u6e90\u6587\u4ef6 SHA-256\u3001\u6e32\u67d3\u7ed3\u679c SHA-256\u3001\u76ee\u6807\u8def\u5f84\u53ca Cortex policy digest\u3002 ... \u8986\u76d6 Plan/Apply\uff1a\u6e90\u6587\u4ef6\u53d8\u5316\u3001\u8ba1\u5212\u7be1\u6539\u3001\u6279\u91cf\u8986\u76d6\u5b8c\u6574\u6027\u3001\u76ee\u6807\u51b2\u7a81\u3001\u9010\u6587\u4ef6\u539f\u5b50\u5199\u5165\u53ca\u5931\u8d25\u62a5\u544a\u3002 ... policy \u7f3a\u5931\uff1a\u53ef\u751f\u6210\u901a\u7528 authoring frontmatter\uff0c\u4f46\u660e\u786e\u6807\u8bb0\u4e3a\u201cpolicy \u672a\u9a8c\u8bc1\u201d\u3002 policy \u65e0\u6548\u3001CLI \u4e0d\u517c\u5bb9\u6216\u81ea\u5b9a\u4e49\u5fc5\u586b\u5b57\u6bb5\u65e0\u53ef\u9760\u4f9d\u636e\uff1a\u963b\u6b62 Apply\u3002",
+        "location_or_expected_section": "\u516c\u5f00\u63a5\u53e3 L24; Implementation Changes L36-L37; Test Plan L45-L46"
+      },
+      "failure_mechanism": "Without a stated recovery matrix, operators facing digest/source drift may re-apply an old plan, force-edit targets, or treat 'policy \u672a\u9a8c\u8bc1' artifacts as Cortex-safe. The missing/invalid policy asymmetry plus a publish subcommand (while Assumptions say the skill does not execute publish) increases the chance of unsafe apply or dead-end workflows after a detectable integrity failure.",
+      "resolution_required": "Define a prepare\u2192validate\u2192apply state machine for digest/source/policy mismatch (fail messages, required next command, when plans are invalidated), clarify publish vs apply responsibilities against the no-publish assumption, and make 'policy \u672a\u9a8c\u8bc1' an explicit non-Cortex-apply class if workspace mode is requested.",
+      "confidence": "high",
+      "unresolved_questions": [
+        "Does --workspace imply Apply must refuse 'policy \u672a\u9a8c\u8bc1' outputs even if generic OKF apply would allow them?",
+        "Why does the public interface list a publish subcommand if Assumptions forbid executing publish?"
+      ]
+    },
+    {
+      "raw_finding_id": "pass-1-lens_2-rf05",
+      "severity": "should-fix",
+      "dimension": "completeness",
+      "finding": "The plan adds skill-layer flags (--okf, --workspace, --no-frontmatter mutual exclusion) on markdown-conversion while bounded context states there is presently no skill-layer vs script-layer CLI split\u2014only pipeline.py. It does not complete how slash-command UX, script argv, config, and subprocess handoff to okf-frontmatter stay one contract, nor what happens if only one layer is updated.",
+      "evidence": {
+        "offending_text": "markdown-conversion \u65b0\u589e skill \u5c42\u53c2\u6570\uff1a --okf\uff1a\u751f\u6210\u901a\u7528 OKF-ready Markdown\u3002 --workspace <path>\uff1a\u9690\u542b --okf\uff0c\u5e76\u6ee1\u8db3 Cortex authoring \u4e0e\u6d3b\u52a8 policy\u3002 --no-frontmatter \u4e0e\u4e0a\u8ff0\u53c2\u6570\u4e92\u65a5\u3002",
+        "location_or_expected_section": "\u516c\u5f00\u63a5\u53e3 L20-L23; Implementation Changes L39-L40"
+      },
+      "failure_mechanism": "If SKILL.md advertises flags that pipeline.py does not implement (or vice versa), agents will claim OKF-ready conversion that never runs the plan/apply gate. That breaks the default-compat assumption and makes verification of 'legacy path unchanged' meaningless because the new path may be unreachable or inconsistently invoked.",
+      "resolution_required": "Specify the single CLI surface of truth, exact argv mapping from slash UX to pipeline.py and into okf-frontmatter prepare/apply, and tests that both invocation paths enforce the same mutual exclusion and no-fake-output guarantees.",
+      "confidence": "medium",
+      "unresolved_questions": [
+        "Will markdown-conversion call okf-frontmatter as a subprocess, import, or agent-orchestrated second skill step?"
+      ]
+    }
+  ]
+}

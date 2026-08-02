@@ -1,0 +1,108 @@
+{
+  "terminal": "audit_complete",
+  "run_id": "rar-cbffad11a831",
+  "review_mode": "audit",
+  "required_full_passes": 1,
+  "completed_full_passes": 1,
+  "write_policy": "no_write",
+  "authority_effect": "none",
+  "plan_version_id": "plan-v1",
+  "plan_content_hash": "sha256:1b4ffab5f116a1b5c6a831abb4e33b44e7ff28a511dcfb56fe4f359302f273ac",
+  "config_hash": "sha256:efa9be4b10c458808d825f565dea7d971d0f2cadd83f63ebc5c18efca921efd6",
+  "context_package_id": "ctx-3879b6a7a72a",
+  "context_package_hash": "sha256:3a6cc94c80ecce4183dcfc11d35fab19a19ef792b7ca85ded332e6ea1c2a171c",
+  "lens_count": 2,
+  "source_count": 10,
+  "canonical_count": 9,
+  "adjudication_id": "adj-pass-1-ee82e96a",
+  "attempt_id": "adj-pass-1-ee82e96a-a1",
+  "validated_result_digest": "sha256:f951bfd5ce80329537f8ac1dfc3f1a686a9bd27a41518f411ef4531fd2445055",
+  "portable_evidence_id": "pre-okf-frontmatter-audit-pass1-rar-cbffad11a831",
+  "report_digest": "sha256:f4cec25d11c12100ac327f39efd0dee7bb0fa8b60cb87c7b37f324eeddbc7322",
+  "open_findings": [
+    {
+      "canonical_finding_id": "CF-01",
+      "original_severity": "must-fix",
+      "recommendation": "adopt",
+      "merged_from": [
+        "pass-1-lens_1-rf01"
+      ],
+      "status": "open"
+    },
+    {
+      "canonical_finding_id": "CF-02",
+      "original_severity": "must-fix",
+      "recommendation": "adopt",
+      "merged_from": [
+        "pass-1-lens_1-rf02"
+      ],
+      "status": "open"
+    },
+    {
+      "canonical_finding_id": "CF-03",
+      "original_severity": "must-fix",
+      "recommendation": "adopt",
+      "merged_from": [
+        "pass-1-lens_1-rf03",
+        "pass-1-lens_2-rf02"
+      ],
+      "status": "open"
+    },
+    {
+      "canonical_finding_id": "CF-04",
+      "original_severity": "should-fix",
+      "recommendation": "adopt",
+      "merged_from": [
+        "pass-1-lens_1-rf04"
+      ],
+      "status": "open"
+    },
+    {
+      "canonical_finding_id": "CF-05",
+      "original_severity": "should-fix",
+      "recommendation": "adopt",
+      "merged_from": [
+        "pass-1-lens_1-rf05"
+      ],
+      "status": "open"
+    },
+    {
+      "canonical_finding_id": "CF-06",
+      "original_severity": "must-fix",
+      "recommendation": "adopt",
+      "merged_from": [
+        "pass-1-lens_2-rf01"
+      ],
+      "status": "open"
+    },
+    {
+      "canonical_finding_id": "CF-07",
+      "original_severity": "must-fix",
+      "recommendation": "adopt",
+      "merged_from": [
+        "pass-1-lens_2-rf03"
+      ],
+      "status": "open"
+    },
+    {
+      "canonical_finding_id": "CF-08",
+      "original_severity": "should-fix",
+      "recommendation": "adopt",
+      "merged_from": [
+        "pass-1-lens_2-rf04"
+      ],
+      "status": "open"
+    },
+    {
+      "canonical_finding_id": "CF-09",
+      "original_severity": "should-fix",
+      "recommendation": "adopt",
+      "merged_from": [
+        "pass-1-lens_2-rf05"
+      ],
+      "status": "open"
+    }
+  ],
+  "completed_at": "2026-07-20T10:56:24Z",
+  "note": "Audit only: findings remain open; no revision or convergence claimed."
+}

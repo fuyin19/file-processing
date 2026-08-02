@@ -1,0 +1,414 @@
+{
+  "frozen_config": {
+    "base_preset": "audit",
+    "config_confirmation": "explicit_before_dispatch",
+    "config_schema_version": "3.0",
+    "focus_coverage": [],
+    "invocation_mode": "standalone",
+    "lens_count": 2,
+    "lens_roster": [
+      {
+        "focus_statement": "goal, deliverable, feasibility, sequence, and prerequisites",
+        "kind": "universal",
+        "lens_id": "lens_1",
+        "source": "universal",
+        "user_focus_ids": []
+      },
+      {
+        "focus_statement": "assumptions, risk, recovery, completeness, and verification",
+        "kind": "universal",
+        "lens_id": "lens_2",
+        "source": "universal",
+        "user_focus_ids": []
+      }
+    ],
+    "max_full_passes": null,
+    "metadata": {
+      "config_hash": "sha256:efa9be4b10c458808d825f565dea7d971d0f2cadd83f63ebc5c18efca921efd6",
+      "config_revision": 1,
+      "explicit_overrides": {
+        "required_full_passes": 1,
+        "review_mode": "audit"
+      },
+      "initial_plan_snapshot_hash": "sha256:1b4ffab5f116a1b5c6a831abb4e33b44e7ff28a511dcfb56fe4f359302f273ac",
+      "legacy_inputs": [
+        "review_mode=single_pass"
+      ],
+      "parent_config_hash": null,
+      "resolution_source": "legacy_alias"
+    },
+    "operational_retry_limit": 1,
+    "required_full_passes": 1,
+    "review_checkpoint_policy": "exceptions_only",
+    "review_mode": "audit",
+    "user_focuses": [],
+    "workflow_version": "0.6.0",
+    "write_policy": "no_write",
+    "config_hash": "sha256:efa9be4b10c458808d825f565dea7d971d0f2cadd83f63ebc5c18efca921efd6"
+  },
+  "config_freeze_record": {
+    "type": "ConfigFreezeRecord",
+    "version": 1,
+    "config_hash": "sha256:efa9be4b10c458808d825f565dea7d971d0f2cadd83f63ebc5c18efca921efd6",
+    "plan_content_hash": "sha256:1b4ffab5f116a1b5c6a831abb4e33b44e7ff28a511dcfb56fe4f359302f273ac",
+    "lens_roster_digest": "sha256:cc1aa1599f546bfe25a39959ed08dcd2d8d9227db0426f69700cc7d0f5b37362",
+    "package_identity": {
+      "skill_id": "recursive-adversarial-review",
+      "skill_version": "0.6.0",
+      "workflow_version": "0.6.0",
+      "config_schema_version": "3.0",
+      "suite_release_id": "2026.07.19.1",
+      "manifest_digest": "sha256:6363a2b1c16997870d86d7d46c411189d50b77f8657a068087070e574e8c6592"
+    },
+    "run_id": "rar-cbffad11a831",
+    "confirmation_basis": "user: \u91cd\u65b0\u5c1d\u8bd5\u4e00\u4e0b + gate-envelope repair",
+    "freeze_time": "2026-07-20T09:21:59.474264+00:00"
+  },
+  "pass_record": {
+    "full_pass_id": "pass-1",
+    "pass_index": 1,
+    "plan_version_id": "plan-v1",
+    "plan_content_hash": "sha256:1b4ffab5f116a1b5c6a831abb4e33b44e7ff28a511dcfb56fe4f359302f273ac",
+    "context_package_id": "ctx-3879b6a7a72a",
+    "context_package_hash": "sha256:3a6cc94c80ecce4183dcfc11d35fab19a19ef792b7ca85ded332e6ea1c2a171c"
+  },
+  "lens_attempts": [
+    {
+      "dispatch_envelope": {
+        "run_id": "rar-cbffad11a831",
+        "config_revision": 1,
+        "config_hash": "sha256:efa9be4b10c458808d825f565dea7d971d0f2cadd83f63ebc5c18efca921efd6",
+        "review_mode": "audit",
+        "full_pass_id": "pass-1",
+        "plan_version_id": "plan-v1",
+        "plan_content_hash": "sha256:1b4ffab5f116a1b5c6a831abb4e33b44e7ff28a511dcfb56fe4f359302f273ac",
+        "context_package_id": "ctx-3879b6a7a72a",
+        "context_package_hash": "sha256:3a6cc94c80ecce4183dcfc11d35fab19a19ef792b7ca85ded332e6ea1c2a171c",
+        "package_identity": {
+          "skill_id": "recursive-adversarial-review",
+          "skill_version": "0.6.0",
+          "workflow_version": "0.6.0",
+          "config_schema_version": "3.0",
+          "suite_release_id": "2026.07.19.1",
+          "manifest_digest": "sha256:6363a2b1c16997870d86d7d46c411189d50b77f8657a068087070e574e8c6592"
+        },
+        "dispatch_id": "pass-1-lens_1",
+        "attempt_id": "pass-1-lens_1-a1",
+        "retry_of_attempt_id": null,
+        "fresh_instance_id": "fresh-17f6518fce0e",
+        "input_artifact_hash": "sha256:2ea1dde411094ee5f46f58cacd4fbf18f46f32defa3e50857295494c644afbb1",
+        "role": "adversarial-plan-reviewer",
+        "lens": {
+          "focus_statement": "goal, deliverable, feasibility, sequence, and prerequisites",
+          "kind": "universal",
+          "lens_id": "lens_1",
+          "source": "universal",
+          "user_focus_ids": []
+        },
+        "lens_id": "lens_1",
+        "lens_kind": "universal"
+      },
+      "normalization": {
+        "errors": [],
+        "normalization_events": [],
+        "normalization_policy_version": "2.0",
+        "normalized_payload": {
+          "context_sufficiency": "sufficient",
+          "missing_context": [],
+          "raw_findings": [
+            {
+              "confidence": "high",
+              "dimension": "goal_deliverable",
+              "evidence": {
+                "location_or_expected_section": "\u516c\u5f00\u63a5\u53e3 L24 vs Assumptions L57",
+                "offending_text": "\u65b0\u811a\u672c\u63d0\u4f9b `prepare / publish / apply / validate` \u5b50\u547d\u4ee4 \u2026 \u9996\u7248\u5904\u7406\u666e\u901a concept Markdown\uff1b\u4e0d\u8d1f\u8d23\u751f\u6210 bundle `index.md`\u3001\u65e5\u5fd7\u3001Cortex \u7d22\u5f15\u6216\u6267\u884c publish\u3002"
+              },
+              "failure_mechanism": "Callers and DoD treat publish as a delivered capability; implementers treat it as out of scope. Either the interface ships a no-op/misnamed command or the goal expands past the declared deliverable, so the outcome cannot be verified as complete.",
+              "finding": "Public CLI advertises a publish subcommand while Assumptions explicitly exclude executing publish and Cortex index/bundle generation, so the promised skill surface and the stated first-version goal cannot both be true.",
+              "raw_finding_id": "pass-1-lens_1-rf01",
+              "resolution_required": "Reconcile the public subcommand set with first-version scope: remove publish from the promised interface, or redefine Objective/DoD to include a concrete publish behavior and ownership.",
+              "severity": "must-fix",
+              "unresolved_questions": []
+            },
+            {
+              "confidence": "high",
+              "dimension": "sequence_prerequisites",
+              "evidence": {
+                "location_or_expected_section": "Summary L7; Implementation Changes L39; Bounded context: Plan/Apply not in markdown-conversion; pipeline.py is only CLI",
+                "offending_text": "\u6240\u6709\u5199\u5165\u5747\u91c7\u7528\u201cAgent \u63d0\u8bae \u2192 \u5c55\u793a\u5dee\u5f02 \u2192 Plan \u2192 Apply\u201d\u3002\u2026 \u53ea\u6709 frontmatter \u8ba1\u5212\u83b7\u6279\u5e76\u901a\u8fc7\u6821\u9a8c\u540e\u624d\u521b\u5efa\u6700\u7ec8\u8f93\u51fa"
+              },
+              "failure_mechanism": "Sequence inserts a human/agent approval prerequisite mid-pipeline without an owner or non-interactive fallback. Batch --input-dir and headless pytest cannot reach the promised final OKF-ready artifact, so the linked conversion deliverable is infeasible under current runtime.",
+              "finding": "The --okf conversion path gates final output on Agent propose \u2192 diff \u2192 Plan \u2192 Apply, but markdown-conversion today is a deterministic single CLI with no Plan/Apply pattern, and the plan never assigns who performs the interactive gate in batch, CI, or non-agent script runs.",
+              "raw_finding_id": "pass-1-lens_1-rf02",
+              "resolution_required": "Specify sequence and ownership for approval (slash orchestrator vs script flags like --plan-only/--apply-plan/--metadata-json), including batch/CI behavior when no Agent is present, before claiming OKF-linked conversion.",
+              "severity": "must-fix",
+              "unresolved_questions": [
+                "Is markdown-conversion --okf allowed to exit with a plan artifact only, or must it always produce the final .md in one invocation?"
+              ]
+            },
+            {
+              "confidence": "high",
+              "dimension": "feasibility_prerequisites",
+              "evidence": {
+                "location_or_expected_section": "Implementation Changes L28; Bounded context: no ruamel.yaml in this plugin; it is a Cortex sibling dependency",
+                "offending_text": "okf-frontmatter \u4f7f\u7528 `ruamel.yaml` round-trip \u89e3\u6790\uff0c\u4fdd\u7559\u5df2\u6709\u5b57\u6bb5\u3001\u672a\u77e5\u6269\u5c55\u3001\u987a\u5e8f\u3001\u5f15\u53f7\u3001\u6ce8\u91ca\u548c\u6b63\u6587"
+              },
+              "failure_mechanism": "Without a declared acquisition path, prepare/apply cannot meet the preservation deliverable in a clean plugin install. Feasibility of the core skill goal collapses at first run on machines that only have the file-processing plugin.",
+              "finding": "Round-trip YAML preservation depends on ruamel.yaml, which is not a plugin dependency today; the plan states the requirement but omits install, packaging, and version pinning as prerequisites.",
+              "raw_finding_id": "pass-1-lens_1-rf03",
+              "resolution_required": "Add an explicit prerequisite and packaging decision for ruamel.yaml (pin, _ensure_package, or documented Cortex-provided environment) as part of DoD.",
+              "severity": "must-fix",
+              "unresolved_questions": []
+            },
+            {
+              "confidence": "high",
+              "dimension": "goal_deliverable",
+              "evidence": {
+                "location_or_expected_section": "\u516c\u5f00\u63a5\u53e3 L22; Implementation Changes L36",
+                "offending_text": "`--workspace <path>`\uff1a\u9690\u542b `--okf`\uff0c\u5e76\u6ee1\u8db3 Cortex authoring \u4e0e\u6d3b\u52a8 policy\u3002\u2026 policy \u7f3a\u5931\uff1a\u53ef\u751f\u6210\u901a\u7528 authoring frontmatter\uff0c\u4f46\u660e\u786e\u6807\u8bb0\u4e3a\u201cpolicy \u672a\u9a8c\u8bc1\u201d\u3002"
+              },
+              "failure_mechanism": "DoD can be claimed either as policy-satisfied output or as unverified generic output under the same flag. Feasibility of the promised Cortex-mode outcome is unfalsifiable; partial success looks like completion.",
+              "finding": "--workspace is said to satisfy Cortex authoring and active policy, yet policy-missing mode may still emit generic authoring frontmatter marked unverified, so the Cortex-mode goal has two incompatible success criteria.",
+              "raw_finding_id": "pass-1-lens_1-rf04",
+              "resolution_required": "Define a single terminal success condition for --workspace (hard fail without valid policy vs explicitly degraded mode with distinct exit code/artifact label) and align public interface wording.",
+              "severity": "should-fix",
+              "unresolved_questions": []
+            },
+            {
+              "confidence": "medium",
+              "dimension": "prerequisites_sequence",
+              "evidence": {
+                "location_or_expected_section": "Summary L8; Implementation Changes L34-37",
+                "offending_text": "\u4e0d\u4fee\u6539 Cortex\uff1b\u4ec5\u901a\u8fc7\u5176\u53ea\u8bfb CLI \u63a5\u53e3\u83b7\u53d6 workspace\u3001target \u548c policy \u72b6\u6001\u3002\u2026 Cortex \u6a21\u5f0f\u5148\u9a8c\u8bc1 method contract \u4e3a 2.1\u300118 \u4e2a\u516c\u5f00 schema\u53ca\u76ee\u6807\u64cd\u4f5c\u96c6\u5408\uff0c\u518d\u8bfb\u53d6 `manage config show` \u548c quick validation"
+              },
+              "failure_mechanism": "Hidden environmental prerequisites sit outside the plugin. If CLI is missing, incompatible, or schemas drift, the sequence never reaches Apply, yet Test Plan treats Cortex cases as in-repo pytest coverage\u2014so the promised Cortex deliverable is not independently shippable from this plan alone.",
+              "finding": "Cortex mode presupposes method contract 2.1, eighteen public schemas, manage config show, and quick validation via an external CLI that this plugin does not own, with no sequenced preflight DoD for CLI presence/PATH/version before skill work begins.",
+              "raw_finding_id": "pass-1-lens_1-rf05",
+              "resolution_required": "State Cortex CLI version/contract as a hard prerequisite with a failing preflight and test doubles; separate plugin-shippable OKF-generic DoD from Cortex-dependent DoD.",
+              "severity": "should-fix",
+              "unresolved_questions": [
+                "Which Cortex CLI release pins method contract 2.1 and the eighteen schemas for this skill\u2019s DoD?"
+              ]
+            }
+          ],
+          "received_envelope": {
+            "attempt_id": "pass-1-lens_1-a1",
+            "config_hash": "sha256:efa9be4b10c458808d825f565dea7d971d0f2cadd83f63ebc5c18efca921efd6",
+            "config_revision": 1,
+            "context_package_hash": "sha256:3a6cc94c80ecce4183dcfc11d35fab19a19ef792b7ca85ded332e6ea1c2a171c",
+            "context_package_id": "ctx-3879b6a7a72a",
+            "dispatch_id": "pass-1-lens_1",
+            "fresh_instance_id": "fresh-17f6518fce0e",
+            "full_pass_id": "pass-1",
+            "input_artifact_hash": "sha256:2ea1dde411094ee5f46f58cacd4fbf18f46f32defa3e50857295494c644afbb1",
+            "lens": {
+              "focus_statement": "goal, deliverable, feasibility, sequence, and prerequisites",
+              "kind": "universal",
+              "lens_id": "lens_1",
+              "source": "universal",
+              "user_focus_ids": []
+            },
+            "lens_id": "lens_1",
+            "lens_kind": "universal",
+            "package_identity": {
+              "config_schema_version": "3.0",
+              "manifest_digest": "sha256:6363a2b1c16997870d86d7d46c411189d50b77f8657a068087070e574e8c6592",
+              "skill_id": "recursive-adversarial-review",
+              "skill_version": "0.6.0",
+              "suite_release_id": "2026.07.19.1",
+              "workflow_version": "0.6.0"
+            },
+            "plan_content_hash": "sha256:1b4ffab5f116a1b5c6a831abb4e33b44e7ff28a511dcfb56fe4f359302f273ac",
+            "plan_version_id": "plan-v1",
+            "retry_of_attempt_id": null,
+            "review_mode": "audit",
+            "role": "adversarial-plan-reviewer",
+            "run_id": "rar-cbffad11a831"
+          },
+          "thin_haul": false
+        },
+        "normalized_sha256": "sha256:13c717de2959160137af16f32c1f92e87083429813afa71b49497d90d6b0856a",
+        "raw_transport": {
+          "format": "json",
+          "sha256": "sha256:9dda6a00ddc2b4d357a4588428c67ffead1a3b215a1944a67d31ef436f392291"
+        },
+        "role": "adversarial-plan-reviewer",
+        "schema_version": "1.0",
+        "status": "accepted"
+      }
+    },
+    {
+      "dispatch_envelope": {
+        "run_id": "rar-cbffad11a831",
+        "config_revision": 1,
+        "config_hash": "sha256:efa9be4b10c458808d825f565dea7d971d0f2cadd83f63ebc5c18efca921efd6",
+        "review_mode": "audit",
+        "full_pass_id": "pass-1",
+        "plan_version_id": "plan-v1",
+        "plan_content_hash": "sha256:1b4ffab5f116a1b5c6a831abb4e33b44e7ff28a511dcfb56fe4f359302f273ac",
+        "context_package_id": "ctx-3879b6a7a72a",
+        "context_package_hash": "sha256:3a6cc94c80ecce4183dcfc11d35fab19a19ef792b7ca85ded332e6ea1c2a171c",
+        "package_identity": {
+          "skill_id": "recursive-adversarial-review",
+          "skill_version": "0.6.0",
+          "workflow_version": "0.6.0",
+          "config_schema_version": "3.0",
+          "suite_release_id": "2026.07.19.1",
+          "manifest_digest": "sha256:6363a2b1c16997870d86d7d46c411189d50b77f8657a068087070e574e8c6592"
+        },
+        "dispatch_id": "pass-1-lens_2",
+        "attempt_id": "pass-1-lens_2-a1",
+        "retry_of_attempt_id": null,
+        "fresh_instance_id": "fresh-21e8842ad74f",
+        "input_artifact_hash": "sha256:2138ca11fe7118709e757a64da7d1065a8c3b7a909b0d1f0b1491bbb247743cc",
+        "role": "adversarial-plan-reviewer",
+        "lens": {
+          "focus_statement": "assumptions, risk, recovery, completeness, and verification",
+          "kind": "universal",
+          "lens_id": "lens_2",
+          "source": "universal",
+          "user_focus_ids": []
+        },
+        "lens_id": "lens_2",
+        "lens_kind": "universal"
+      },
+      "normalization": {
+        "errors": [],
+        "normalization_events": [],
+        "normalization_policy_version": "2.0",
+        "normalized_payload": {
+          "context_sufficiency": "sufficient",
+          "missing_context": [],
+          "raw_findings": [
+            {
+              "confidence": "high",
+              "dimension": "recovery",
+              "evidence": {
+                "location_or_expected_section": "Implementation Changes L39; also Test Plan L46 mentions failure reports but no recovery/cleanup contract",
+                "offending_text": "markdown-conversion --okf \u5148\u628a\u65e0 frontmatter \u7684\u8f6c\u6362\u6b63\u6587\u5199\u5165\u8fd0\u884c\u6682\u5b58\u533a\uff0c\u518d\u628a\u6765\u6e90\u5b57\u6bb5\u4ea4\u7ed9\u65b0 skill\u3002\u53ea\u6709 frontmatter \u8ba1\u5212\u83b7\u6279\u5e76\u901a\u8fc7\u6821\u9a8c\u540e\u624d\u521b\u5efa\u6700\u7ec8\u8f93\u51fa\uff1b\u62d2\u7edd\u5ba1\u6838\u6216\u5931\u8d25\u65f6\u4e0d\u7559\u4e0b\u4f2a\u79f0 OKF-ready \u7684\u76ee\u6807\u6587\u4ef6\u3002"
+              },
+              "failure_mechanism": "Without an explicit staging lifecycle and batch rollback/resume rule, a crash after staging write or after applying N of M files leaves undeclared residue. Operators cannot know whether to delete staging, re-prepare, or re-apply; --accept-partial then becomes an accidental recovery path rather than a deliberate policy, undermining the claim that failure never leaves a pseudo-OKF-ready outcome.",
+              "finding": "The OKF conversion path writes body to a runtime staging area and only creates the final target after plan approval and validation, but the plan never defines recovery for interrupted, rejected, crashed, or partially applied runs: whether staging artifacts are cleaned, retained for resume, or can be mistaken for deliverables; how a mid-batch atomic-write failure rolls back already-applied siblings when --accept-partial is absent; and what the user must re-run after rejection so no orphan staging or half-OKF state remains.",
+              "raw_finding_id": "pass-1-lens_2-rf01",
+              "resolution_required": "Specify staging location, retention, cleanup triggers, resume vs re-prepare rules, and batch semantics (all-or-nothing vs --accept-partial) including what remains on disk after reject/fail/crash and which command recovers cleanly.",
+              "severity": "must-fix",
+              "unresolved_questions": [
+                "Is staging under the target directory, a temp dir, or .okf-workspace, and is it gitignored?",
+                "On batch failure without --accept-partial, are already-applied files reverted or left with a FAILED ledger?"
+              ]
+            },
+            {
+              "confidence": "high",
+              "dimension": "assumptions",
+              "evidence": {
+                "location_or_expected_section": "Implementation Changes L28; Assumptions section does not address dependency packaging",
+                "offending_text": "okf-frontmatter \u4f7f\u7528 ruamel.yaml round-trip \u89e3\u6790\uff0c\u4fdd\u7559\u5df2\u6709\u5b57\u6bb5\u3001\u672a\u77e5\u6269\u5c55\u3001\u987a\u5e8f\u3001\u5f15\u53f7\u3001\u6ce8\u91ca\u548c\u6b63\u6587\uff1b\u62d2\u7edd\u91cd\u590d\u952e\u3001\u975e mapping \u6216\u635f\u574f\u7684 YAML\u3002"
+              },
+              "failure_mechanism": "If the plugin ships without declaring/installing ruamel.yaml, prepare/validate/apply fail at runtime on clean installs, or silent use of a different YAML library collapses the preservation guarantees. That invalidates both the completeness of the public interface and the verification suite that assumes round-trip behavior exists.",
+              "finding": "The plan assumes ruamel.yaml round-trip can be adopted as the frontmatter engine, but bounded context states the plugin currently has no ruamel.yaml and that it lives only as a Cortex sibling dependency. There is no packaging assumption, install/ensure path, version pin, or fallback if the dependency is missing or ABI-incompatible\u2014yet YAML fidelity (comments, order, quotes) and reject-on-corrupt behavior are core to the skill.",
+              "raw_finding_id": "pass-1-lens_2-rf02",
+              "resolution_required": "State how ruamel.yaml becomes a declared runtime dependency (or vendor/ensure strategy), minimum version, failure mode when absent, and tests that prove install/precheck behavior\u2014not only YAML semantics once the package is present.",
+              "severity": "must-fix",
+              "unresolved_questions": [
+                "Will markdown-conversion --okf also require ruamel.yaml transitively, and is that acceptable for users who never use Cortex?"
+              ]
+            },
+            {
+              "confidence": "high",
+              "dimension": "verification",
+              "evidence": {
+                "location_or_expected_section": "Test Plan L47-L52",
+                "offending_text": "\u56de\u5f52\u9a8c\u8bc1\uff1a python -m pytest tests/okf-frontmatter/test_frontmatter_pipeline.py -v ; python -m pytest tests/markdown-conversion/test_pipeline.py -v ; python -m pytest -q ; \u8fd0\u884c skill quick validation\u3002\u5f53\u524d\u57fa\u7ebf\uff1amarkdown-conversion \u6d4b\u8bd5\u4e3a 65 passed\uff1b\u5b9e\u65bd\u540e\u5fc5\u987b\u5168\u90e8\u7ee7\u7eed\u901a\u8fc7\u3002"
+              },
+              "failure_mechanism": "Implementers can satisfy the written checklist with shallow tests while critical risk controls (source SHA mismatch, plan tamper, stale policy digest, atomic write failure, mutual exclusion with --no-frontmatter) remain unproven. 'Quick validation' and '65 passed' are not reproducible gates without exact commands/assertions, so completeness and recovery claims can ship unverified.",
+              "finding": "The Test Plan lists broad coverage themes and three pytest invocations plus an undefined 'skill quick validation', but Definition-of-Done evidence is incomplete: no expected new-test count or named cases for Plan/Apply digest binding, no exit-code contract for validate/apply failures, no command that proves staging leaves no fake OKF-ready target, and no check that AGENTS.md/README/plugin manifest/SKILL.md versions stay coherent despite the noted translate versioning-drift risk.",
+              "raw_finding_id": "pass-1-lens_2-rf03",
+              "resolution_required": "Bind DoD to concrete pytest node ids or -k patterns for each risk class, state required exit codes for apply/validate negative paths, define what 'skill quick validation' runs and asserts, and add an explicit version-surface consistency check across plugin + skills + AGENTS.md.",
+              "severity": "must-fix",
+              "unresolved_questions": [
+                "What exact skill quick validation command and pass criteria are intended?",
+                "Is full-suite pytest -q expected to gain a new minimum pass count including okf-frontmatter?"
+              ]
+            },
+            {
+              "confidence": "high",
+              "dimension": "risk",
+              "evidence": {
+                "location_or_expected_section": "\u516c\u5f00\u63a5\u53e3 L24; Implementation Changes L36-L37; Test Plan L45-L46",
+                "offending_text": "\u65b0\u811a\u672c\u63d0\u4f9b prepare / publish / apply / validate \u5b50\u547d\u4ee4\uff1b\u8ba1\u5212\u7ed1\u5b9a\u6e90\u6587\u4ef6 SHA-256\u3001\u6e32\u67d3\u7ed3\u679c SHA-256\u3001\u76ee\u6807\u8def\u5f84\u53ca Cortex policy digest\u3002 ... \u8986\u76d6 Plan/Apply\uff1a\u6e90\u6587\u4ef6\u53d8\u5316\u3001\u8ba1\u5212\u7be1\u6539\u3001\u6279\u91cf\u8986\u76d6\u5b8c\u6574\u6027\u3001\u76ee\u6807\u51b2\u7a81\u3001\u9010\u6587\u4ef6\u539f\u5b50\u5199\u5165\u53ca\u5931\u8d25\u62a5\u544a\u3002 ... policy \u7f3a\u5931\uff1a\u53ef\u751f\u6210\u901a\u7528 authoring frontmatter\uff0c\u4f46\u660e\u786e\u6807\u8bb0\u4e3a\u201cpolicy \u672a\u9a8c\u8bc1\u201d\u3002 policy \u65e0\u6548\u3001CLI \u4e0d\u517c\u5bb9\u6216\u81ea\u5b9a\u4e49\u5fc5\u586b\u5b57\u6bb5\u65e0\u53ef\u9760\u4f9d\u636e\uff1a\u963b\u6b62 Apply\u3002"
+              },
+              "failure_mechanism": "Without a stated recovery matrix, operators facing digest/source drift may re-apply an old plan, force-edit targets, or treat 'policy \u672a\u9a8c\u8bc1' artifacts as Cortex-safe. The missing/invalid policy asymmetry plus a publish subcommand (while Assumptions say the skill does not execute publish) increases the chance of unsafe apply or dead-end workflows after a detectable integrity failure.",
+              "finding": "Plans bind source SHA-256, rendered SHA-256, target path, and Cortex policy digest, and tests mention stale digest / source change / plan tamper, but the operational recovery path is unspecified: whether apply must hard-fail only, whether re-prepare is mandatory, whether partial field edits require a new plan id, and how --plan-only/--apply-plan interact when policy becomes missing vs invalid between prepare and apply.",
+              "raw_finding_id": "pass-1-lens_2-rf04",
+              "resolution_required": "Define a prepare\u2192validate\u2192apply state machine for digest/source/policy mismatch (fail messages, required next command, when plans are invalidated), clarify publish vs apply responsibilities against the no-publish assumption, and make 'policy \u672a\u9a8c\u8bc1' an explicit non-Cortex-apply class if workspace mode is requested.",
+              "severity": "should-fix",
+              "unresolved_questions": [
+                "Does --workspace imply Apply must refuse 'policy \u672a\u9a8c\u8bc1' outputs even if generic OKF apply would allow them?",
+                "Why does the public interface list a publish subcommand if Assumptions forbid executing publish?"
+              ]
+            },
+            {
+              "confidence": "medium",
+              "dimension": "completeness",
+              "evidence": {
+                "location_or_expected_section": "\u516c\u5f00\u63a5\u53e3 L20-L23; Implementation Changes L39-L40",
+                "offending_text": "markdown-conversion \u65b0\u589e skill \u5c42\u53c2\u6570\uff1a --okf\uff1a\u751f\u6210\u901a\u7528 OKF-ready Markdown\u3002 --workspace <path>\uff1a\u9690\u542b --okf\uff0c\u5e76\u6ee1\u8db3 Cortex authoring \u4e0e\u6d3b\u52a8 policy\u3002 --no-frontmatter \u4e0e\u4e0a\u8ff0\u53c2\u6570\u4e92\u65a5\u3002"
+              },
+              "failure_mechanism": "If SKILL.md advertises flags that pipeline.py does not implement (or vice versa), agents will claim OKF-ready conversion that never runs the plan/apply gate. That breaks the default-compat assumption and makes verification of 'legacy path unchanged' meaningless because the new path may be unreachable or inconsistently invoked.",
+              "finding": "The plan adds skill-layer flags (--okf, --workspace, --no-frontmatter mutual exclusion) on markdown-conversion while bounded context states there is presently no skill-layer vs script-layer CLI split\u2014only pipeline.py. It does not complete how slash-command UX, script argv, config, and subprocess handoff to okf-frontmatter stay one contract, nor what happens if only one layer is updated.",
+              "raw_finding_id": "pass-1-lens_2-rf05",
+              "resolution_required": "Specify the single CLI surface of truth, exact argv mapping from slash UX to pipeline.py and into okf-frontmatter prepare/apply, and tests that both invocation paths enforce the same mutual exclusion and no-fake-output guarantees.",
+              "severity": "should-fix",
+              "unresolved_questions": [
+                "Will markdown-conversion call okf-frontmatter as a subprocess, import, or agent-orchestrated second skill step?"
+              ]
+            }
+          ],
+          "received_envelope": {
+            "attempt_id": "pass-1-lens_2-a1",
+            "config_hash": "sha256:efa9be4b10c458808d825f565dea7d971d0f2cadd83f63ebc5c18efca921efd6",
+            "config_revision": 1,
+            "context_package_hash": "sha256:3a6cc94c80ecce4183dcfc11d35fab19a19ef792b7ca85ded332e6ea1c2a171c",
+            "context_package_id": "ctx-3879b6a7a72a",
+            "dispatch_id": "pass-1-lens_2",
+            "fresh_instance_id": "fresh-21e8842ad74f",
+            "full_pass_id": "pass-1",
+            "input_artifact_hash": "sha256:2138ca11fe7118709e757a64da7d1065a8c3b7a909b0d1f0b1491bbb247743cc",
+            "lens": {
+              "focus_statement": "assumptions, risk, recovery, completeness, and verification",
+              "kind": "universal",
+              "lens_id": "lens_2",
+              "source": "universal",
+              "user_focus_ids": []
+            },
+            "lens_id": "lens_2",
+            "lens_kind": "universal",
+            "package_identity": {
+              "config_schema_version": "3.0",
+              "manifest_digest": "sha256:6363a2b1c16997870d86d7d46c411189d50b77f8657a068087070e574e8c6592",
+              "skill_id": "recursive-adversarial-review",
+              "skill_version": "0.6.0",
+              "suite_release_id": "2026.07.19.1",
+              "workflow_version": "0.6.0"
+            },
+            "plan_content_hash": "sha256:1b4ffab5f116a1b5c6a831abb4e33b44e7ff28a511dcfb56fe4f359302f273ac",
+            "plan_version_id": "plan-v1",
+            "retry_of_attempt_id": null,
+            "review_mode": "audit",
+            "role": "adversarial-plan-reviewer",
+            "run_id": "rar-cbffad11a831"
+          },
+          "thin_haul": false
+        },
+        "normalized_sha256": "sha256:ace89b48f7235e816e3410824e27d22e5a46a1c238e530f6656f614e8a47b3fc",
+        "raw_transport": {
+          "format": "json",
+          "sha256": "sha256:6880dc2f2a4b6eb14ec2997aa2d7aeb71c97e38f25e1bae0b58f5b412833cd36"
+        },
+        "role": "adversarial-plan-reviewer",
+        "schema_version": "1.0",
+        "status": "accepted"
+      }
+    }
+  ]
+}

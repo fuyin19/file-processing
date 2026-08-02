@@ -1,0 +1,46 @@
+{
+  "base_preset": "audit",
+  "config_confirmation": "explicit_before_dispatch",
+  "config_schema_version": "3.0",
+  "focus_coverage": [],
+  "invocation_mode": "standalone",
+  "lens_count": 2,
+  "lens_roster": [
+    {
+      "focus_statement": "goal, deliverable, feasibility, sequence, and prerequisites",
+      "kind": "universal",
+      "lens_id": "lens_1",
+      "source": "universal",
+      "user_focus_ids": []
+    },
+    {
+      "focus_statement": "assumptions, risk, recovery, completeness, and verification",
+      "kind": "universal",
+      "lens_id": "lens_2",
+      "source": "universal",
+      "user_focus_ids": []
+    }
+  ],
+  "max_full_passes": null,
+  "metadata": {
+    "config_hash": "sha256:efa9be4b10c458808d825f565dea7d971d0f2cadd83f63ebc5c18efca921efd6",
+    "config_revision": 1,
+    "explicit_overrides": {
+      "required_full_passes": 1,
+      "review_mode": "audit"
+    },
+    "initial_plan_snapshot_hash": "sha256:1b4ffab5f116a1b5c6a831abb4e33b44e7ff28a511dcfb56fe4f359302f273ac",
+    "legacy_inputs": [
+      "review_mode=single_pass"
+    ],
+    "parent_config_hash": null,
+    "resolution_source": "legacy_alias"
+  },
+  "operational_retry_limit": 1,
+  "required_full_passes": 1,
+  "review_checkpoint_policy": "exceptions_only",
+  "review_mode": "audit",
+  "user_focuses": [],
+  "workflow_version": "0.6.0",
+  "write_policy": "no_write"
+}

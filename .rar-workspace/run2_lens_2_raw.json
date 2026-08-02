@@ -1,0 +1,113 @@
+{
+  "received_envelope": {
+    "run_id": "rar-4a562a6bc5fc",
+    "config_revision": 1,
+    "config_hash": "sha256:efa9be4b10c458808d825f565dea7d971d0f2cadd83f63ebc5c18efca921efd6",
+    "review_mode": "audit",
+    "full_pass_id": "pass-1",
+    "plan_version_id": "plan-v1",
+    "plan_content_hash": "sha256:1b4ffab5f116a1b5c6a831abb4e33b44e7ff28a511dcfb56fe4f359302f273ac",
+    "context_package_id": "ctx-36274d54c02d",
+    "context_package_hash": "sha256:ad9c6c3c9362215bf434ca25ddbdeb492d83deb3646a32b290e57c7ef6efa373",
+    "package_identity": "ctx-36274d54c02d",
+    "dispatch_id": "pass-1-lens_2",
+    "attempt_id": "pass-1-lens_2-a1",
+    "retry_of_attempt_id": null,
+    "role": "adversarial-plan-reviewer",
+    "lens_id": "lens_2",
+    "lens_kind": "universal"
+  },
+  "context_sufficiency": "sufficient",
+  "missing_context": [],
+  "thin_haul": false,
+  "raw_findings": [
+    {
+      "raw_finding_id": "pass-1-lens_2-rf01",
+      "severity": "must-fix",
+      "dimension": "completeness",
+      "finding": "The plan exposes a publish subcommand while Assumptions forbid executing Cortex publish, leaving the public contract and non-goal boundary contradictory and incomplete.",
+      "evidence": {
+        "offending_text": "\u65b0\u811a\u672c\u63d0\u4f9b `prepare / publish / apply / validate` \u5b50\u547d\u4ee4\uff1b\u2026\u9996\u7248\u2026\u4e0d\u8d1f\u8d23\u2026\u6216\u6267\u884c publish\u3002",
+        "location_or_expected_section": "\u516c\u5f00\u63a5\u53e3 (line 24) vs Assumptions (line 57)"
+      },
+      "failure_mechanism": "Implementers and callers will treat `publish` as an in-scope operation, but the assumption forbids it, so success criteria, failure modes, and verification for that subcommand cannot be defined or tested consistently.",
+      "resolution_required": "Either remove `publish` from the public interface, or redefine Assumptions and Implementation to specify what `publish` does, what it must not do, and how it is verified.",
+      "confidence": "high",
+      "unresolved_questions": [
+        "If `publish` is only a plan-binding alias, what exact behavior and exit codes distinguish it from `prepare`/`apply`?"
+      ]
+    },
+    {
+      "raw_finding_id": "pass-1-lens_2-rf02",
+      "severity": "must-fix",
+      "dimension": "recovery",
+      "finding": "The plan requires Agent-proposed semantic frontmatter with no recovery path when no Agent/sub-agent is available or the Agent refuses to propose fields.",
+      "evidence": {
+        "offending_text": "\u6240\u6709\u5199\u5165\u5747\u91c7\u7528\u201cAgent \u63d0\u8bae \u2192 \u5c55\u793a\u5dee\u5f02 \u2192 Plan \u2192 Apply\u201d\u3002\u2026Agent \u53ea\u80fd\u63d0\u4ea4\u7ed3\u6784\u5316\u5019\u9009\uff1b\u7f3a\u4e4f policy \u4f9d\u636e\u65f6\u8be2\u95ee\u7528\u6237\uff0c\u4e0d\u731c\u6d4b\u81ea\u5b9a\u4e49\u5b57\u6bb5\u3002",
+        "location_or_expected_section": "Summary (line 7) and Assumptions (line 58); expected Recovery / runtime-mode fallback section"
+      },
+      "failure_mechanism": "Semantic fields are gated on Agent proposals; without an explicit non-Agent or user-supplied-only recovery path, `--okf`/`--workspace` runs stall or silently under-fill required fields and cannot reach a validated Apply.",
+      "resolution_required": "Add an explicit runtime-mode/recovery contract: Agent-unavailable behavior, `--metadata-json`-only completion rules, when to hard-fail vs prompt, and how Plan/Apply proceeds without Agent proposals.",
+      "confidence": "high",
+      "unresolved_questions": []
+    },
+    {
+      "raw_finding_id": "pass-1-lens_2-rf03",
+      "severity": "must-fix",
+      "dimension": "recovery",
+      "finding": "OKF conversion uses a staging area and Plan/Apply binding, but the plan never specifies cleanup, resume, or recovery after reject, crash, or partial batch failure.",
+      "evidence": {
+        "offending_text": "\u5148\u628a\u65e0 frontmatter \u7684\u8f6c\u6362\u6b63\u6587\u5199\u5165\u8fd0\u884c\u6682\u5b58\u533a\u2026\u53ea\u6709 frontmatter \u8ba1\u5212\u83b7\u6279\u5e76\u901a\u8fc7\u6821\u9a8c\u540e\u624d\u521b\u5efa\u6700\u7ec8\u8f93\u51fa\uff1b\u62d2\u7edd\u5ba1\u6838\u6216\u5931\u8d25\u65f6\u4e0d\u7559\u4e0b\u4f2a\u79f0 OKF-ready \u7684\u76ee\u6807\u6587\u4ef6\u3002\u2026`--accept-partial`\uff1a\u6279\u91cf\u4efb\u52a1\u4e2d\u660e\u786e\u5141\u8bb8\u53ea\u5e94\u7528\u5b8c\u6574\u9879\u76ee\u3002",
+        "location_or_expected_section": "Implementation Changes (line 39) and \u516c\u5f00\u63a5\u53e3 (line 19); expected Recovery / failure-cleanup section"
+      },
+      "failure_mechanism": "Rejecting the plan avoids a false final file but leaves unspecified staging artifacts, interrupted atomic writes, and how a later retry distinguishes stale staging from a fresh source SHA, so re-runs can apply the wrong plan or leave unrecovered temp state.",
+      "resolution_required": "Specify staging lifecycle (path, retention, cleanup on reject/interrupt), resume vs re-prepare rules keyed to source/plan digests, and batch failure reporting plus recovery steps under `--accept-partial`.",
+      "confidence": "high",
+      "unresolved_questions": []
+    },
+    {
+      "raw_finding_id": "pass-1-lens_2-rf04",
+      "severity": "should-fix",
+      "dimension": "verification",
+      "finding": "The Test Plan asserts coverage themes and a regression command list but does not define verifiable DoD evidence for the new skill or for \u201cskill quick validation.\u201d",
+      "evidence": {
+        "offending_text": "\u8fd0\u884c skill quick validation\u3002\u2026\u5f53\u524d\u57fa\u7ebf\uff1a`markdown-conversion` \u6d4b\u8bd5\u4e3a 65 passed\uff1b\u5b9e\u65bd\u540e\u5fc5\u987b\u5168\u90e8\u7ee7\u7eed\u901a\u8fc7\u3002",
+        "location_or_expected_section": "Test Plan (lines 47-52); expected Definition of Done with exact commands and exit criteria"
+      },
+      "failure_mechanism": "Without named commands, expected exit codes, and a baseline for `tests/okf-frontmatter/...`, reviewers cannot falsify completion; \u201cquick validation\u201d can be claimed without exercising policy digest, Plan/Apply tamper, or Agent-gated paths.",
+      "resolution_required": "Name exact verification commands (including quick validation), expected exit codes/output, minimum new-suite assertions for Plan/Apply and Cortex policy cases, and any non-pytest evidence required for DoD.",
+      "confidence": "high",
+      "unresolved_questions": []
+    },
+    {
+      "raw_finding_id": "pass-1-lens_2-rf05",
+      "severity": "should-fix",
+      "dimension": "assumptions",
+      "finding": "The plan depends on `ruamel.yaml` and Cortex CLI method-contract 2.1 without stating packaging, install, or incompatibility recovery assumptions.",
+      "evidence": {
+        "offending_text": "`okf-frontmatter` \u4f7f\u7528 `ruamel.yaml` round-trip \u89e3\u6790\u2026Cortex \u6a21\u5f0f\u5148\u9a8c\u8bc1 method contract \u4e3a 2.1\u300118 \u4e2a\u516c\u5f00 schema\u53ca\u76ee\u6807\u64cd\u4f5c\u96c6\u5408\u2026policy \u65e0\u6548\u3001CLI \u4e0d\u517c\u5bb9\u6216\u81ea\u5b9a\u4e49\u5fc5\u586b\u5b57\u6bb5\u65e0\u53ef\u9760\u4f9d\u636e\uff1a\u963b\u6b62 Apply\u3002",
+        "location_or_expected_section": "Implementation Changes (lines 28, 34-37) and Assumptions (lines 54-58); expected dependency and CLI-compat risk/recovery assumptions"
+      },
+      "failure_mechanism": "If `ruamel.yaml` is absent from this plugin\u2019s dependency story, or Cortex CLI drifts from 2.1, Apply is blocked with no documented install path, pin, or user-facing recovery, so the advertised OKF/Cortex modes fail closed without a planned remediation.",
+      "resolution_required": "State how `ruamel.yaml` is obtained/pinned for this plugin, what happens when it is missing, and the recovery/upgrade path when method contract or schema checks fail.",
+      "confidence": "high",
+      "unresolved_questions": [
+        "Is `ruamel.yaml` a new declared runtime dependency of file-processing, or is reuse of the sibling Cortex install assumed?"
+      ]
+    },
+    {
+      "raw_finding_id": "pass-1-lens_2-rf06",
+      "severity": "should-fix",
+      "dimension": "risk",
+      "finding": "Plan binds Cortex policy digest and tests mention stale digests, but Implementation never defines the Plan\u2192Apply race when policy or source changes mid-flight.",
+      "evidence": {
+        "offending_text": "\u8ba1\u5212\u7ed1\u5b9a\u6e90\u6587\u4ef6 SHA-256\u3001\u6e32\u67d3\u7ed3\u679c SHA-256\u3001\u76ee\u6807\u8def\u5f84\u53ca Cortex policy digest\u3002\u2026\u8986\u76d6 Plan/Apply\uff1a\u6e90\u6587\u4ef6\u53d8\u5316\u3001\u8ba1\u5212\u7be1\u6539\u2026\u9648\u65e7 policy digest\u2026",
+        "location_or_expected_section": "\u516c\u5f00\u63a5\u53e3 (line 24) and Test Plan (lines 45-46); expected Implementation risk/recovery for digest mismatch"
+      },
+      "failure_mechanism": "Tests imply stale digests are detectable, yet without a specified reject-and-replan vs force path, Apply can either silently apply outdated policy requirements or hard-fail with no documented recovery, breaking the Agent\u2192Plan\u2192Apply safety claim.",
+      "resolution_required": "Specify exact Apply behavior on source SHA, rendered SHA, or policy-digest mismatch; required user remediation (re-prepare/re-plan); and which cases are errors versus `--accept-partial` exclusions.",
+      "confidence": "high",
+      "unresolved_questions": []
+    }
+  ]
+}

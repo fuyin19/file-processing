@@ -1,0 +1,5 @@
+﻿norm_status accepted
+gate_exit 0
+validated scope pass canon 9 digest sha256:f951bfd5ce80329537f8ac1dfc3f1a686a9bd27a41518f411ef4531fd2445055
+portable_exit 0
+terminal audit_complete

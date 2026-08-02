@@ -1,0 +1,18 @@
+{
+  "run_id": "rar-81d0fdc51a72",
+  "config_revision": 1,
+  "config_hash": "sha256:efa9be4b10c458808d825f565dea7d971d0f2cadd83f63ebc5c18efca921efd6",
+  "review_mode": "audit",
+  "full_pass_id": "pass-1",
+  "plan_version_id": "plan-v1",
+  "plan_content_hash": "sha256:1b4ffab5f116a1b5c6a831abb4e33b44e7ff28a511dcfb56fe4f359302f273ac",
+  "context_package_id": "ctx-c45a03d14e0a",
+  "context_package_hash": "sha256:3c6ad26dc8271766ad87101dad6acaaf0a5d9d96feb70e5cdb5fb634756564ec",
+  "package_identity": "ctx-c45a03d14e0a",
+  "dispatch_id": "pass-1-lens_2",
+  "attempt_id": "pass-1-lens_2-a1",
+  "retry_of_attempt_id": null,
+  "role": "adversarial-plan-reviewer",
+  "lens_id": "lens_2",
+  "lens_kind": "universal"
+}

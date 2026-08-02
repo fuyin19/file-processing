@@ -1,0 +1,22 @@
+[
+  {
+    "dispatch_id": "pass-1-lens_1",
+    "attempt_id": "pass-1-lens_1-a1",
+    "retry_of_attempt_id": null,
+    "lens_id": "lens_1",
+    "lens_kind": "universal",
+    "focus_statement": "goal, deliverable, feasibility, sequence, and prerequisites",
+    "source": "universal",
+    "user_focus_ids": []
+  },
+  {
+    "dispatch_id": "pass-1-lens_2",
+    "attempt_id": "pass-1-lens_2-a1",
+    "retry_of_attempt_id": null,
+    "lens_id": "lens_2",
+    "lens_kind": "universal",
+    "focus_statement": "assumptions, risk, recovery, completeness, and verification",
+    "source": "universal",
+    "user_focus_ids": []
+  }
+]

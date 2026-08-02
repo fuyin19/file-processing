@@ -1,0 +1,124 @@
+{
+  "errors": [],
+  "normalization_events": [],
+  "normalization_policy_version": "2.0",
+  "normalized_payload": {
+    "context_sufficiency": "sufficient",
+    "missing_context": [],
+    "raw_findings": [
+      {
+        "confidence": "high",
+        "dimension": "deliverable",
+        "evidence": {
+          "location_or_expected_section": "\u516c\u5f00\u63a5\u53e3 (line 24) vs Assumptions (line 57)",
+          "offending_text": "\u65b0\u811a\u672c\u63d0\u4f9b `prepare / publish / apply / validate` \u5b50\u547d\u4ee4\uff1b...\u9996\u7248\u5904\u7406\u666e\u901a concept Markdown\uff1b\u4e0d\u8d1f\u8d23\u751f\u6210 bundle `index.md`\u3001\u65e5\u5fd7\u3001Cortex \u7d22\u5f15\u6216\u6267\u884c publish\u3002"
+        },
+        "failure_mechanism": "Callers and tests will treat publish as an implemented path, but DoD excludes it, leaving an undefined or stub command that breaks the stated prepare\u2192\u2026\u2192apply contract.",
+        "finding": "The public-interface deliverable advertises a publish subcommand while Assumptions exclude executing publish, so the promised skill surface cannot support a coherent first-version outcome.",
+        "raw_finding_id": "pass-1-lens_1-rf01",
+        "resolution_required": "Either remove publish from the v1 CLI deliverable or redefine Assumptions so v1 owns a concrete publish (or explicit no-op/error) contract with tests.",
+        "severity": "must-fix",
+        "unresolved_questions": []
+      },
+      {
+        "confidence": "high",
+        "dimension": "prerequisites",
+        "evidence": {
+          "location_or_expected_section": "Implementation Changes (line 28); expected packaging/dependency prerequisite subsection under Implementation Changes or Assumptions",
+          "offending_text": "`okf-frontmatter` \u4f7f\u7528 `ruamel.yaml` round-trip \u89e3\u6790\uff0c\u4fdd\u7559\u5df2\u6709\u5b57\u6bb5\u3001\u672a\u77e5\u6269\u5c55\u3001\u987a\u5e8f\u3001\u5f15\u53f7\u3001\u6ce8\u91ca\u548c\u6b63\u6587"
+        },
+        "failure_mechanism": "Without an install/pin/_ensure_package/packaging step, prepare/validate cannot run in the file-processing plugin environment and the Test Plan\u2019s YAML round-trip cases are unreachable.",
+        "finding": "The plan mandates ruamel.yaml round-trip parsing without stating how that dependency enters this plugin\u2019s runtime, despite bounded context that it is only a sibling Cortex dependency today.",
+        "raw_finding_id": "pass-1-lens_1-rf02",
+        "resolution_required": "Add an explicit prerequisite for adding and versioning ruamel.yaml (or an alternate parser) in this plugin and name the failure path if it is missing.",
+        "severity": "must-fix",
+        "unresolved_questions": []
+      },
+      {
+        "confidence": "high",
+        "dimension": "sequence",
+        "evidence": {
+          "location_or_expected_section": "Implementation Changes (line 39); expected ownership/sequence for approval between markdown-conversion and okf-frontmatter Plan/Apply",
+          "offending_text": "\u53ea\u6709 frontmatter \u8ba1\u5212\u83b7\u6279\u5e76\u901a\u8fc7\u6821\u9a8c\u540e\u624d\u521b\u5efa\u6700\u7ec8\u8f93\u51fa\uff1b\u62d2\u7edd\u5ba1\u6838\u6216\u5931\u8d25\u65f6\u4e0d\u7559\u4e0b\u4f2a\u79f0 OKF-ready \u7684\u76ee\u6807\u6587\u4ef6\u3002"
+        },
+        "failure_mechanism": "The conversion pipeline historically ends when files are written; inserting an unowned human/Agent approval step stalls batch jobs or forces silent auto-apply that violates the Agent\u2192diff\u2192Plan\u2192Apply promise.",
+        "finding": "markdown-conversion --okf is sequenced to withhold final output until a frontmatter plan is approved, but the plan never names who approves or how non-interactive/batch conversion completes that gate.",
+        "raw_finding_id": "pass-1-lens_1-rf03",
+        "resolution_required": "Specify the approval owner, auto-apply vs interactive rules for `--okf`/`--workspace`, and the exact exit/artifact state when approval cannot occur.",
+        "severity": "must-fix",
+        "unresolved_questions": [
+          "Is `--plan-only` the only non-interactive `--okf` path, or does conversion auto-apply after Agent proposal?"
+        ]
+      },
+      {
+        "confidence": "high",
+        "dimension": "feasibility",
+        "evidence": {
+          "location_or_expected_section": "\u516c\u5f00\u63a5\u53e3 (lines 20-23); expected Implementation Changes subsection for subprocess/import/orchestrator handoff and ownership",
+          "offending_text": "`markdown-conversion` \u65b0\u589e skill \u5c42\u53c2\u6570\uff1a\u2026 `--okf`\uff1a\u751f\u6210\u901a\u7528 OKF-ready Markdown\u3002\u2026 `--workspace <path>`\uff1a\u9690\u542b `--okf`"
+        },
+        "failure_mechanism": "Without a named handoff (subprocess to new scripts, shared library, or Agent-only orchestration), `--okf` cannot both keep default conversion compatible and reliably produce OKF-ready output as a single user-facing deliverable.",
+        "finding": "Cross-skill OKF linkage is promised at the skill-parameter layer, but the plan never defines the invocation mechanism between markdown-conversion and okf-frontmatter given today\u2019s single-pipeline CLI reality.",
+        "raw_finding_id": "pass-1-lens_1-rf04",
+        "resolution_required": "Document the concrete call path, argument mapping, staging directory contract, and which process owns exit codes when frontmatter planning fails.",
+        "severity": "must-fix",
+        "unresolved_questions": []
+      },
+      {
+        "confidence": "medium",
+        "dimension": "prerequisites",
+        "evidence": {
+          "location_or_expected_section": "Summary (line 8) and Implementation Changes (lines 34-37); expected Preconditions for Cortex CLI availability/version",
+          "offending_text": "\u4e0d\u4fee\u6539 Cortex\uff1b\u4ec5\u901a\u8fc7\u5176\u53ea\u8bfb CLI \u63a5\u53e3\u83b7\u53d6 workspace\u3001target \u548c policy \u72b6\u6001\u3002\u2026Cortex \u6a21\u5f0f\u5148\u9a8c\u8bc1 method contract \u4e3a 2.1\u300118 \u4e2a\u516c\u5f00 schema\u53ca\u76ee\u6807\u64cd\u4f5c\u96c6\u5408\uff0c\u518d\u8bfb\u53d6 `manage config show` \u548c quick validation"
+        },
+        "failure_mechanism": "If CLI is missing or only partially present, `--workspace` linkage cannot reach the stated verify-then-read sequence, collapsing Cortex-mode deliverables into unspecified hard failure before policy rules apply.",
+        "finding": "Cortex mode feasibility assumes method contract 2.1, eighteen schemas, and manage CLI reads, but the sequence never states install/detect prerequisites when Cortex CLI is absent on the host.",
+        "raw_finding_id": "pass-1-lens_1-rf05",
+        "resolution_required": "Add an ordered prerequisite check (CLI present \u2192 version/contract \u2192 schema inventory) with explicit user-facing outcomes for missing Cortex before any Agent proposal.",
+        "severity": "should-fix",
+        "unresolved_questions": []
+      },
+      {
+        "confidence": "medium",
+        "dimension": "goal",
+        "evidence": {
+          "location_or_expected_section": "Summary (line 5) vs Implementation Changes (line 29)",
+          "offending_text": "OKF frontmatter \u5305\u542b `type / description / tags` \u7b49\u8bed\u4e49\u5224\u65ad\u2026\u9ed8\u8ba4\u751f\u6210 `type/title/description/timestamp`"
+        },
+        "failure_mechanism": "Success criteria for \u201c\u901a\u7528\u6a21\u5f0f\u6ee1\u8db3 OKF 0.1\u201d can be claimed without addressing tags, while the stated rationale for splitting the skill still depends on tags semantics remaining unresolved.",
+        "finding": "The goal cites semantic judgment over type/description/tags as the reason for a new skill, yet the default generated field set omits tags and never defines tags as in-scope for OKF 0.1 readiness.",
+        "raw_finding_id": "pass-1-lens_1-rf06",
+        "resolution_required": "Either add tags to the v1 goal/default field contract (with generation/ask rules) or revise the goal text so tags are explicitly out of scope for OKF-ready deliverables.",
+        "severity": "should-fix",
+        "unresolved_questions": []
+      }
+    ],
+    "received_envelope": {
+      "attempt_id": "pass-1-lens_1-a1",
+      "config_hash": "sha256:efa9be4b10c458808d825f565dea7d971d0f2cadd83f63ebc5c18efca921efd6",
+      "config_revision": 1,
+      "context_package_hash": "sha256:ad9c6c3c9362215bf434ca25ddbdeb492d83deb3646a32b290e57c7ef6efa373",
+      "context_package_id": "ctx-36274d54c02d",
+      "dispatch_id": "pass-1-lens_1",
+      "full_pass_id": "pass-1",
+      "lens_id": "lens_1",
+      "lens_kind": "universal",
+      "package_identity": "ctx-36274d54c02d",
+      "plan_content_hash": "sha256:1b4ffab5f116a1b5c6a831abb4e33b44e7ff28a511dcfb56fe4f359302f273ac",
+      "plan_version_id": "plan-v1",
+      "retry_of_attempt_id": null,
+      "review_mode": "audit",
+      "role": "adversarial-plan-reviewer",
+      "run_id": "rar-4a562a6bc5fc"
+    },
+    "thin_haul": false
+  },
+  "normalized_sha256": "sha256:bb29967ad62ff214169b239cca0e636c8ddb658907f07f09b4751005662db189",
+  "raw_transport": {
+    "format": "json",
+    "sha256": "sha256:964d703a7e0ca296d2d4f8b354c47d755e0bae2fd55d9d132f0f6560b0006bee"
+  },
+  "role": "adversarial-plan-reviewer",
+  "schema_version": "1.0",
+  "status": "accepted"
+}

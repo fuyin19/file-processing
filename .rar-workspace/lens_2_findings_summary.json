@@ -1,0 +1,32 @@
+[
+  {
+    "id": "pass-1-lens_2-rf01",
+    "severity": "must-fix",
+    "finding": "The plan assumes a human-readable ?policy ???? mark is enough to keep missing-policy outputs from being treated as Cortex-compliant, while still allowing author"
+  },
+  {
+    "id": "pass-1-lens_2-rf02",
+    "severity": "must-fix",
+    "finding": "The plan asserts staging before final write and that reject/failure must not leave a falsely OKF-ready target, but it never specifies recovery for crash mid-app"
+  },
+  {
+    "id": "pass-1-lens_2-rf03",
+    "severity": "must-fix",
+    "finding": "The plan assumes markdown-conversion can grow ?skill ???? (--okf/--workspace/--no-frontmatter) distinct from the script CLI, but the supporting context states t"
+  },
+  {
+    "id": "pass-1-lens_2-rf04",
+    "severity": "must-fix",
+    "finding": "Cortex-mode behaviors (method 2.1 handshake, 18 schemas, manage config show, policy digest freshness, managed-bundle write refusal) are claimed and listed as te"
+  },
+  {
+    "id": "pass-1-lens_2-rf05",
+    "severity": "should-fix",
+    "finding": "The plan hard-requires ruamel.yaml round-trip semantics as the preservation mechanism, but nowhere handles the new runtime dependency risk (install failure, ver"
+  },
+  {
+    "id": "pass-1-lens_2-rf06",
+    "severity": "should-fix",
+    "finding": "Semantic fields depend on Agent proposals and ?ask the user when policy basis is lacking,? but the plan provides no non-interactive recovery for CI, --plan-only"
+  }
+]

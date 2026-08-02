@@ -1,0 +1,115 @@
+{
+  "received_envelope": {
+    "run_id": "rar-cbffad11a831",
+    "config_revision": 1,
+    "config_hash": "sha256:efa9be4b10c458808d825f565dea7d971d0f2cadd83f63ebc5c18efca921efd6",
+    "review_mode": "audit",
+    "full_pass_id": "pass-1",
+    "plan_version_id": "plan-v1",
+    "plan_content_hash": "sha256:1b4ffab5f116a1b5c6a831abb4e33b44e7ff28a511dcfb56fe4f359302f273ac",
+    "context_package_id": "ctx-3879b6a7a72a",
+    "context_package_hash": "sha256:3a6cc94c80ecce4183dcfc11d35fab19a19ef792b7ca85ded332e6ea1c2a171c",
+    "package_identity": {
+      "skill_id": "recursive-adversarial-review",
+      "skill_version": "0.6.0",
+      "workflow_version": "0.6.0",
+      "config_schema_version": "3.0",
+      "suite_release_id": "2026.07.19.1",
+      "manifest_digest": "sha256:6363a2b1c16997870d86d7d46c411189d50b77f8657a068087070e574e8c6592"
+    },
+    "dispatch_id": "pass-1-lens_1",
+    "attempt_id": "pass-1-lens_1-a1",
+    "retry_of_attempt_id": null,
+    "fresh_instance_id": "fresh-17f6518fce0e",
+    "input_artifact_hash": "sha256:2ea1dde411094ee5f46f58cacd4fbf18f46f32defa3e50857295494c644afbb1",
+    "role": "adversarial-plan-reviewer",
+    "lens": {
+      "focus_statement": "goal, deliverable, feasibility, sequence, and prerequisites",
+      "kind": "universal",
+      "lens_id": "lens_1",
+      "source": "universal",
+      "user_focus_ids": []
+    },
+    "lens_id": "lens_1",
+    "lens_kind": "universal"
+  },
+  "context_sufficiency": "sufficient",
+  "missing_context": [],
+  "thin_haul": false,
+  "raw_findings": [
+    {
+      "raw_finding_id": "pass-1-lens_1-rf01",
+      "severity": "must-fix",
+      "dimension": "goal_deliverable",
+      "finding": "Public CLI advertises a publish subcommand while Assumptions explicitly exclude executing publish and Cortex index/bundle generation, so the promised skill surface and the stated first-version goal cannot both be true.",
+      "evidence": {
+        "offending_text": "\u65b0\u811a\u672c\u63d0\u4f9b `prepare / publish / apply / validate` \u5b50\u547d\u4ee4 \u2026 \u9996\u7248\u5904\u7406\u666e\u901a concept Markdown\uff1b\u4e0d\u8d1f\u8d23\u751f\u6210 bundle `index.md`\u3001\u65e5\u5fd7\u3001Cortex \u7d22\u5f15\u6216\u6267\u884c publish\u3002",
+        "location_or_expected_section": "\u516c\u5f00\u63a5\u53e3 L24 vs Assumptions L57"
+      },
+      "failure_mechanism": "Callers and DoD treat publish as a delivered capability; implementers treat it as out of scope. Either the interface ships a no-op/misnamed command or the goal expands past the declared deliverable, so the outcome cannot be verified as complete.",
+      "resolution_required": "Reconcile the public subcommand set with first-version scope: remove publish from the promised interface, or redefine Objective/DoD to include a concrete publish behavior and ownership.",
+      "confidence": "high",
+      "unresolved_questions": []
+    },
+    {
+      "raw_finding_id": "pass-1-lens_1-rf02",
+      "severity": "must-fix",
+      "dimension": "sequence_prerequisites",
+      "finding": "The --okf conversion path gates final output on Agent propose \u2192 diff \u2192 Plan \u2192 Apply, but markdown-conversion today is a deterministic single CLI with no Plan/Apply pattern, and the plan never assigns who performs the interactive gate in batch, CI, or non-agent script runs.",
+      "evidence": {
+        "offending_text": "\u6240\u6709\u5199\u5165\u5747\u91c7\u7528\u201cAgent \u63d0\u8bae \u2192 \u5c55\u793a\u5dee\u5f02 \u2192 Plan \u2192 Apply\u201d\u3002\u2026 \u53ea\u6709 frontmatter \u8ba1\u5212\u83b7\u6279\u5e76\u901a\u8fc7\u6821\u9a8c\u540e\u624d\u521b\u5efa\u6700\u7ec8\u8f93\u51fa",
+        "location_or_expected_section": "Summary L7; Implementation Changes L39; Bounded context: Plan/Apply not in markdown-conversion; pipeline.py is only CLI"
+      },
+      "failure_mechanism": "Sequence inserts a human/agent approval prerequisite mid-pipeline without an owner or non-interactive fallback. Batch --input-dir and headless pytest cannot reach the promised final OKF-ready artifact, so the linked conversion deliverable is infeasible under current runtime.",
+      "resolution_required": "Specify sequence and ownership for approval (slash orchestrator vs script flags like --plan-only/--apply-plan/--metadata-json), including batch/CI behavior when no Agent is present, before claiming OKF-linked conversion.",
+      "confidence": "high",
+      "unresolved_questions": [
+        "Is markdown-conversion --okf allowed to exit with a plan artifact only, or must it always produce the final .md in one invocation?"
+      ]
+    },
+    {
+      "raw_finding_id": "pass-1-lens_1-rf03",
+      "severity": "must-fix",
+      "dimension": "feasibility_prerequisites",
+      "finding": "Round-trip YAML preservation depends on ruamel.yaml, which is not a plugin dependency today; the plan states the requirement but omits install, packaging, and version pinning as prerequisites.",
+      "evidence": {
+        "offending_text": "okf-frontmatter \u4f7f\u7528 `ruamel.yaml` round-trip \u89e3\u6790\uff0c\u4fdd\u7559\u5df2\u6709\u5b57\u6bb5\u3001\u672a\u77e5\u6269\u5c55\u3001\u987a\u5e8f\u3001\u5f15\u53f7\u3001\u6ce8\u91ca\u548c\u6b63\u6587",
+        "location_or_expected_section": "Implementation Changes L28; Bounded context: no ruamel.yaml in this plugin; it is a Cortex sibling dependency"
+      },
+      "failure_mechanism": "Without a declared acquisition path, prepare/apply cannot meet the preservation deliverable in a clean plugin install. Feasibility of the core skill goal collapses at first run on machines that only have the file-processing plugin.",
+      "resolution_required": "Add an explicit prerequisite and packaging decision for ruamel.yaml (pin, _ensure_package, or documented Cortex-provided environment) as part of DoD.",
+      "confidence": "high",
+      "unresolved_questions": []
+    },
+    {
+      "raw_finding_id": "pass-1-lens_1-rf04",
+      "severity": "should-fix",
+      "dimension": "goal_deliverable",
+      "finding": "--workspace is said to satisfy Cortex authoring and active policy, yet policy-missing mode may still emit generic authoring frontmatter marked unverified, so the Cortex-mode goal has two incompatible success criteria.",
+      "evidence": {
+        "offending_text": "`--workspace <path>`\uff1a\u9690\u542b `--okf`\uff0c\u5e76\u6ee1\u8db3 Cortex authoring \u4e0e\u6d3b\u52a8 policy\u3002\u2026 policy \u7f3a\u5931\uff1a\u53ef\u751f\u6210\u901a\u7528 authoring frontmatter\uff0c\u4f46\u660e\u786e\u6807\u8bb0\u4e3a\u201cpolicy \u672a\u9a8c\u8bc1\u201d\u3002",
+        "location_or_expected_section": "\u516c\u5f00\u63a5\u53e3 L22; Implementation Changes L36"
+      },
+      "failure_mechanism": "DoD can be claimed either as policy-satisfied output or as unverified generic output under the same flag. Feasibility of the promised Cortex-mode outcome is unfalsifiable; partial success looks like completion.",
+      "resolution_required": "Define a single terminal success condition for --workspace (hard fail without valid policy vs explicitly degraded mode with distinct exit code/artifact label) and align public interface wording.",
+      "confidence": "high",
+      "unresolved_questions": []
+    },
+    {
+      "raw_finding_id": "pass-1-lens_1-rf05",
+      "severity": "should-fix",
+      "dimension": "prerequisites_sequence",
+      "finding": "Cortex mode presupposes method contract 2.1, eighteen public schemas, manage config show, and quick validation via an external CLI that this plugin does not own, with no sequenced preflight DoD for CLI presence/PATH/version before skill work begins.",
+      "evidence": {
+        "offending_text": "\u4e0d\u4fee\u6539 Cortex\uff1b\u4ec5\u901a\u8fc7\u5176\u53ea\u8bfb CLI \u63a5\u53e3\u83b7\u53d6 workspace\u3001target \u548c policy \u72b6\u6001\u3002\u2026 Cortex \u6a21\u5f0f\u5148\u9a8c\u8bc1 method contract \u4e3a 2.1\u300118 \u4e2a\u516c\u5f00 schema\u53ca\u76ee\u6807\u64cd\u4f5c\u96c6\u5408\uff0c\u518d\u8bfb\u53d6 `manage config show` \u548c quick validation",
+        "location_or_expected_section": "Summary L8; Implementation Changes L34-37"
+      },
+      "failure_mechanism": "Hidden environmental prerequisites sit outside the plugin. If CLI is missing, incompatible, or schemas drift, the sequence never reaches Apply, yet Test Plan treats Cortex cases as in-repo pytest coverage\u2014so the promised Cortex deliverable is not independently shippable from this plan alone.",
+      "resolution_required": "State Cortex CLI version/contract as a hard prerequisite with a failing preflight and test doubles; separate plugin-shippable OKF-generic DoD from Cortex-dependent DoD.",
+      "confidence": "medium",
+      "unresolved_questions": [
+        "Which Cortex CLI release pins method contract 2.1 and the eighteen schemas for this skill\u2019s DoD?"
+      ]
+    }
+  ]
+}

@@ -1,0 +1,8 @@
+{
+  "full_pass_id": "pass-1",
+  "pass_index": 1,
+  "plan_version_id": "plan-v1",
+  "plan_content_hash": "sha256:1b4ffab5f116a1b5c6a831abb4e33b44e7ff28a511dcfb56fe4f359302f273ac",
+  "context_package_id": "ctx-3879b6a7a72a",
+  "context_package_hash": "sha256:3a6cc94c80ecce4183dcfc11d35fab19a19ef792b7ca85ded332e6ea1c2a171c"
+}

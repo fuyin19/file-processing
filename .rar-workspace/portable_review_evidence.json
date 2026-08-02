@@ -1,0 +1,190 @@
+{
+  "type": "PortableReviewEvidence",
+  "version": 2,
+  "evidence_id": "pre-okf-frontmatter-audit-pass1-rar-cbffad11a831",
+  "handoff": {
+    "artifact_type": "PortableReviewEvidence",
+    "schema_version": "2.0",
+    "artifact_id": "pre-okf-frontmatter-audit-pass1-rar-cbffad11a831",
+    "producer_skill": "recursive-adversarial-review",
+    "basis_digest": "sha256:3507f9d85cfe88e93d4389ce591748da13611e7a0cfbed1a5e9f6d7372f39b90",
+    "snapshot_digest": "sha256:3a6cc94c80ecce4183dcfc11d35fab19a19ef792b7ca85ded332e6ea1c2a171c",
+    "authority_effect": "none",
+    "created_at": "2026-07-20T10:56:24Z"
+  },
+  "review": {
+    "terminal": "audit_complete",
+    "mode": "audit",
+    "lens_count": 2,
+    "completed_full_passes": 1,
+    "pass_policy": {
+      "required_full_passes": 1
+    }
+  },
+  "lens_roster": [
+    {
+      "focus_statement": "goal, deliverable, feasibility, sequence, and prerequisites",
+      "kind": "universal",
+      "lens_id": "lens_1",
+      "source": "universal",
+      "user_focus_ids": []
+    },
+    {
+      "focus_statement": "assumptions, risk, recovery, completeness, and verification",
+      "kind": "universal",
+      "lens_id": "lens_2",
+      "source": "universal",
+      "user_focus_ids": []
+    }
+  ],
+  "pass_summaries": [
+    {
+      "pass_id": 1,
+      "plan_digest": "sha256:1b4ffab5f116a1b5c6a831abb4e33b44e7ff28a511dcfb56fe4f359302f273ac",
+      "source_finding_ids": [
+        "pass-1-lens_1-rf01",
+        "pass-1-lens_1-rf02",
+        "pass-1-lens_1-rf03",
+        "pass-1-lens_1-rf04",
+        "pass-1-lens_1-rf05",
+        "pass-1-lens_2-rf01",
+        "pass-1-lens_2-rf02",
+        "pass-1-lens_2-rf03",
+        "pass-1-lens_2-rf04",
+        "pass-1-lens_2-rf05"
+      ],
+      "source_count": 10,
+      "canonical_findings": [
+        {
+          "canonical_finding_id": "CF-01",
+          "merged_from_source_ids": [
+            "pass-1-lens_1-rf01"
+          ]
+        },
+        {
+          "canonical_finding_id": "CF-02",
+          "merged_from_source_ids": [
+            "pass-1-lens_1-rf02"
+          ]
+        },
+        {
+          "canonical_finding_id": "CF-03",
+          "merged_from_source_ids": [
+            "pass-1-lens_1-rf03",
+            "pass-1-lens_2-rf02"
+          ]
+        },
+        {
+          "canonical_finding_id": "CF-04",
+          "merged_from_source_ids": [
+            "pass-1-lens_1-rf04"
+          ]
+        },
+        {
+          "canonical_finding_id": "CF-05",
+          "merged_from_source_ids": [
+            "pass-1-lens_1-rf05"
+          ]
+        },
+        {
+          "canonical_finding_id": "CF-06",
+          "merged_from_source_ids": [
+            "pass-1-lens_2-rf01"
+          ]
+        },
+        {
+          "canonical_finding_id": "CF-07",
+          "merged_from_source_ids": [
+            "pass-1-lens_2-rf03"
+          ]
+        },
+        {
+          "canonical_finding_id": "CF-08",
+          "merged_from_source_ids": [
+            "pass-1-lens_2-rf04"
+          ]
+        },
+        {
+          "canonical_finding_id": "CF-09",
+          "merged_from_source_ids": [
+            "pass-1-lens_2-rf05"
+          ]
+        }
+      ],
+      "canonical_count": 9,
+      "source_to_canonical": [
+        {
+          "source_finding_id": "pass-1-lens_1-rf01",
+          "canonical_finding_id": "CF-01"
+        },
+        {
+          "source_finding_id": "pass-1-lens_1-rf02",
+          "canonical_finding_id": "CF-02"
+        },
+        {
+          "source_finding_id": "pass-1-lens_1-rf03",
+          "canonical_finding_id": "CF-03"
+        },
+        {
+          "source_finding_id": "pass-1-lens_1-rf04",
+          "canonical_finding_id": "CF-04"
+        },
+        {
+          "source_finding_id": "pass-1-lens_1-rf05",
+          "canonical_finding_id": "CF-05"
+        },
+        {
+          "source_finding_id": "pass-1-lens_2-rf01",
+          "canonical_finding_id": "CF-06"
+        },
+        {
+          "source_finding_id": "pass-1-lens_2-rf02",
+          "canonical_finding_id": "CF-03"
+        },
+        {
+          "source_finding_id": "pass-1-lens_2-rf03",
+          "canonical_finding_id": "CF-07"
+        },
+        {
+          "source_finding_id": "pass-1-lens_2-rf04",
+          "canonical_finding_id": "CF-08"
+        },
+        {
+          "source_finding_id": "pass-1-lens_2-rf05",
+          "canonical_finding_id": "CF-09"
+        }
+      ],
+      "mapping_digest": "sha256:d8ef82b4181c5f51de7345ec33afa32b835b53c99561d277e83df32b79b5604b",
+      "validated_gate_result_digest": "sha256:98d2d633fc58243827afd49fc67e9b30b755ba4ccf7144e1ef555979d3840ae1"
+    }
+  ],
+  "plan": {
+    "version_id": "plan-v1",
+    "digest": "sha256:1b4ffab5f116a1b5c6a831abb4e33b44e7ff28a511dcfb56fe4f359302f273ac"
+  },
+  "report": {
+    "digest": "sha256:f4cec25d11c12100ac327f39efd0dee7bb0fa8b60cb87c7b37f324eeddbc7322"
+  },
+  "scope": {
+    "user_focuses": [],
+    "focus_coverage": []
+  },
+  "context": {
+    "package_id": "ctx-3879b6a7a72a",
+    "manifest_digest": "sha256:3a6cc94c80ecce4183dcfc11d35fab19a19ef792b7ca85ded332e6ea1c2a171c"
+  },
+  "success_check_mapping": [],
+  "waivers": [],
+  "invalidates_on": [
+    "basis_changed",
+    "instructions_changed",
+    "risk_changed",
+    "target_snapshot_changed",
+    "evidence_stale",
+    "schema_unsupported"
+  ],
+  "plan_digest": "sha256:1b4ffab5f116a1b5c6a831abb4e33b44e7ff28a511dcfb56fe4f359302f273ac",
+  "scope_digest": "sha256:83a3c4c092e48bee1820242da89cbf6e7a792c8b390115a1b5a38e8417cc4e70",
+  "success_check_map_digest": "sha256:d632ea13455d52b8610e95e74eff4e8afa916e652520b44d0145b0170f290551",
+  "context_manifest_digest": "sha256:3a6cc94c80ecce4183dcfc11d35fab19a19ef792b7ca85ded332e6ea1c2a171c"
+}

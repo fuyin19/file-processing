@@ -1,0 +1,9 @@
+{
+  "attempt_id": "pass-1-lens_1-a1",
+  "dispatch_id": "pass-1-lens_1",
+  "agent_id": "71f09d7a-8bca-4348-8945-528ea8983004",
+  "outcome": "rejected",
+  "reason": "received_envelope.context_package_hash was literal <<CTX_HASH>> placeholder; identity mismatch",
+  "will_retry": true,
+  "retry_attempt_id": "pass-1-lens_1-a2"
+}

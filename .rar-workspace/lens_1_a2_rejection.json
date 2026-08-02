@@ -1,0 +1,10 @@
+{
+  "attempt_id": "pass-1-lens_1-a2",
+  "retry_of_attempt_id": "pass-1-lens_1-a1",
+  "dispatch_id": "pass-1-lens_1",
+  "agent_id": "7e97e1d0-6eba-4e55-bd21-779eee5af500",
+  "outcome": "rejected",
+  "reason": "malformed raw_findings schema: expected severity/dimension/finding/evidence/failure_mechanism/resolution_required/confidence/unresolved_questions; got focus/plan_citation/expected_missing_material/refutation",
+  "envelope_ok": true,
+  "operational_retry_exhausted": true
+}

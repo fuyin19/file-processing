@@ -1,0 +1,10 @@
+{
+  "run_id": "rar-4a562a6bc5fc",
+  "full_pass_id": "pass-1",
+  "plan_version_id": "plan-v1",
+  "plan_content_hash": "sha256:1b4ffab5f116a1b5c6a831abb4e33b44e7ff28a511dcfb56fe4f359302f273ac",
+  "context_package_id": "ctx-36274d54c02d",
+  "context_package_hash": "sha256:ad9c6c3c9362215bf434ca25ddbdeb492d83deb3646a32b290e57c7ef6efa373",
+  "config_hash": "sha256:efa9be4b10c458808d825f565dea7d971d0f2cadd83f63ebc5c18efca921efd6",
+  "config_revision": 1
+}

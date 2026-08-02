@@ -1,0 +1,141 @@
+You are a fresh adversarial plan reviewer. Try to refute the complete plan ONLY through the assigned lens. Do not praise, edit, waive, adjudicate, or decide the terminal. Cite exact plan text or the expected location of missing material. Do NOT use tools. Do NOT read files. Work only from this message.
+
+CRITICAL OUTPUT CONTRACT — violation causes rejection:
+Return EXACTLY one JSON object. No markdown fences. No prose outside JSON.
+Top-level keys MUST be exactly:
+  received_envelope, context_sufficiency, missing_context, thin_haul, raw_findings
+
+Each raw_findings[] item MUST have EXACTLY these keys (no extras, no renames):
+  raw_finding_id, severity, dimension, finding, evidence, failure_mechanism,
+  resolution_required, confidence, unresolved_questions
+
+FORBIDDEN keys on findings: focus, plan_citation, expected_missing_material, refutation
+
+severity: must-fix | should-fix | nice-to-have
+confidence: high | medium | low
+evidence MUST be object with exactly:
+  offending_text, location_or_expected_section
+unresolved_questions MUST be an array (may be empty)
+thin_haul MUST be boolean false unless you truly failed to cover the lens
+context_sufficiency: sufficient | insufficient
+Echo received_envelope EXACTLY character-for-character from the Envelope block below.
+raw_finding_id MUST be "<dispatch_id>-rf01", "<dispatch_id>-rf02", ... sequential.
+
+Envelope (copy verbatim into received_envelope):
+{
+  "run_id": "rar-4a562a6bc5fc",
+  "config_revision": 1,
+  "config_hash": "sha256:efa9be4b10c458808d825f565dea7d971d0f2cadd83f63ebc5c18efca921efd6",
+  "review_mode": "audit",
+  "full_pass_id": "pass-1",
+  "plan_version_id": "plan-v1",
+  "plan_content_hash": "sha256:1b4ffab5f116a1b5c6a831abb4e33b44e7ff28a511dcfb56fe4f359302f273ac",
+  "context_package_id": "ctx-36274d54c02d",
+  "context_package_hash": "sha256:ad9c6c3c9362215bf434ca25ddbdeb492d83deb3646a32b290e57c7ef6efa373",
+  "package_identity": "ctx-36274d54c02d",
+  "dispatch_id": "pass-1-lens_2",
+  "attempt_id": "pass-1-lens_2-a1",
+  "retry_of_attempt_id": null,
+  "role": "adversarial-plan-reviewer",
+  "lens_id": "lens_2",
+  "lens_kind": "universal"
+}
+
+Assigned lens:
+- lens_id: lens_2
+- kind: universal
+- focus_statement: assumptions, risk, recovery, completeness, and verification
+- source: universal
+- user_focus_ids: []
+- Refutation prompt: Break the plan by attacking its assumptions, risk handling, recovery paths, future fit, completeness, and verification. Cite the exact text, or identify the expected section for missing protection or evidence.
+
+Complete line-numbered plan:
+```
+   1|# 新增 `okf-frontmatter` skill，并与 Markdown 转换显式联动
+   2|
+   3|## Summary
+   4|
+   5|- 新增独立 `/file-processing:okf-frontmatter` skill。原因是 OKF frontmatter 包含 `type / description / tags` 等语义判断，不应硬编码进确定性的格式转换管线。
+   6|- `markdown-conversion` 增加显式 OKF 模式；默认行为保持兼容，只有指定 `--okf` 或 `--workspace` 才联动新 skill。
+   7|- 通用模式满足 OKF 0.1；Cortex 模式额外读取 authoring profile 和活动 policy。所有写入均采用“Agent 提议 → 展示差异 → Plan → Apply”。
+   8|- 不修改 Cortex；仅通过其只读 CLI 接口获取 workspace、target 和 policy 状态。
+   9|
+  10|## 公开接口
+  11|
+  12|- 新命令：
+  13|  - `/file-processing:okf-frontmatter <file-or-directory>`
+  14|  - `--workspace <cortex-root>`：启用 Cortex 2.1 policy 模式。
+  15|  - `--no-recursive`：目录输入时不递归。
+  16|  - `--metadata-json <path>`：提供人工确认的字段。
+  17|  - `--replace-fields <csv>`：显式允许覆盖已有非空字段；默认仅补缺。
+  18|  - `--plan-only`、`--apply-plan <plan>`：分离审核与应用。
+  19|  - `--accept-partial`：批量任务中明确允许只应用完整项目。
+  20|- `markdown-conversion` 新增 skill 层参数：
+  21|  - `--okf`：生成通用 OKF-ready Markdown。
+  22|  - `--workspace <path>`：隐含 `--okf`，并满足 Cortex authoring 与活动 policy。
+  23|  - `--no-frontmatter` 与上述参数互斥。
+  24|- 新脚本提供 `prepare / publish / apply / validate` 子命令；计划绑定源文件 SHA-256、渲染结果 SHA-256、目标路径及 Cortex policy digest。
+  25|
+  26|## Implementation Changes
+  27|
+  28|- `okf-frontmatter` 使用 `ruamel.yaml` round-trip 解析，保留已有字段、未知扩展、顺序、引号、注释和正文；拒绝重复键、非 mapping 或损坏的 YAML。
+  29|- 字段优先级为：显式用户输入 → 已有非空值 → 确定性推导 → Agent 建议。默认生成 `type/title/description/timestamp`；保留转换产生的 `source/converted_at/converted_by`。
+  30|  - 标题优先取首个 H1，再取文件名。
+  31|  - 时间优先取原始来源文件 mtime，再取 Markdown mtime或转换时间。
+  32|  - URL 可写入 `resource`；本地路径只保留在 `source`。
+  33|  - 不自行生成 `source_ids`，由 Cortex publish 流程管理。
+  34|- Cortex 模式先验证 method contract 为 2.1、18 个公开 schema及目标操作集合，再读取 `manage config show` 和 quick validation：
+  35|  - 有效 policy：要求 authoring 四字段与 `required_frontmatter_fields` 的并集，并校验声明文件摘要。
+  36|  - policy 缺失：可生成通用 authoring frontmatter，但明确标记为“policy 未验证”。
+  37|  - policy 无效、CLI 不兼容或自定义必填字段无可靠依据：阻止 Apply。
+  38|- `index.md`、`log.md` 不作为普通 concept 注入 frontmatter；UTF-8 BOM、符号链接及活动 Cortex bundle 内的直接修改均被阻止或单独报告。受管 bundle 只能经 Cortex 计划执行。
+  39|- `markdown-conversion --okf` 先把无 frontmatter 的转换正文写入运行暂存区，再把来源字段交给新 skill。只有 frontmatter 计划获批并通过校验后才创建最终输出；拒绝审核或失败时不留下伪称 OKF-ready 的目标文件。
+  40|- 默认 legacy 转换路径及其现有三字段 frontmatter保持不变。插件版本升至 `3.6.0`，`markdown-conversion` 升至 `4.1.0`，新 skill 为 `1.0.0`；同步更新已获授权的 `AGENTS.md`、README 和插件清单。
+  41|
+  42|## Test Plan
+  43|
+  44|- 新测试覆盖：无 frontmatter、已有完整/部分 frontmatter、字段保留与显式覆盖、YAML 转义和注释、损坏 YAML、BOM、保留正文、保留转换 provenance、保留未知字段。
+  45|- 覆盖 OKF/Cortex：通用 OKF、有效/缺失/无效 policy、额外必填字段、陈旧 policy digest、不兼容 method contract、受管 bundle 拒绝直接写入。
+  46|- 覆盖 Plan/Apply：源文件变化、计划篡改、批量覆盖完整性、目标冲突、逐文件原子写入及失败报告。
+  47|- 回归验证：
+  48|  - `python -m pytest tests/okf-frontmatter/test_frontmatter_pipeline.py -v`
+  49|  - `python -m pytest tests/markdown-conversion/test_pipeline.py -v`
+  50|  - `python -m pytest -q`
+  51|  - 运行 skill quick validation。
+  52|- 当前基线：`markdown-conversion` 测试为 65 passed；实施后必须全部继续通过。
+  53|
+  54|## Assumptions
+  55|
+  56|- “cotex”按已确认解释为 Cortex CLI，而非 OpenAI Codex。
+  57|- 首版处理普通 concept Markdown；不负责生成 bundle `index.md`、日志、Cortex 索引或执行 publish。
+  58|- Agent 只能提交结构化候选；缺乏 policy 依据时询问用户，不猜测自定义字段。
+```
+
+Bounded supporting context:
+- file-processing plugin 3.5.0; markdown-conversion 4.0.0; no okf-frontmatter skill yet
+- legacy frontmatter is string-template source/converted_at/converted_by; no ruamel.yaml in this plugin
+- ruamel.yaml is a Cortex dependency (sibling repo)
+- OKF SPEC: only type required; title/description/tags/timestamp recommended; extensions allowed
+- Cortex authoring profile cortex-authoring-v1 requires non-empty title, description, timestamp
+- required_frontmatter_fields come from active policy package; source_ids assigned by Cortex publish
+- No skill-layer vs script-layer CLI split today; SKILL.md documents slash UX, pipeline.py is the only CLI
+- Plan/Apply+digest pattern exists in translate/content-review and Cortex CLI, not in markdown-conversion
+- translate SKILL.md version may drift from AGENTS.md (3.0.0 vs 2.0.0) — versioning discipline risk for this bump
+
+Example of ONE valid finding object (structure only; invent real content for your lens):
+{
+  "raw_finding_id": "pass-1-lens_2-rf01",
+  "severity": "must-fix",
+  "dimension": "feasibility",
+  "finding": "One sentence stating the weakness.",
+  "evidence": {
+    "offending_text": "exact quote from the plan",
+    "location_or_expected_section": "Public Interface (lines 20-23)"
+  },
+  "failure_mechanism": "One atomic mechanism.",
+  "resolution_required": "What the plan must add or change.",
+  "confidence": "high",
+  "unresolved_questions": []
+}
+
+Prefer 2-6 atomic findings if weaknesses exist. Return ONLY the JSON object.

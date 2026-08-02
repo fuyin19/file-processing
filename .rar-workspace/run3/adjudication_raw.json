@@ -1,0 +1,217 @@
+{
+  "received_envelope": {
+    "run_id": "rar-cbffad11a831",
+    "config_revision": 1,
+    "config_hash": "sha256:efa9be4b10c458808d825f565dea7d971d0f2cadd83f63ebc5c18efca921efd6",
+    "review_mode": "audit",
+    "full_pass_id": "pass-1",
+    "plan_version_id": "plan-v1",
+    "plan_content_hash": "sha256:1b4ffab5f116a1b5c6a831abb4e33b44e7ff28a511dcfb56fe4f359302f273ac",
+    "context_package_id": "ctx-3879b6a7a72a",
+    "context_package_hash": "sha256:3a6cc94c80ecce4183dcfc11d35fab19a19ef792b7ca85ded332e6ea1c2a171c",
+    "package_identity": {
+      "config_schema_version": "3.0",
+      "manifest_digest": "sha256:6363a2b1c16997870d86d7d46c411189d50b77f8657a068087070e574e8c6592",
+      "skill_id": "recursive-adversarial-review",
+      "skill_version": "0.6.0",
+      "suite_release_id": "2026.07.19.1",
+      "workflow_version": "0.6.0"
+    },
+    "adjudication_id": "adj-pass-1-d7b2abb0",
+    "attempt_id": "adj-pass-1-d7b2abb0-a1",
+    "retry_of_attempt_id": null,
+    "fresh_instance_id": "fresh-eac7826f87a8",
+    "input_artifact_hash": "sha256:f32c265985192425b04a493ef4c5a1fb133acba993ef1ae1e55a49cefaa320a4",
+    "role": "finding-adjudicator",
+    "adjudication_scope": "pass"
+  },
+  "canonical_findings": [
+    {
+      "canonical_finding_id": "CF-01",
+      "merged_from_raw_ids": [
+        "pass-1-lens_1-rf01"
+      ],
+      "source_severities": {
+        "pass-1-lens_1-rf01": "must-fix"
+      },
+      "original_severity": "must-fix",
+      "recommendation": "fix",
+      "rationale": "Assumptions forbid executing publish while the plan includes a publish subcommand; atomic Assumptions/execute-policy conflict kept separate from digest-recovery framing.",
+      "confidence": "high",
+      "unresolved_questions": []
+    },
+    {
+      "canonical_finding_id": "CF-02",
+      "merged_from_raw_ids": [
+        "pass-1-lens_1-rf02"
+      ],
+      "source_severities": {
+        "pass-1-lens_1-rf02": "must-fix"
+      },
+      "original_severity": "must-fix",
+      "recommendation": "fix",
+      "rationale": "Agent\u2192Plan\u2192Apply gate ownership for batch/CI conversion is unowned; distinct orchestration-ownership gap from skill/pipeline CLI contract incompleteness.",
+      "confidence": "high",
+      "unresolved_questions": []
+    },
+    {
+      "canonical_finding_id": "CF-03",
+      "merged_from_raw_ids": [
+        "pass-1-lens_1-rf03",
+        "pass-1-lens_2-rf02"
+      ],
+      "source_severities": {
+        "pass-1-lens_1-rf03": "must-fix",
+        "pass-1-lens_2-rf02": "must-fix"
+      },
+      "original_severity": "must-fix",
+      "recommendation": "fix",
+      "rationale": "Same undeclared ruamel.yaml plugin dependency / packaging-install risk reported by both lenses; merged with highest severity must-fix.",
+      "confidence": "high",
+      "unresolved_questions": []
+    },
+    {
+      "canonical_finding_id": "CF-04",
+      "merged_from_raw_ids": [
+        "pass-1-lens_1-rf04"
+      ],
+      "source_severities": {
+        "pass-1-lens_1-rf04": "should-fix"
+      },
+      "original_severity": "should-fix",
+      "recommendation": "fix",
+      "rationale": "--workspace success criteria conflict between satisfy-policy and unverified-allow paths; distinct success-criteria mechanism.",
+      "confidence": "high",
+      "unresolved_questions": []
+    },
+    {
+      "canonical_finding_id": "CF-05",
+      "merged_from_raw_ids": [
+        "pass-1-lens_1-rf05"
+      ],
+      "source_severities": {
+        "pass-1-lens_1-rf05": "should-fix"
+      },
+      "original_severity": "should-fix",
+      "recommendation": "fix",
+      "rationale": "Cortex CLI preflight/version Definition of Done is missing; distinct DoD gap from Test Plan incompleteness.",
+      "confidence": "high",
+      "unresolved_questions": []
+    },
+    {
+      "canonical_finding_id": "CF-06",
+      "merged_from_raw_ids": [
+        "pass-1-lens_2-rf01"
+      ],
+      "source_severities": {
+        "pass-1-lens_2-rf01": "must-fix"
+      },
+      "original_severity": "must-fix",
+      "recommendation": "fix",
+      "rationale": "Staging/crash/partial-batch recovery behavior is undefined; atomic failure-recovery mechanism kept separate.",
+      "confidence": "high",
+      "unresolved_questions": []
+    },
+    {
+      "canonical_finding_id": "CF-07",
+      "merged_from_raw_ids": [
+        "pass-1-lens_2-rf03"
+      ],
+      "source_severities": {
+        "pass-1-lens_2-rf03": "must-fix"
+      },
+      "original_severity": "must-fix",
+      "recommendation": "fix",
+      "rationale": "Test Plan DoD incomplete: quick validation undefined and no node ids; distinct verification-evidence gap.",
+      "confidence": "high",
+      "unresolved_questions": []
+    },
+    {
+      "canonical_finding_id": "CF-08",
+      "merged_from_raw_ids": [
+        "pass-1-lens_2-rf04"
+      ],
+      "source_severities": {
+        "pass-1-lens_2-rf04": "should-fix"
+      },
+      "original_severity": "should-fix",
+      "recommendation": "fix",
+      "rationale": "Plan digest mismatch recovery matrix is missing; publish ambiguity noted as secondary framing but primary mechanism is digest-recovery, kept separate from CF-01.",
+      "confidence": "medium",
+      "unresolved_questions": [
+        "Whether publish ambiguity in this finding is fully subsumed by CF-01 or requires additional digest-matrix-specific publish handling."
+      ]
+    },
+    {
+      "canonical_finding_id": "CF-09",
+      "merged_from_raw_ids": [
+        "pass-1-lens_2-rf05"
+      ],
+      "source_severities": {
+        "pass-1-lens_2-rf05": "should-fix"
+      },
+      "original_severity": "should-fix",
+      "recommendation": "fix",
+      "rationale": "Skill-layer versus pipeline.py CLI contract is incomplete; related to CF-02 orchestration concerns but distinct CLI-surface mechanism, kept separate.",
+      "confidence": "high",
+      "unresolved_questions": []
+    }
+  ],
+  "raw_to_canonical": [
+    {
+      "raw_finding_id": "pass-1-lens_1-rf01",
+      "canonical_finding_id": "CF-01"
+    },
+    {
+      "raw_finding_id": "pass-1-lens_1-rf02",
+      "canonical_finding_id": "CF-02"
+    },
+    {
+      "raw_finding_id": "pass-1-lens_1-rf03",
+      "canonical_finding_id": "CF-03"
+    },
+    {
+      "raw_finding_id": "pass-1-lens_1-rf04",
+      "canonical_finding_id": "CF-04"
+    },
+    {
+      "raw_finding_id": "pass-1-lens_1-rf05",
+      "canonical_finding_id": "CF-05"
+    },
+    {
+      "raw_finding_id": "pass-1-lens_2-rf01",
+      "canonical_finding_id": "CF-06"
+    },
+    {
+      "raw_finding_id": "pass-1-lens_2-rf02",
+      "canonical_finding_id": "CF-03"
+    },
+    {
+      "raw_finding_id": "pass-1-lens_2-rf03",
+      "canonical_finding_id": "CF-07"
+    },
+    {
+      "raw_finding_id": "pass-1-lens_2-rf04",
+      "canonical_finding_id": "CF-08"
+    },
+    {
+      "raw_finding_id": "pass-1-lens_2-rf05",
+      "canonical_finding_id": "CF-09"
+    }
+  ],
+  "rejected_raw_findings": [],
+  "unresolved_contradictions": [
+    {
+      "contradiction_id": "UC-01",
+      "related_canonical_ids": [
+        "CF-01",
+        "CF-08"
+      ],
+      "related_raw_ids": [
+        "pass-1-lens_1-rf01",
+        "pass-1-lens_2-rf04"
+      ],
+      "summary": "Publish is framed as a must-fix Assumptions-vs-subcommand execute conflict (lens_1-rf01) and also as a should-fix nested ambiguity under missing digest-mismatch recovery (lens_2-rf04). Mechanisms kept separate; severity and scope of the publish aspect remain unresolved across lenses."
+    }
+  ]
+}

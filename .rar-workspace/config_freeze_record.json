@@ -1,0 +1,37 @@
+{
+  "artifact_type": "ConfigFreezeRecord",
+  "business_version": 1,
+  "run_id": "rar-4a562a6bc5fc",
+  "request_reference": "user-retry-okf-frontmatter-plan",
+  "request_digest": "sha256:dae716cea54ab582a23c5eb5d93a4fe1c8fc7d54356d9d48ea9e1396d6b2dab6",
+  "config_revision": 1,
+  "config_hash": "sha256:efa9be4b10c458808d825f565dea7d971d0f2cadd83f63ebc5c18efca921efd6",
+  "invocation_mode": "standalone",
+  "confirmation_policy": "explicit_before_dispatch",
+  "confirmation_basis": "explicit user reply: 重新尝试一下 (retry after review_incomplete)",
+  "plan_version_id": "plan-v1",
+  "plan_content_hash": "sha256:1b4ffab5f116a1b5c6a831abb4e33b44e7ff28a511dcfb56fe4f359302f273ac",
+  "package_identity": {
+    "context_package_id": "ctx-36274d54c02d",
+    "context_package_hash": "sha256:ad9c6c3c9362215bf434ca25ddbdeb492d83deb3646a32b290e57c7ef6efa373"
+  },
+  "lens_roster": [
+    {
+      "focus_statement": "goal, deliverable, feasibility, sequence, and prerequisites",
+      "kind": "universal",
+      "lens_id": "lens_1",
+      "source": "universal",
+      "user_focus_ids": []
+    },
+    {
+      "focus_statement": "assumptions, risk, recovery, completeness, and verification",
+      "kind": "universal",
+      "lens_id": "lens_2",
+      "source": "universal",
+      "user_focus_ids": []
+    }
+  ],
+  "focus_coverage": [],
+  "freeze_time": "2026-07-20T09:16:22.216002+00:00",
+  "freeze_record_hash": "sha256:12bddb147c70f91b037bd985c29e627b9af403596ede532ff03c682d32bad85b"
+}

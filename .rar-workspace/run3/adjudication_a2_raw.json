@@ -1,0 +1,218 @@
+{
+  "received_envelope": {
+    "adjudication_scope": "pass",
+    "identity": {
+      "config_hash": "sha256:efa9be4b10c458808d825f565dea7d971d0f2cadd83f63ebc5c18efca921efd6",
+      "context_package_hash": "sha256:3a6cc94c80ecce4183dcfc11d35fab19a19ef792b7ca85ded332e6ea1c2a171c",
+      "context_package_id": "ctx-3879b6a7a72a",
+      "full_pass_id": "pass-1",
+      "lens_count": 2,
+      "lens_roster_digest": "sha256:cc1aa1599f546bfe25a39959ed08dcd2d8d9227db0426f69700cc7d0f5b37362",
+      "package_identity": {
+        "config_schema_version": "3.0",
+        "manifest_digest": "sha256:6363a2b1c16997870d86d7d46c411189d50b77f8657a068087070e574e8c6592",
+        "skill_id": "recursive-adversarial-review",
+        "skill_version": "0.6.0",
+        "suite_release_id": "2026.07.19.1",
+        "workflow_version": "0.6.0"
+      },
+      "pass_index": 1,
+      "plan_content_hash": "sha256:1b4ffab5f116a1b5c6a831abb4e33b44e7ff28a511dcfb56fe4f359302f273ac",
+      "plan_version_id": "plan-v1"
+    },
+    "source_set_digest": "sha256:a7e31292ab1662db5299709e1432dacee6c053ac15174fb6b7c7b73849a77ea6",
+    "expected_source_count": 10,
+    "input_artifact_hash": "sha256:f32c265985192425b04a493ef4c5a1fb133acba993ef4c5a1fb133acba993ef1ae1e55a49cefaa320a4",
+    "adjudication_id": "adj-pass-1-5ad0f72c",
+    "attempt_id": "adj-pass-1-5ad0f72c-a2",
+    "retry_of_attempt_id": "adj-pass-1-d7b2abb0-a1",
+    "fresh_instance_id": "fresh-07e178ef2d5a",
+    "role": "finding-adjudicator"
+  },
+  "canonical_findings": [
+    {
+      "canonical_finding_id": "CF-01",
+      "merged_from_raw_ids": [
+        "pass-1-lens_1-rf01"
+      ],
+      "source_severities": {
+        "pass-1-lens_1-rf01": "must-fix"
+      },
+      "original_severity": "must-fix",
+      "recommendation": "adopt",
+      "rationale": "Plan publishes a CLI path while Assumptions forbid executing publish; must resolve the execute-boundary contradiction before any publish-capable step is considered owned.",
+      "confidence": "high",
+      "unresolved_questions": []
+    },
+    {
+      "canonical_finding_id": "CF-02",
+      "merged_from_raw_ids": [
+        "pass-1-lens_1-rf02"
+      ],
+      "source_severities": {
+        "pass-1-lens_1-rf02": "must-fix"
+      },
+      "original_severity": "must-fix",
+      "recommendation": "adopt",
+      "rationale": "Agent\u2192Plan\u2192Apply gate ownership for batch/CI is unspecified; without an owner the gate cannot enforce safe apply and fails must-fix completeness.",
+      "confidence": "high",
+      "unresolved_questions": []
+    },
+    {
+      "canonical_finding_id": "CF-03",
+      "merged_from_raw_ids": [
+        "pass-1-lens_1-rf03",
+        "pass-1-lens_2-rf02"
+      ],
+      "source_severities": {
+        "pass-1-lens_1-rf03": "must-fix",
+        "pass-1-lens_2-rf02": "must-fix"
+      },
+      "original_severity": "must-fix",
+      "recommendation": "adopt",
+      "rationale": "Both lenses flag the same undeclared ruamel.yaml plugin dependency / packaging risk; merge as one dependency contract defect requiring declared install/runtime ownership.",
+      "confidence": "high",
+      "unresolved_questions": []
+    },
+    {
+      "canonical_finding_id": "CF-04",
+      "merged_from_raw_ids": [
+        "pass-1-lens_1-rf04"
+      ],
+      "source_severities": {
+        "pass-1-lens_1-rf04": "should-fix"
+      },
+      "original_severity": "should-fix",
+      "recommendation": "adopt",
+      "rationale": "--workspace success criteria conflict leaves pass/fail ambiguous; should-fix clarity is required for verifiable workspace outcomes.",
+      "confidence": "high",
+      "unresolved_questions": []
+    },
+    {
+      "canonical_finding_id": "CF-05",
+      "merged_from_raw_ids": [
+        "pass-1-lens_1-rf05"
+      ],
+      "source_severities": {
+        "pass-1-lens_1-rf05": "should-fix"
+      },
+      "original_severity": "should-fix",
+      "recommendation": "adopt",
+      "rationale": "Cortex CLI preflight/version DoD is missing; without it environment readiness cannot be evidenced before governed steps.",
+      "confidence": "high",
+      "unresolved_questions": []
+    },
+    {
+      "canonical_finding_id": "CF-06",
+      "merged_from_raw_ids": [
+        "pass-1-lens_2-rf01"
+      ],
+      "source_severities": {
+        "pass-1-lens_2-rf01": "must-fix"
+      },
+      "original_severity": "must-fix",
+      "recommendation": "adopt",
+      "rationale": "Staging/crash/partial-batch recovery is undefined; must-fix operational recovery ownership is required before batch execution claims completeness.",
+      "confidence": "high",
+      "unresolved_questions": []
+    },
+    {
+      "canonical_finding_id": "CF-07",
+      "merged_from_raw_ids": [
+        "pass-1-lens_2-rf03"
+      ],
+      "source_severities": {
+        "pass-1-lens_2-rf03": "must-fix"
+      },
+      "original_severity": "must-fix",
+      "recommendation": "adopt",
+      "rationale": "Test Plan DoD is incomplete relative to claimed verification; must close measurable pass criteria before execution claims done.",
+      "confidence": "high",
+      "unresolved_questions": []
+    },
+    {
+      "canonical_finding_id": "CF-08",
+      "merged_from_raw_ids": [
+        "pass-1-lens_2-rf04"
+      ],
+      "source_severities": {
+        "pass-1-lens_2-rf04": "should-fix"
+      },
+      "original_severity": "should-fix",
+      "recommendation": "adopt",
+      "rationale": "Digest-mismatch recovery matrix is a distinct recovery-path gap; keep separate from CF-01 publish execute-boundary even though secondary publish ambiguity overlaps thematically.",
+      "confidence": "high",
+      "unresolved_questions": [
+        "Whether digest-mismatch recovery should cite the same publish-boundary decision as CF-01 once that contradiction is resolved."
+      ]
+    },
+    {
+      "canonical_finding_id": "CF-09",
+      "merged_from_raw_ids": [
+        "pass-1-lens_2-rf05"
+      ],
+      "source_severities": {
+        "pass-1-lens_2-rf05": "should-fix"
+      },
+      "original_severity": "should-fix",
+      "recommendation": "adopt",
+      "rationale": "Skill-layer vs pipeline.py CLI contract is incomplete; should-fix surface alignment is required so callers and DoD share one command contract.",
+      "confidence": "high",
+      "unresolved_questions": []
+    }
+  ],
+  "raw_to_canonical": [
+    {
+      "raw_finding_id": "pass-1-lens_1-rf01",
+      "canonical_finding_id": "CF-01"
+    },
+    {
+      "raw_finding_id": "pass-1-lens_1-rf02",
+      "canonical_finding_id": "CF-02"
+    },
+    {
+      "raw_finding_id": "pass-1-lens_1-rf03",
+      "canonical_finding_id": "CF-03"
+    },
+    {
+      "raw_finding_id": "pass-1-lens_1-rf04",
+      "canonical_finding_id": "CF-04"
+    },
+    {
+      "raw_finding_id": "pass-1-lens_1-rf05",
+      "canonical_finding_id": "CF-05"
+    },
+    {
+      "raw_finding_id": "pass-1-lens_2-rf01",
+      "canonical_finding_id": "CF-06"
+    },
+    {
+      "raw_finding_id": "pass-1-lens_2-rf02",
+      "canonical_finding_id": "CF-03"
+    },
+    {
+      "raw_finding_id": "pass-1-lens_2-rf03",
+      "canonical_finding_id": "CF-07"
+    },
+    {
+      "raw_finding_id": "pass-1-lens_2-rf04",
+      "canonical_finding_id": "CF-08"
+    },
+    {
+      "raw_finding_id": "pass-1-lens_2-rf05",
+      "canonical_finding_id": "CF-09"
+    }
+  ],
+  "rejected_raw_findings": [],
+  "unresolved_contradictions": [
+    {
+      "contradiction_id": "UC-01",
+      "related_canonical_ids": [
+        "CF-01",
+        "CF-08"
+      ],
+      "summary": "CF-01 asserts Assumptions forbid execute-publish while plan exposes publish CLI; CF-08\u2019s secondary publish ambiguity overlaps that boundary but does not redefine recovery. Findings are complementary, not opposing, yet the plan-level publish allow/forbid stance remains unresolved and couples both CFs until decided.",
+      "confidence": "high"
+    }
+  ]
+}

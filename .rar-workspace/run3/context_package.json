@@ -1,0 +1,140 @@
+{
+  "context_package_id": "ctx-3879b6a7a72a",
+  "config_revision": 1,
+  "config_hash": "sha256:efa9be4b10c458808d825f565dea7d971d0f2cadd83f63ebc5c18efca921efd6",
+  "plan_version_id": "plan-v1",
+  "plan_content_hash": "sha256:1b4ffab5f116a1b5c6a831abb4e33b44e7ff28a511dcfb56fe4f359302f273ac",
+  "source_manifest": {
+    "source_manifest_id": "sm-okf-frontmatter-plan-v1",
+    "plan_content_hash": "sha256:1b4ffab5f116a1b5c6a831abb4e33b44e7ff28a511dcfb56fe4f359302f273ac",
+    "sources": [
+      {
+        "id": "src-plugin",
+        "path": "C:\\Users\\fuyin\\coding\\python\\file-processing\\.claude-plugin\\plugin.json",
+        "role": "current_plugin_identity"
+      },
+      {
+        "id": "src-pipeline",
+        "path": "C:\\Users\\fuyin\\coding\\python\\file-processing\\skills\\markdown-conversion\\scripts\\pipeline.py",
+        "role": "current_conversion_frontmatter"
+      },
+      {
+        "id": "src-okf-spec",
+        "path": "C:\\Users\\fuyin\\coding\\python\\cortex\\upstream\\okf\\SPEC.md",
+        "role": "okf_0_1_frontmatter_contract",
+        "exists": true
+      },
+      {
+        "id": "src-okf-arch",
+        "path": "C:\\Users\\fuyin\\coding\\python\\cortex\\docs\\okf-architecture.md",
+        "role": "cortex_okf_architecture",
+        "exists": true
+      },
+      {
+        "id": "src-wiki-manage",
+        "path": "C:\\Users\\fuyin\\.agents\\skills\\wiki-manage\\SKILL.md",
+        "role": "cortex_cli_handshake_pattern"
+      },
+      {
+        "id": "src-explore",
+        "role": "explore_agent_summary",
+        "agent_id": "3ff79213-3ad4-4162-894f-565ca4450fef"
+      }
+    ],
+    "facts": [
+      "file-processing plugin 3.5.0; markdown-conversion 4.0.0; no okf-frontmatter skill yet",
+      "legacy frontmatter is string-template source/converted_at/converted_by; no ruamel.yaml in this plugin",
+      "ruamel.yaml is a Cortex dependency (sibling repo)",
+      "OKF SPEC: only type required; title/description/tags/timestamp recommended; extensions allowed",
+      "Cortex authoring profile cortex-authoring-v1 requires non-empty title, description, timestamp",
+      "required_frontmatter_fields come from active policy package; source_ids assigned by Cortex publish",
+      "No skill-layer vs script-layer CLI split today; SKILL.md documents slash UX, pipeline.py is the only CLI",
+      "Plan/Apply+digest pattern exists in translate/content-review and Cortex CLI, not in markdown-conversion",
+      "translate SKILL.md version may drift from AGENTS.md (3.0.0 vs 2.0.0) \u2014 versioning discipline risk for this bump"
+    ],
+    "file_hashes": {
+      "okf_spec": {
+        "path": "C:\\Users\\fuyin\\coding\\python\\cortex\\upstream\\okf\\SPEC.md",
+        "exists": true,
+        "sha256": "sha256:b9655e607346dbbdc6de21190e9a953313eda6a7eba68d4d272a65975940ad6e",
+        "chars": 14878
+      },
+      "okf_arch": {
+        "path": "C:\\Users\\fuyin\\coding\\python\\cortex\\docs\\okf-architecture.md",
+        "exists": true,
+        "sha256": "sha256:83e582b457d1dbfe450991254f42ee4baec7491072ce95493cb94f390e10fb34",
+        "chars": 7368
+      },
+      "wiki_manage": {
+        "path": "C:\\Users\\fuyin\\.agents\\skills\\wiki-manage\\SKILL.md",
+        "exists": true,
+        "sha256": "sha256:8bbc13ec9b20a9eb73ad26f643fcb18930b8ebbc26a90888b362cfbfc27414e4",
+        "chars": 2981
+      },
+      "pipeline": {
+        "path": "C:\\Users\\fuyin\\coding\\python\\file-processing\\skills\\markdown-conversion\\scripts\\pipeline.py",
+        "exists": true,
+        "sha256": "sha256:c4629ddca388265d248e7dab6336ae7ddd2f668e26d2e85fe88fb7efda351869",
+        "chars": 19064
+      },
+      "plugin": {
+        "path": "C:\\Users\\fuyin\\coding\\python\\file-processing\\.claude-plugin\\plugin.json",
+        "exists": true,
+        "sha256": "sha256:3560dae53f1a22aaa109dbca0dd8e06b7de6ae8beb4832afe4b64e92e8e2856a",
+        "chars": 232
+      }
+    },
+    "authoring_hits": [
+      "C:\\Users\\fuyin\\coding\\python\\cortex\\build\\lib\\cortex\\validation.py:28:AUTHORING_PROFILE = \"cortex-authoring-v1\"",
+      "C:\\Users\\fuyin\\coding\\python\\cortex\\build\\lib\\cortex\\validation.py:123:if profile != AUTHORING_PROFILE:",
+      "C:\\Users\\fuyin\\coding\\python\\cortex\\build\\lib\\cortex\\validation.py:126:for field in (\"title\", \"description\", \"timestamp\"):",
+      "C:\\Users\\fuyin\\coding\\python\\cortex\\build\\lib\\cortex\\validation.py:157:for field in policy.manifest.get(\"required_frontmatter_fields\", []):",
+      "C:\\Users\\fuyin\\coding\\python\\cortex\\build\\lib\\cortex\\validation.py:192:return AUTHORING_PROFILE",
+      "C:\\Users\\fuyin\\coding\\python\\cortex\\build\\lib\\cortex\\validation.py:195:return match.group(1) if match is not None else AUTHORING_PROFILE",
+      "C:\\Users\\fuyin\\coding\\python\\cortex\\build\\lib\\cortex\\validation.py:415:\"AUTHORING_PROFILE\","
+    ]
+  },
+  "lens_roster": [
+    {
+      "focus_statement": "goal, deliverable, feasibility, sequence, and prerequisites",
+      "kind": "universal",
+      "lens_id": "lens_1",
+      "source": "universal",
+      "user_focus_ids": []
+    },
+    {
+      "focus_statement": "assumptions, risk, recovery, completeness, and verification",
+      "kind": "universal",
+      "lens_id": "lens_2",
+      "source": "universal",
+      "user_focus_ids": []
+    }
+  ],
+  "focus_coverage": [],
+  "role_contract": "adversarial-plan-reviewer",
+  "prompt_version": "rar-0.6.0-subagent-prompt",
+  "creation_reason": "pass-1-gate-compatible-retry",
+  "included_excerpts": {
+    "okf_spec_4_1": "114|## 4. Concept Documents\n115|\n116|Every concept is a UTF-8 markdown file. It has two parts:\n117|\n118|1. A **YAML frontmatter block**, delimited by `---` on its own line at\n119|   the start of the file and a closing `---` on its own line.\n120|2. A **markdown body**, containing free-form content.\n121|\n122|### 4.1 Frontmatter\n123|\n124|```yaml\n125|---\n126|type: <Type name>                  # REQUIRED\n127|title: <Optional display name>\n128|description: <Optional one-line summary>\n129|resource: <Optional canonical URI for the underlying asset>\n130|tags: [<tag>, <tag>, \u2026]            # Optional\n131|timestamp: <ISO 8601 datetime>     # Optional last-modified time\n132|# \u2026 other producer-defined key/value pairs\n133|---\n134|```\n135|\n136|**Required:**\n137|\n138|- `type` \u2014 A short string identifying the kind of concept. Consumers\n139|  use this for routing, filtering, and presentation. Example values:\n140|  `BigQuery Table`, `BigQuery Dataset`, `API Endpoint`, `Metric`,\n141|  `Playbook`, `Reference`.\n142|\n143|  Type values are **not** registered centrally. Producers SHOULD pick\n144|  values that are descriptive and self-explanatory; consumers MUST\n145|  tolerate unknown types gracefully (typically by treating them as\n146|  generic concepts).\n147|\n148|**Recommended (in priority order):**\n149|\n150|- `title` \u2014 Human-readable display name. If omitted, consumers MAY\n151|  derive a title from the filename.\n152|- `description` \u2014 A single sentence summarizing the concept. Used by\n153|  `index.md` generators, search snippets, and previews.\n154|- `resource` \u2014 A URI that uniquely identifies the underlying asset the\n155|  concept describes. Absent for concepts that describe abstract ideas\n156|  rather than physical resources.\n157|- `tags` \u2014 A YAML list of short strings for cross-cutting categorization.\n158|- `timestamp` \u2014 ISO 8601 datetime of last meaningful change.\n159|\n160|**Extensions:** Producers MAY include any additional keys. Consumers\n161|SHOULD preserve unknown keys when round-tripping and SHOULD NOT reject\n162|documents with unrecognized fields.\n",
+    "architecture_facts": [
+      "file-processing plugin 3.5.0; markdown-conversion 4.0.0; no okf-frontmatter skill yet",
+      "legacy frontmatter is string-template source/converted_at/converted_by; no ruamel.yaml in this plugin",
+      "ruamel.yaml is a Cortex dependency (sibling repo)",
+      "OKF SPEC: only type required; title/description/tags/timestamp recommended; extensions allowed",
+      "Cortex authoring profile cortex-authoring-v1 requires non-empty title, description, timestamp",
+      "required_frontmatter_fields come from active policy package; source_ids assigned by Cortex publish",
+      "No skill-layer vs script-layer CLI split today; SKILL.md documents slash UX, pipeline.py is the only CLI",
+      "Plan/Apply+digest pattern exists in translate/content-review and Cortex CLI, not in markdown-conversion",
+      "translate SKILL.md version may drift from AGENTS.md (3.0.0 vs 2.0.0) \u2014 versioning discipline risk for this bump"
+    ]
+  },
+  "package_identity": {
+    "skill_id": "recursive-adversarial-review",
+    "skill_version": "0.6.0",
+    "workflow_version": "0.6.0",
+    "config_schema_version": "3.0",
+    "suite_release_id": "2026.07.19.1",
+    "manifest_digest": "sha256:6363a2b1c16997870d86d7d46c411189d50b77f8657a068087070e574e8c6592"
+  },
+  "context_package_hash": "sha256:3a6cc94c80ecce4183dcfc11d35fab19a19ef792b7ca85ded332e6ea1c2a171c"
+}

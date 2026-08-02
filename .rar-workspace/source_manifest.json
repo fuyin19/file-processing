@@ -1,0 +1,90 @@
+{
+  "source_manifest_id": "sm-okf-frontmatter-plan-v1",
+  "plan_content_hash": "sha256:1b4ffab5f116a1b5c6a831abb4e33b44e7ff28a511dcfb56fe4f359302f273ac",
+  "sources": [
+    {
+      "id": "src-plugin",
+      "path": "C:\\Users\\fuyin\\coding\\python\\file-processing\\.claude-plugin\\plugin.json",
+      "role": "current_plugin_identity"
+    },
+    {
+      "id": "src-pipeline",
+      "path": "C:\\Users\\fuyin\\coding\\python\\file-processing\\skills\\markdown-conversion\\scripts\\pipeline.py",
+      "role": "current_conversion_frontmatter"
+    },
+    {
+      "id": "src-okf-spec",
+      "path": "C:\\Users\\fuyin\\coding\\python\\cortex\\upstream\\okf\\SPEC.md",
+      "role": "okf_0_1_frontmatter_contract",
+      "exists": true
+    },
+    {
+      "id": "src-okf-arch",
+      "path": "C:\\Users\\fuyin\\coding\\python\\cortex\\docs\\okf-architecture.md",
+      "role": "cortex_okf_architecture",
+      "exists": true
+    },
+    {
+      "id": "src-wiki-manage",
+      "path": "C:\\Users\\fuyin\\.agents\\skills\\wiki-manage\\SKILL.md",
+      "role": "cortex_cli_handshake_pattern"
+    },
+    {
+      "id": "src-explore",
+      "role": "explore_agent_summary",
+      "agent_id": "3ff79213-3ad4-4162-894f-565ca4450fef"
+    }
+  ],
+  "facts": [
+    "file-processing plugin 3.5.0; markdown-conversion 4.0.0; no okf-frontmatter skill yet",
+    "legacy frontmatter is string-template source/converted_at/converted_by; no ruamel.yaml in this plugin",
+    "ruamel.yaml is a Cortex dependency (sibling repo)",
+    "OKF SPEC: only type required; title/description/tags/timestamp recommended; extensions allowed",
+    "Cortex authoring profile cortex-authoring-v1 requires non-empty title, description, timestamp",
+    "required_frontmatter_fields come from active policy package; source_ids assigned by Cortex publish",
+    "No skill-layer vs script-layer CLI split today; SKILL.md documents slash UX, pipeline.py is the only CLI",
+    "Plan/Apply+digest pattern exists in translate/content-review and Cortex CLI, not in markdown-conversion",
+    "translate SKILL.md version may drift from AGENTS.md (3.0.0 vs 2.0.0) — versioning discipline risk for this bump"
+  ],
+  "file_hashes": {
+    "okf_spec": {
+      "path": "C:\\Users\\fuyin\\coding\\python\\cortex\\upstream\\okf\\SPEC.md",
+      "exists": true,
+      "sha256": "sha256:b9655e607346dbbdc6de21190e9a953313eda6a7eba68d4d272a65975940ad6e",
+      "chars": 14878
+    },
+    "okf_arch": {
+      "path": "C:\\Users\\fuyin\\coding\\python\\cortex\\docs\\okf-architecture.md",
+      "exists": true,
+      "sha256": "sha256:83e582b457d1dbfe450991254f42ee4baec7491072ce95493cb94f390e10fb34",
+      "chars": 7368
+    },
+    "wiki_manage": {
+      "path": "C:\\Users\\fuyin\\.agents\\skills\\wiki-manage\\SKILL.md",
+      "exists": true,
+      "sha256": "sha256:8bbc13ec9b20a9eb73ad26f643fcb18930b8ebbc26a90888b362cfbfc27414e4",
+      "chars": 2981
+    },
+    "pipeline": {
+      "path": "C:\\Users\\fuyin\\coding\\python\\file-processing\\skills\\markdown-conversion\\scripts\\pipeline.py",
+      "exists": true,
+      "sha256": "sha256:c4629ddca388265d248e7dab6336ae7ddd2f668e26d2e85fe88fb7efda351869",
+      "chars": 19064
+    },
+    "plugin": {
+      "path": "C:\\Users\\fuyin\\coding\\python\\file-processing\\.claude-plugin\\plugin.json",
+      "exists": true,
+      "sha256": "sha256:3560dae53f1a22aaa109dbca0dd8e06b7de6ae8beb4832afe4b64e92e8e2856a",
+      "chars": 232
+    }
+  },
+  "authoring_hits": [
+    "C:\\Users\\fuyin\\coding\\python\\cortex\\build\\lib\\cortex\\validation.py:28:AUTHORING_PROFILE = \"cortex-authoring-v1\"",
+    "C:\\Users\\fuyin\\coding\\python\\cortex\\build\\lib\\cortex\\validation.py:123:if profile != AUTHORING_PROFILE:",
+    "C:\\Users\\fuyin\\coding\\python\\cortex\\build\\lib\\cortex\\validation.py:126:for field in (\"title\", \"description\", \"timestamp\"):",
+    "C:\\Users\\fuyin\\coding\\python\\cortex\\build\\lib\\cortex\\validation.py:157:for field in policy.manifest.get(\"required_frontmatter_fields\", []):",
+    "C:\\Users\\fuyin\\coding\\python\\cortex\\build\\lib\\cortex\\validation.py:192:return AUTHORING_PROFILE",
+    "C:\\Users\\fuyin\\coding\\python\\cortex\\build\\lib\\cortex\\validation.py:195:return match.group(1) if match is not None else AUTHORING_PROFILE",
+    "C:\\Users\\fuyin\\coding\\python\\cortex\\build\\lib\\cortex\\validation.py:415:\"AUTHORING_PROFILE\","
+  ]
+}

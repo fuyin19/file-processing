@@ -1,0 +1,11 @@
+{
+  "run_id": "rar-cbffad11a831",
+  "full_pass_id": "pass-1",
+  "plan_version_id": "plan-v1",
+  "plan_content_hash": "sha256:1b4ffab5f116a1b5c6a831abb4e33b44e7ff28a511dcfb56fe4f359302f273ac",
+  "context_package_id": "ctx-3879b6a7a72a",
+  "context_package_hash": "sha256:3a6cc94c80ecce4183dcfc11d35fab19a19ef792b7ca85ded332e6ea1c2a171c",
+  "config_hash": "sha256:efa9be4b10c458808d825f565dea7d971d0f2cadd83f63ebc5c18efca921efd6",
+  "config_revision": 1,
+  "note": "run3 gate-compatible envelopes; run2 results gate-incompatible"
+}

@@ -1,0 +1,132 @@
+[
+  {
+    "source_finding_id": "pass-1-lens_1-rf01",
+    "lens_id": "lens_1",
+    "severity": "must-fix",
+    "dimension": "goal_deliverable",
+    "finding": "Public CLI advertises a publish subcommand while Assumptions explicitly exclude executing publish and Cortex index/bundle generation, so the promised skill surface and the stated first-version goal cannot both be true.",
+    "failure_mechanism": "Callers and DoD treat publish as a delivered capability; implementers treat it as out of scope. Either the interface ships a no-op/misnamed command or the goal expands past the declared deliverable, so the outcome cannot be verified as complete.",
+    "resolution_required": "Reconcile the public subcommand set with first-version scope: remove publish from the promised interface, or redefine Objective/DoD to include a concrete publish behavior and ownership.",
+    "evidence": {
+      "location_or_expected_section": "公开接口 L24 vs Assumptions L57",
+      "offending_text": "新脚本提供 `prepare / publish / apply / validate` 子命令 … 首版处理普通 concept Markdown；不负责生成 bundle `index.md`、日志、Cortex 索引或执行 publish。"
+    }
+  },
+  {
+    "source_finding_id": "pass-1-lens_1-rf02",
+    "lens_id": "lens_1",
+    "severity": "must-fix",
+    "dimension": "sequence_prerequisites",
+    "finding": "The --okf conversion path gates final output on Agent propose → diff → Plan → Apply, but markdown-conversion today is a deterministic single CLI with no Plan/Apply pattern, and the plan never assigns who performs the interactive gate in batch, CI, or non-agent script runs.",
+    "failure_mechanism": "Sequence inserts a human/agent approval prerequisite mid-pipeline without an owner or non-interactive fallback. Batch --input-dir and headless pytest cannot reach the promised final OKF-ready artifact, so the linked conversion deliverable is infeasible under current runtime.",
+    "resolution_required": "Specify sequence and ownership for approval (slash orchestrator vs script flags like --plan-only/--apply-plan/--metadata-json), including batch/CI behavior when no Agent is present, before claiming OKF-linked conversion.",
+    "evidence": {
+      "location_or_expected_section": "Summary L7; Implementation Changes L39; Bounded context: Plan/Apply not in markdown-conversion; pipeline.py is only CLI",
+      "offending_text": "所有写入均采用“Agent 提议 → 展示差异 → Plan → Apply”。… 只有 frontmatter 计划获批并通过校验后才创建最终输出"
+    }
+  },
+  {
+    "source_finding_id": "pass-1-lens_1-rf03",
+    "lens_id": "lens_1",
+    "severity": "must-fix",
+    "dimension": "feasibility_prerequisites",
+    "finding": "Round-trip YAML preservation depends on ruamel.yaml, which is not a plugin dependency today; the plan states the requirement but omits install, packaging, and version pinning as prerequisites.",
+    "failure_mechanism": "Without a declared acquisition path, prepare/apply cannot meet the preservation deliverable in a clean plugin install. Feasibility of the core skill goal collapses at first run on machines that only have the file-processing plugin.",
+    "resolution_required": "Add an explicit prerequisite and packaging decision for ruamel.yaml (pin, _ensure_package, or documented Cortex-provided environment) as part of DoD.",
+    "evidence": {
+      "location_or_expected_section": "Implementation Changes L28; Bounded context: no ruamel.yaml in this plugin; it is a Cortex sibling dependency",
+      "offending_text": "okf-frontmatter 使用 `ruamel.yaml` round-trip 解析，保留已有字段、未知扩展、顺序、引号、注释和正文"
+    }
+  },
+  {
+    "source_finding_id": "pass-1-lens_1-rf04",
+    "lens_id": "lens_1",
+    "severity": "should-fix",
+    "dimension": "goal_deliverable",
+    "finding": "--workspace is said to satisfy Cortex authoring and active policy, yet policy-missing mode may still emit generic authoring frontmatter marked unverified, so the Cortex-mode goal has two incompatible success criteria.",
+    "failure_mechanism": "DoD can be claimed either as policy-satisfied output or as unverified generic output under the same flag. Feasibility of the promised Cortex-mode outcome is unfalsifiable; partial success looks like completion.",
+    "resolution_required": "Define a single terminal success condition for --workspace (hard fail without valid policy vs explicitly degraded mode with distinct exit code/artifact label) and align public interface wording.",
+    "evidence": {
+      "location_or_expected_section": "公开接口 L22; Implementation Changes L36",
+      "offending_text": "`--workspace <path>`：隐含 `--okf`，并满足 Cortex authoring 与活动 policy。… policy 缺失：可生成通用 authoring frontmatter，但明确标记为“policy 未验证”。"
+    }
+  },
+  {
+    "source_finding_id": "pass-1-lens_1-rf05",
+    "lens_id": "lens_1",
+    "severity": "should-fix",
+    "dimension": "prerequisites_sequence",
+    "finding": "Cortex mode presupposes method contract 2.1, eighteen public schemas, manage config show, and quick validation via an external CLI that this plugin does not own, with no sequenced preflight DoD for CLI presence/PATH/version before skill work begins.",
+    "failure_mechanism": "Hidden environmental prerequisites sit outside the plugin. If CLI is missing, incompatible, or schemas drift, the sequence never reaches Apply, yet Test Plan treats Cortex cases as in-repo pytest coverage—so the promised Cortex deliverable is not independently shippable from this plan alone.",
+    "resolution_required": "State Cortex CLI version/contract as a hard prerequisite with a failing preflight and test doubles; separate plugin-shippable OKF-generic DoD from Cortex-dependent DoD.",
+    "evidence": {
+      "location_or_expected_section": "Summary L8; Implementation Changes L34-37",
+      "offending_text": "不修改 Cortex；仅通过其只读 CLI 接口获取 workspace、target 和 policy 状态。… Cortex 模式先验证 method contract 为 2.1、18 个公开 schema及目标操作集合，再读取 `manage config show` 和 quick validation"
+    }
+  },
+  {
+    "source_finding_id": "pass-1-lens_2-rf01",
+    "lens_id": "lens_2",
+    "severity": "must-fix",
+    "dimension": "recovery",
+    "finding": "The OKF conversion path writes body to a runtime staging area and only creates the final target after plan approval and validation, but the plan never defines recovery for interrupted, rejected, crashed, or partially applied runs: whether staging artifacts are cleaned, retained for resume, or can be mistaken for deliverables; how a mid-batch atomic-write failure rolls back already-applied siblings when --accept-partial is absent; and what the user must re-run after rejection so no orphan staging or half-OKF state remains.",
+    "failure_mechanism": "Without an explicit staging lifecycle and batch rollback/resume rule, a crash after staging write or after applying N of M files leaves undeclared residue. Operators cannot know whether to delete staging, re-prepare, or re-apply; --accept-partial then becomes an accidental recovery path rather than a deliberate policy, undermining the claim that failure never leaves a pseudo-OKF-ready outcome.",
+    "resolution_required": "Specify staging location, retention, cleanup triggers, resume vs re-prepare rules, and batch semantics (all-or-nothing vs --accept-partial) including what remains on disk after reject/fail/crash and which command recovers cleanly.",
+    "evidence": {
+      "location_or_expected_section": "Implementation Changes L39; also Test Plan L46 mentions failure reports but no recovery/cleanup contract",
+      "offending_text": "markdown-conversion --okf 先把无 frontmatter 的转换正文写入运行暂存区，再把来源字段交给新 skill。只有 frontmatter 计划获批并通过校验后才创建最终输出；拒绝审核或失败时不留下伪称 OKF-ready 的目标文件。"
+    }
+  },
+  {
+    "source_finding_id": "pass-1-lens_2-rf02",
+    "lens_id": "lens_2",
+    "severity": "must-fix",
+    "dimension": "assumptions",
+    "finding": "The plan assumes ruamel.yaml round-trip can be adopted as the frontmatter engine, but bounded context states the plugin currently has no ruamel.yaml and that it lives only as a Cortex sibling dependency. There is no packaging assumption, install/ensure path, version pin, or fallback if the dependency is missing or ABI-incompatible—yet YAML fidelity (comments, order, quotes) and reject-on-corrupt behavior are core to the skill.",
+    "failure_mechanism": "If the plugin ships without declaring/installing ruamel.yaml, prepare/validate/apply fail at runtime on clean installs, or silent use of a different YAML library collapses the preservation guarantees. That invalidates both the completeness of the public interface and the verification suite that assumes round-trip behavior exists.",
+    "resolution_required": "State how ruamel.yaml becomes a declared runtime dependency (or vendor/ensure strategy), minimum version, failure mode when absent, and tests that prove install/precheck behavior—not only YAML semantics once the package is present.",
+    "evidence": {
+      "location_or_expected_section": "Implementation Changes L28; Assumptions section does not address dependency packaging",
+      "offending_text": "okf-frontmatter 使用 ruamel.yaml round-trip 解析，保留已有字段、未知扩展、顺序、引号、注释和正文；拒绝重复键、非 mapping 或损坏的 YAML。"
+    }
+  },
+  {
+    "source_finding_id": "pass-1-lens_2-rf03",
+    "lens_id": "lens_2",
+    "severity": "must-fix",
+    "dimension": "verification",
+    "finding": "The Test Plan lists broad coverage themes and three pytest invocations plus an undefined 'skill quick validation', but Definition-of-Done evidence is incomplete: no expected new-test count or named cases for Plan/Apply digest binding, no exit-code contract for validate/apply failures, no command that proves staging leaves no fake OKF-ready target, and no check that AGENTS.md/README/plugin manifest/SKILL.md versions stay coherent despite the noted translate versioning-drift risk.",
+    "failure_mechanism": "Implementers can satisfy the written checklist with shallow tests while critical risk controls (source SHA mismatch, plan tamper, stale policy digest, atomic write failure, mutual exclusion with --no-frontmatter) remain unproven. 'Quick validation' and '65 passed' are not reproducible gates without exact commands/assertions, so completeness and recovery claims can ship unverified.",
+    "resolution_required": "Bind DoD to concrete pytest node ids or -k patterns for each risk class, state required exit codes for apply/validate negative paths, define what 'skill quick validation' runs and asserts, and add an explicit version-surface consistency check across plugin + skills + AGENTS.md.",
+    "evidence": {
+      "location_or_expected_section": "Test Plan L47-L52",
+      "offending_text": "回归验证： python -m pytest tests/okf-frontmatter/test_frontmatter_pipeline.py -v ; python -m pytest tests/markdown-conversion/test_pipeline.py -v ; python -m pytest -q ; 运行 skill quick validation。当前基线：markdown-conversion 测试为 65 passed；实施后必须全部继续通过。"
+    }
+  },
+  {
+    "source_finding_id": "pass-1-lens_2-rf04",
+    "lens_id": "lens_2",
+    "severity": "should-fix",
+    "dimension": "risk",
+    "finding": "Plans bind source SHA-256, rendered SHA-256, target path, and Cortex policy digest, and tests mention stale digest / source change / plan tamper, but the operational recovery path is unspecified: whether apply must hard-fail only, whether re-prepare is mandatory, whether partial field edits require a new plan id, and how --plan-only/--apply-plan interact when policy becomes missing vs invalid between prepare and apply.",
+    "failure_mechanism": "Without a stated recovery matrix, operators facing digest/source drift may re-apply an old plan, force-edit targets, or treat 'policy 未验证' artifacts as Cortex-safe. The missing/invalid policy asymmetry plus a publish subcommand (while Assumptions say the skill does not execute publish) increases the chance of unsafe apply or dead-end workflows after a detectable integrity failure.",
+    "resolution_required": "Define a prepare→validate→apply state machine for digest/source/policy mismatch (fail messages, required next command, when plans are invalidated), clarify publish vs apply responsibilities against the no-publish assumption, and make 'policy 未验证' an explicit non-Cortex-apply class if workspace mode is requested.",
+    "evidence": {
+      "location_or_expected_section": "公开接口 L24; Implementation Changes L36-L37; Test Plan L45-L46",
+      "offending_text": "新脚本提供 prepare / publish / apply / validate 子命令；计划绑定源文件 SHA-256、渲染结果 SHA-256、目标路径及 Cortex policy digest。 ... 覆盖 Plan/Apply：源文件变化、计划篡改、批量覆盖完整性、目标冲突、逐文件原子写入及失败报告。 ... policy 缺失：可生成通用 authoring frontmatter，但明确标记为“policy 未验证”。 policy 无效、CLI 不兼容或自定义必填字段无可靠依据：阻止 Apply。"
+    }
+  },
+  {
+    "source_finding_id": "pass-1-lens_2-rf05",
+    "lens_id": "lens_2",
+    "severity": "should-fix",
+    "dimension": "completeness",
+    "finding": "The plan adds skill-layer flags (--okf, --workspace, --no-frontmatter mutual exclusion) on markdown-conversion while bounded context states there is presently no skill-layer vs script-layer CLI split—only pipeline.py. It does not complete how slash-command UX, script argv, config, and subprocess handoff to okf-frontmatter stay one contract, nor what happens if only one layer is updated.",
+    "failure_mechanism": "If SKILL.md advertises flags that pipeline.py does not implement (or vice versa), agents will claim OKF-ready conversion that never runs the plan/apply gate. That breaks the default-compat assumption and makes verification of 'legacy path unchanged' meaningless because the new path may be unreachable or inconsistently invoked.",
+    "resolution_required": "Specify the single CLI surface of truth, exact argv mapping from slash UX to pipeline.py and into okf-frontmatter prepare/apply, and tests that both invocation paths enforce the same mutual exclusion and no-fake-output guarantees.",
+    "evidence": {
+      "location_or_expected_section": "公开接口 L20-L23; Implementation Changes L39-L40",
+      "offending_text": "markdown-conversion 新增 skill 层参数： --okf：生成通用 OKF-ready Markdown。 --workspace <path>：隐含 --okf，并满足 Cortex authoring 与活动 policy。 --no-frontmatter 与上述参数互斥。"
+    }
+  }
+]

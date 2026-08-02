@@ -1,0 +1,26 @@
+{
+  "run_id": "rar-cbffad11a831",
+  "config_revision": 1,
+  "config_hash": "sha256:efa9be4b10c458808d825f565dea7d971d0f2cadd83f63ebc5c18efca921efd6",
+  "review_mode": "audit",
+  "full_pass_id": "pass-1",
+  "plan_version_id": "plan-v1",
+  "plan_content_hash": "sha256:1b4ffab5f116a1b5c6a831abb4e33b44e7ff28a511dcfb56fe4f359302f273ac",
+  "context_package_id": "ctx-3879b6a7a72a",
+  "context_package_hash": "sha256:3a6cc94c80ecce4183dcfc11d35fab19a19ef792b7ca85ded332e6ea1c2a171c",
+  "package_identity": {
+    "config_schema_version": "3.0",
+    "manifest_digest": "sha256:6363a2b1c16997870d86d7d46c411189d50b77f8657a068087070e574e8c6592",
+    "skill_id": "recursive-adversarial-review",
+    "skill_version": "0.6.0",
+    "suite_release_id": "2026.07.19.1",
+    "workflow_version": "0.6.0"
+  },
+  "adjudication_id": "adj-pass-1-d7b2abb0",
+  "attempt_id": "adj-pass-1-d7b2abb0-a1",
+  "retry_of_attempt_id": null,
+  "fresh_instance_id": "fresh-eac7826f87a8",
+  "input_artifact_hash": "sha256:f32c265985192425b04a493ef4c5a1fb133acba993ef1ae1e55a49cefaa320a4",
+  "role": "finding-adjudicator",
+  "adjudication_scope": "pass"
+}

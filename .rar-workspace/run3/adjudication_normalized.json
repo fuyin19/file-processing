@@ -1,0 +1,20 @@
+{
+  "errors": [
+    {
+      "code": "schema_error",
+      "message": "Unknown adjudication recommendation.",
+      "path": "/canonical_findings/0/recommendation"
+    }
+  ],
+  "normalization_events": [],
+  "normalization_policy_version": "2.0",
+  "normalized_payload": null,
+  "normalized_sha256": null,
+  "raw_transport": {
+    "format": "unknown",
+    "sha256": "sha256:a5c3a5286b513b4d6054e5155f964934e21e3659b22eea75d90bafe7fa4a2b29"
+  },
+  "role": "finding-adjudicator",
+  "schema_version": "1.0",
+  "status": "rejected"
+}

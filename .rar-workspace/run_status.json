@@ -1,0 +1,18 @@
+{
+  "run2": {
+    "lens_1": "accepted_by_normalizer_but_gate_incompatible",
+    "lens_2": "accepted_by_normalizer_but_gate_incompatible",
+    "agents": {
+      "lens_1": "f0336a2a-82ab-458a-b453-37542e12dda7",
+      "lens_2": "171497ce-704b-40b2-b8bf-795505ee9304"
+    }
+  },
+  "run3": {
+    "run_id": "rar-cbffad11a831",
+    "reason": "review_gate requires lens object, fresh_instance_id, input_artifact_hash, package_identity object",
+    "agents": {
+      "lens_1": "949b0470-3933-4049-a080-889b92789497",
+      "lens_2": "b5d68761-ac7f-4b46-bb26-7c7ee22820cc"
+    }
+  }
+}

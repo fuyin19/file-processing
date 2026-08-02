@@ -1,0 +1,49 @@
+114|## 4. Concept Documents
+115|
+116|Every concept is a UTF-8 markdown file. It has two parts:
+117|
+118|1. A **YAML frontmatter block**, delimited by `---` on its own line at
+119|   the start of the file and a closing `---` on its own line.
+120|2. A **markdown body**, containing free-form content.
+121|
+122|### 4.1 Frontmatter
+123|
+124|```yaml
+125|---
+126|type: <Type name>                  # REQUIRED
+127|title: <Optional display name>
+128|description: <Optional one-line summary>
+129|resource: <Optional canonical URI for the underlying asset>
+130|tags: [<tag>, <tag>, …]            # Optional
+131|timestamp: <ISO 8601 datetime>     # Optional last-modified time
+132|# … other producer-defined key/value pairs
+133|---
+134|```
+135|
+136|**Required:**
+137|
+138|- `type` — A short string identifying the kind of concept. Consumers
+139|  use this for routing, filtering, and presentation. Example values:
+140|  `BigQuery Table`, `BigQuery Dataset`, `API Endpoint`, `Metric`,
+141|  `Playbook`, `Reference`.
+142|
+143|  Type values are **not** registered centrally. Producers SHOULD pick
+144|  values that are descriptive and self-explanatory; consumers MUST
+145|  tolerate unknown types gracefully (typically by treating them as
+146|  generic concepts).
+147|
+148|**Recommended (in priority order):**
+149|
+150|- `title` — Human-readable display name. If omitted, consumers MAY
+151|  derive a title from the filename.
+152|- `description` — A single sentence summarizing the concept. Used by
+153|  `index.md` generators, search snippets, and previews.
+154|- `resource` — A URI that uniquely identifies the underlying asset the
+155|  concept describes. Absent for concepts that describe abstract ideas
+156|  rather than physical resources.
+157|- `tags` — A YAML list of short strings for cross-cutting categorization.
+158|- `timestamp` — ISO 8601 datetime of last meaningful change.
+159|
+160|**Extensions:** Producers MAY include any additional keys. Consumers
+161|SHOULD preserve unknown keys when round-tripping and SHOULD NOT reject
+162|documents with unrecognized fields.

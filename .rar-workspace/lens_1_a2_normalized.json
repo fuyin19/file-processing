@@ -1,0 +1,14 @@
+Traceback (most recent call last):
+  File "C:\Users\fuyin\.claude\skills\recursive-adversarial-review\scripts\normalize_role_output.py", line 474, in <module>
+    raise SystemExit(main())
+                     ^^^^^^
+  File "C:\Users\fuyin\.claude\skills\recursive-adversarial-review\scripts\normalize_role_output.py", line 467, in main
+    result = normalize(args.role, sys.stdin.read(), expected)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\fuyin\.claude\skills\recursive-adversarial-review\scripts\normalize_role_output.py", line 408, in normalize
+    raw_digest = transport_hash(raw)
+                 ^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\fuyin\.claude\skills\recursive-adversarial-review\scripts\normalize_role_output.py", line 54, in transport_hash
+    return "sha256:" + hashlib.sha256(value.encode("utf-8")).hexdigest()
+                                      ^^^^^^^^^^^^^^^^^^^^^
+UnicodeEncodeError: 'utf-8' codec can't encode character '\udc93' in position 917: surrogates not allowed
