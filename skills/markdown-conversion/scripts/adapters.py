@@ -3,11 +3,13 @@ from __future__ import annotations
 
 import importlib.metadata
 import re
+import tempfile
 import zipfile
 from pathlib import Path
 from typing import Any
 
 from canonical import make_text_fields, normalize_canonical_text, stable_id, title_from_markdown
+from ooxml_images import OOXML_SUFFIXES, create_sanitized_ooxml_copy, extract_ooxml_images
 
 
 _MARKITDOWN = None
@@ -49,16 +51,6 @@ def inspect_ooxml_features(path: Path, source_unit: str) -> list[dict[str, Any]]
     warnings: list[dict[str, Any]] = []
     with zipfile.ZipFile(path) as package:
         names = set(package.namelist())
-        media = [name for name in names if "/media/" in name]
-        if media:
-            warnings.append(
-                _warning(
-                    "office_embedded_images_not_exported",
-                    f"{len(media)} embedded Office image(s) were detected but are not exported by the v6 Office adapter",
-                    source_unit,
-                    True,
-                )
-            )
         comment_parts = [name for name in names if "comment" in name.lower() and name.endswith(".xml")]
         if comment_parts:
             warnings.append(
@@ -96,21 +88,33 @@ def _numeric_value(value: str) -> int | float | None:
     return int(number) if number.is_integer() else number
 
 
-def _inline_content(token) -> tuple[str, str, list[str]]:
+def _inline_content(token) -> tuple[str, str, list[str], str]:
     images: list[str] = []
     visible: list[str] = []
+    text_only: list[str] = []
     for child in token.children or []:
         if child.type == "image":
             images.append(child.content.strip())
             if child.content.strip():
                 visible.append(child.content.strip())
         elif child.type == "code_inline":
-            visible.append(f"`{child.content}`")
+            value = f"`{child.content}`"
+            visible.append(value)
+            text_only.append(value)
         elif child.type in {"text", "softbreak", "hardbreak", "html_inline"}:
-            visible.append("\n" if child.type in {"softbreak", "hardbreak"} else child.content)
+            value = "\n" if child.type in {"softbreak", "hardbreak"} else child.content
+            visible.append(value)
+            text_only.append(value)
         else:
-            visible.append(child.content or "")
-    return token.content.strip(), ("".join(visible).strip() if images else token.content.strip()), images
+            value = child.content or ""
+            visible.append(value)
+            text_only.append(value)
+    return (
+        token.content.strip(),
+        ("".join(visible).strip() if images else token.content.strip()),
+        images,
+        "".join(text_only).strip(),
+    )
 
 
 def markdown_to_canonical(
@@ -119,6 +123,9 @@ def markdown_to_canonical(
     mode: str,
     source_kind: str,
     source_index: int = 1,
+    image_assets: list[dict[str, Any]] | None = None,
+    image_occurrences: list[str] | None = None,
+    warn_unexported_images: bool = False,
 ) -> dict[str, Any]:
     """Parse MarkItDown output through markdown-it-py into canonical nodes."""
     from markdown_it import MarkdownIt
@@ -137,6 +144,11 @@ def markdown_to_canonical(
     content: list[dict[str, Any]] = []
     tables: list[dict[str, Any]] = []
     warnings: list[dict[str, Any]] = []
+    assets = list(image_assets or [])
+    assets_by_id = {item["asset_id"]: item for item in assets}
+    asset_occurrences = list(image_occurrences or [])
+    export_images = image_assets is not None
+    image_cursor = 0
     occurrence = 0
 
     def locator(token) -> dict[str, Any]:
@@ -160,6 +172,52 @@ def markdown_to_canonical(
         }
         content.append(node)
 
+    def add_image(alt: str, token=None, inferred: bool = False) -> bool:
+        nonlocal image_cursor, occurrence
+        if image_cursor >= len(asset_occurrences):
+            return False
+        asset_id = asset_occurrences[image_cursor]
+        image_cursor += 1
+        asset = assets_by_id.get(asset_id)
+        if asset is None:
+            return False
+        if alt and not str(asset.get("alt") or "").strip():
+            asset["alt"] = alt
+        occurrence += 1
+        source_locator = locator(token) if token is not None else {"source_unit_id": unit_id}
+        source_locator.update(
+            {
+                "package_part": asset["source_locator"].get("package_part", ""),
+                "image_occurrence": image_cursor,
+            }
+        )
+        if inferred:
+            source_locator["position_inferred"] = True
+        content.append(
+            {
+                "id": stable_id("node", document_id, source_locator, "image", occurrence),
+                "type": "image",
+                "source_locator": source_locator,
+                "asset_id": asset_id,
+            }
+        )
+        return True
+
+    def add_inline_images(images: list[str], token) -> None:
+        unresolved = 0
+        for alt in images:
+            if not add_image(alt, token):
+                unresolved += 1
+        if unresolved and export_images:
+            warnings.append(
+                _warning(
+                    "office_image_reference_unresolved",
+                    f"{unresolved} Office image reference(s) could not be matched to exported package media",
+                    unit_id,
+                    True,
+                )
+            )
+
     index = 0
     list_stack: list[tuple[bool, int]] = []
     while index < len(tokens):
@@ -174,18 +232,26 @@ def markdown_to_canonical(
                 list_stack.pop()
         elif token.type == "heading_open" and index + 1 < len(tokens):
             inline = tokens[index + 1]
-            raw, visible, images = _inline_content(inline)
-            add_text("heading", raw, token, cleaned=visible, level=int(token.tag[1:]))
-            if images:
-                warnings.append(_warning("office_image_reference_not_exported", "An inline image reference was reduced to its text alternative", unit_id, True))
+            raw, visible, images, text_only = _inline_content(inline)
+            cleaned = text_only if export_images and images else visible
+            if cleaned or not images:
+                add_text("heading", raw, token, cleaned=cleaned, level=int(token.tag[1:]))
+            if images and export_images:
+                add_inline_images(images, token)
+            elif images and warn_unexported_images:
+                warnings.append(_warning("image_reference_not_exported", "An inline image reference was reduced to its text alternative", unit_id, True))
         elif token.type in {"fence", "code_block"}:
             add_text("code", token.content.rstrip("\n"), token, language=(token.info or "").strip())
         elif token.type == "paragraph_open" and not list_stack and index + 1 < len(tokens):
             inline = tokens[index + 1]
-            raw, visible, images = _inline_content(inline)
-            add_text("paragraph", raw, token, cleaned=visible)
-            if images:
-                warnings.append(_warning("office_image_reference_not_exported", "An inline image reference was reduced to its text alternative", unit_id, True))
+            raw, visible, images, text_only = _inline_content(inline)
+            cleaned = text_only if export_images and images else visible
+            if cleaned or not images:
+                add_text("paragraph", raw, token, cleaned=cleaned)
+            if images and export_images:
+                add_inline_images(images, token)
+            elif images and warn_unexported_images:
+                warnings.append(_warning("image_reference_not_exported", "An inline image reference was reduced to its text alternative", unit_id, True))
         elif token.type == "list_item_open":
             depth = 1
             cursor = index + 1
@@ -267,6 +333,19 @@ def markdown_to_canonical(
             index = cursor
         index += 1
 
+    if image_cursor < len(asset_occurrences):
+        inferred_count = len(asset_occurrences) - image_cursor
+        warnings.append(
+            _warning(
+                "office_image_position_inferred",
+                f"The reading position of {inferred_count} Office image occurrence(s) was inferred from OOXML package order",
+                unit_id,
+                False,
+            )
+        )
+        while image_cursor < len(asset_occurrences):
+            add_image("", inferred=True)
+
     if not content and markdown.strip():
         add_text("paragraph", markdown.strip(), tokens[0] if tokens else type("Token", (), {"map": None})())
     normalize_canonical_text(content, tables, mode)
@@ -281,7 +360,7 @@ def markdown_to_canonical(
         "source_units": [source_unit],
         "content": content,
         "tables": tables,
-        "assets": [],
+        "assets": assets,
         "relationships": [],
         "warnings": warnings,
         "title": title_source or title_from_markdown(markdown, "untitled"),
@@ -293,16 +372,55 @@ class MarkItDownAdapter:
     limitations = [
         "tracked_changes_not_preserved",
         "comments_not_preserved",
-        "embedded_images_may_not_be_exported",
+        "legacy_office_embedded_images_may_not_be_exported",
     ]
 
-    def extract(self, source: str, document_id: str, mode: str) -> dict[str, Any]:
-        markdown = convert_basic(source)
-        result = markdown_to_canonical(markdown, document_id, mode, "document")
+    def extract(self, source: str, document_id: str, mode: str, asset_dir: Path | None = None) -> dict[str, Any]:
         path = Path(source)
+        unit_locator = {"kind": "document", "index": 1}
+        unit_id = stable_id("unit", document_id, unit_locator, "document", 1)
+        assets: list[dict[str, Any]] | None = None
+        image_occurrences: list[str] | None = None
+        image_warnings: list[dict[str, Any]] = []
+        if path.exists() and asset_dir is not None and path.suffix.lower() in OOXML_SUFFIXES:
+            assets, image_occurrences, image_warnings = extract_ooxml_images(
+                path,
+                document_id,
+                unit_id,
+                asset_dir,
+            )
+        try:
+            markdown = convert_basic(source)
+        except Exception:
+            recoverable_codes = {
+                "office_external_image_not_exported",
+                "office_image_relationship_missing",
+                "office_image_target_missing",
+                "office_image_target_unsafe",
+            }
+            if not any(item["code"] in recoverable_codes for item in image_warnings):
+                raise
+            temporary = tempfile.NamedTemporaryFile(suffix=path.suffix, delete=False)
+            temporary.close()
+            sanitized = Path(temporary.name)
+            try:
+                if not create_sanitized_ooxml_copy(path, sanitized):
+                    raise
+                markdown = convert_basic(str(sanitized))
+            finally:
+                sanitized.unlink(missing_ok=True)
+        result = markdown_to_canonical(
+            markdown,
+            document_id,
+            mode,
+            "document",
+            image_assets=assets,
+            image_occurrences=image_occurrences,
+            warn_unexported_images=asset_dir is not None and assets is None,
+        )
         if path.exists():
-            unit_id = result["source_units"][0]["id"]
             detected = inspect_ooxml_features(path, unit_id)
+            detected.extend(image_warnings)
             result["warnings"].extend(detected)
             result["source_units"][0]["warnings"].extend(detected)
             if detected:

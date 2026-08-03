@@ -199,7 +199,8 @@ def resolve_target(args, source: str, relative_path: Path | None = None) -> Targ
             Path.cwd() if is_url(source) else Path(source).resolve().parent
         )
         base = root / stem
-    return Target(args.output_mode, base if args.output_mode == "bundle" else base.with_suffix(".md"), stem)
+    path = base if args.output_mode == "bundle" else base.parent / f"{stem}.md"
+    return Target(args.output_mode, path, stem)
 
 
 def resolve_output_path(args) -> str:
@@ -214,9 +215,11 @@ def _renamed_target(target: Target) -> Target:
     if not target.path.exists():
         return target
     for index in range(1, 10000):
-        path = target.path.with_name(f"{target.path.stem}_{index}{target.path.suffix}")
+        stem = f"{target.stem}_{index}"
+        suffix = "" if target.mode == "bundle" else target.path.suffix
+        path = target.path.with_name(f"{stem}{suffix}")
         if not path.exists():
-            return Target(target.mode, path, path.stem)
+            return Target(target.mode, path, stem)
     raise PipelineError(f"Could not find an available renamed target for {target.path}")
 
 
@@ -305,7 +308,13 @@ def _extract(
     if is_url(source):
         markdown = convert_basic(source)
         source_record, document_id = _source_record(source, markdown)
-        result = markdown_to_canonical(markdown, document_id, mode, "url")
+        result = markdown_to_canonical(
+            markdown,
+            document_id,
+            mode,
+            "url",
+            warn_unexported_images=asset_dir is not None,
+        )
         result["adapter"] = {
             "name": "markitdown",
             "version": markitdown_version(),
@@ -316,7 +325,7 @@ def _extract(
     if Path(source).suffix.lower() == ".pdf":
         result = PdfAdapter().extract(source, document_id, mode, asset_dir)
     else:
-        result = MarkItDownAdapter().extract(source, document_id, mode)
+        result = MarkItDownAdapter().extract(source, document_id, mode, asset_dir)
     return result, source_record, document_id
 
 

@@ -15,8 +15,8 @@ claude skill add /path/to/file-processing
 
 Convert local PDFs, Office documents, supported files, URLs, or directories
 through one canonical pipeline. Local PDFs use native PDFium extraction;
-Office formats continue through MarkItDown. The default output is a movable
-bundle:
+Office text continues through MarkItDown, while DOCX, PPTX, and XLSX images are
+exported by default in bundle mode. The default output is a movable bundle:
 
 ```text
 report/
@@ -40,6 +40,12 @@ defaults to simplified Chinese. Change this with
 `--language-normalization preserve|traditional`. Markdown keeps exactly the
 `type/title/description/tags/timestamp` frontmatter fields unless
 `--no-frontmatter` is supplied.
+
+PDF and OOXML Office bundle images use the same canonical asset contract:
+binary files live under `assets/images/`, Markdown references their
+bundle-relative paths, and JSON records paths, hashes, media types, source
+locators, and ordered image nodes. Markdown-only intentionally omits binaries
+and image links.
 
 OCR is not bundled in v6. OCR-required pages and detected unsupported Office
 features produce publishable `partial` output when other usable content exists.

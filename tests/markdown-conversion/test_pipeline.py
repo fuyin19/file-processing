@@ -353,6 +353,33 @@ def _args_ns(**kwargs):
     return Namespace(**base)
 
 
+@pytest.mark.parametrize('stem', [
+    '0. Table of contents',
+    '3. MB Rule 9.03(1)(b) Initial listing fee',
+    '10. FF004 - Lynk Pharmaceuticals Co. Ltd',
+])
+def test_resolve_target_preserves_dotted_logical_stem(tmp_path, stem):
+    from pipeline import resolve_target
+
+    src = tmp_path / f'{stem}.txt'
+    src.write_text('Body', encoding='utf-8')
+    output = tmp_path / 'out'
+
+    markdown = resolve_target(
+        _args_ns(input=str(src), output_dir=str(output), output_mode='markdown'),
+        str(src),
+    )
+    assert markdown.path == output / f'{stem}.md'
+    assert markdown.stem == stem
+
+    bundle = resolve_target(
+        _args_ns(input=str(src), output_dir=str(output), output_mode='bundle'),
+        str(src),
+    )
+    assert bundle.path == output / stem
+    assert bundle.stem == stem
+
+
 def test_resolve_output_path_single_file_defaults_to_sibling_bundle(tmp_path):
     from pipeline import resolve_output_path
     src = tmp_path / 'doc.pdf'
@@ -1102,6 +1129,33 @@ def test_bundle_rename_uses_deterministic_suffix_for_folder_and_files(tmp_path):
     assert (renamed / 'report_1.md').exists()
 
 
+def test_collision_rename_preserves_dotted_logical_stem_in_both_modes(tmp_path):
+    stem = '10. FF004 - Lynk Pharmaceuticals Co. Ltd'
+    src = tmp_path / f'{stem}.txt'
+    src.write_text('Body', encoding='utf-8')
+
+    bundle_output = tmp_path / 'bundles'
+    assert _run_bundle(src, bundle_output)[0] == 0
+    code, _, stderr, _ = _run_bundle(src, bundle_output, ['--rename'])
+    assert code == 0, stderr
+    renamed_bundle = bundle_output / f'{stem}_1'
+    assert (renamed_bundle / f'{stem}_1.json').exists()
+    assert (renamed_bundle / f'{stem}_1.md').exists()
+
+    markdown_output = tmp_path / 'markdown'
+    markdown_args = SCRIPT + CONFIG_ARG + [
+        '--input', str(src),
+        '--output-dir', str(markdown_output),
+        '--output-mode', 'markdown',
+    ]
+    first = subprocess.run(markdown_args, capture_output=True)
+    assert first.returncode == 0, first.stderr.decode(errors='replace')
+    renamed = subprocess.run(markdown_args + ['--rename'], capture_output=True)
+    assert renamed.returncode == 0, renamed.stderr.decode(errors='replace')
+    assert (markdown_output / f'{stem}.md').exists()
+    assert (markdown_output / f'{stem}_1.md').exists()
+
+
 def test_default_batch_uses_converted_and_does_not_reprocess_outputs(tmp_path):
     source = tmp_path / 'input'
     source.mkdir()
@@ -1180,11 +1234,118 @@ def test_ooxml_feature_preflight_is_lightweight_and_nonblocking(tmp_path):
     warnings = inspect_ooxml_features(package, 'unit-0000000000000000')
     codes = {item['code'] for item in warnings}
     assert codes == {
-        'office_embedded_images_not_exported',
         'office_comments_not_preserved',
         'office_tracked_changes_not_preserved',
     }
     assert all(item['content_loss'] for item in warnings)
+
+
+def test_extract_ooxml_images_deduplicates_asset_and_preserves_occurrences(tmp_path):
+    import zipfile
+    from ooxml_images import extract_ooxml_images
+
+    source = tmp_path / 'reused.docx'
+    document_xml = '''
+        <w:document xmlns:w="urn:w" xmlns:wp="urn:wp" xmlns:a="urn:a"
+                    xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
+          <w:body>
+            <wp:inline><wp:docPr name="Logo" descr="Company logo"/><a:blip r:embed="rId1"/></wp:inline>
+            <wp:inline><wp:docPr name="Logo" descr="Company logo"/><a:blip r:embed="rId1"/></wp:inline>
+          </w:body>
+        </w:document>
+    '''
+    relationships = '''
+        <Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+          <Relationship Id="rId1" Type="image" Target="media/image1.png"/>
+        </Relationships>
+    '''
+    with zipfile.ZipFile(source, 'w') as archive:
+        archive.writestr('word/document.xml', document_xml)
+        archive.writestr('word/_rels/document.xml.rels', relationships)
+        archive.writestr('word/media/image1.png', b'\x89PNG\r\n\x1a\nimage-data')
+
+    assets, occurrences, warnings = extract_ooxml_images(
+        source,
+        'sha256:' + ('1' * 64),
+        'unit-0000000000000000',
+        tmp_path / 'assets' / 'images',
+    )
+
+    assert warnings == []
+    assert len(assets) == 1
+    assert occurrences == [assets[0]['asset_id'], assets[0]['asset_id']]
+    assert assets[0]['alt'] == 'Company logo'
+    assert assets[0]['path'].startswith('assets/images/')
+    assert (tmp_path / Path(assets[0]['path'])).is_file()
+
+
+def test_extract_ooxml_images_warns_without_creating_dangling_asset(tmp_path):
+    import zipfile
+    from ooxml_images import extract_ooxml_images
+
+    source = tmp_path / 'missing.docx'
+    document_xml = '''
+        <w:document xmlns:w="urn:w" xmlns:a="urn:a"
+                    xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
+          <w:body><a:blip r:embed="rId1"/></w:body>
+        </w:document>
+    '''
+    relationships = '''
+        <Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+          <Relationship Id="rId1" Type="image" Target="media/missing.png"/>
+        </Relationships>
+    '''
+    with zipfile.ZipFile(source, 'w') as archive:
+        archive.writestr('word/document.xml', document_xml)
+        archive.writestr('word/_rels/document.xml.rels', relationships)
+
+    assets, occurrences, warnings = extract_ooxml_images(
+        source,
+        'sha256:' + ('2' * 64),
+        'unit-0000000000000000',
+        tmp_path / 'assets' / 'images',
+    )
+
+    assert assets == []
+    assert occurrences == []
+    assert [item['code'] for item in warnings] == ['office_image_target_missing']
+    assert warnings[0]['content_loss'] is True
+    assert not (tmp_path / 'assets').exists()
+
+
+def test_extract_ooxml_images_rejects_unsupported_media_type(tmp_path):
+    import zipfile
+    from ooxml_images import extract_ooxml_images
+
+    source = tmp_path / 'unsupported.docx'
+    document_xml = '''
+        <w:document xmlns:w="urn:w" xmlns:a="urn:a"
+                    xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
+          <w:body><a:blip r:embed="rId1"/></w:body>
+        </w:document>
+    '''
+    relationships = '''
+        <Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+          <Relationship Id="rId1" Type="image" Target="media/image1.bin"/>
+        </Relationships>
+    '''
+    with zipfile.ZipFile(source, 'w') as archive:
+        archive.writestr('word/document.xml', document_xml)
+        archive.writestr('word/_rels/document.xml.rels', relationships)
+        archive.writestr('word/media/image1.bin', b'not-a-supported-image')
+
+    assets, occurrences, warnings = extract_ooxml_images(
+        source,
+        'sha256:' + ('3' * 64),
+        'unit-0000000000000000',
+        tmp_path / 'assets' / 'images',
+    )
+
+    assert assets == []
+    assert occurrences == []
+    assert [item['code'] for item in warnings] == ['office_image_media_type_unsupported']
+    assert warnings[0]['content_loss'] is True
+    assert not (tmp_path / 'assets').exists()
 
 
 def _make_pdf(path, draw):
@@ -1388,23 +1549,159 @@ def test_bundle_backup_cleanup_failure_is_nonfatal_after_commit(tmp_path, monkey
     assert 'could not remove backup' in stderr
 
 
-def test_office_embedded_image_publishes_partial_without_blocking_text(tmp_path):
+def _assert_single_office_bundle_image(bundle):
+    import hashlib
+
+    data = _load_bundle(bundle)
+    assert len(data['assets']) == 1
+    asset = data['assets'][0]
+    assert asset['type'] == 'image'
+    assert asset['path'].startswith('assets/images/')
+    assert set(asset) >= {
+        'asset_id', 'type', 'path', 'sha256', 'media_type',
+        'source_locator', 'alt', 'caption',
+    }
+    published = bundle / Path(asset['path'])
+    assert published.is_file()
+    assert hashlib.sha256(published.read_bytes()).hexdigest() == asset['sha256']
+    assert data['outputs']['assets'] == [{'path': asset['path'], 'sha256': asset['sha256']}]
+    assert any(node['type'] == 'image' and node['asset_id'] == asset['asset_id'] for node in data['content'])
+    markdown = (bundle / f'{bundle.name}.md').read_text(encoding='utf-8')
+    assert f']({asset["path"]})' in markdown
+    assert 'data:image/' not in markdown
+    return data, asset, markdown
+
+
+def test_docx_bundle_exports_embedded_image_to_json_and_markdown(tmp_path):
     from docx import Document
     from PIL import Image
     picture = tmp_path / 'office.png'
     Image.new('RGB', (16, 16), 'blue').save(picture)
     source = tmp_path / 'office.docx'
     document = Document()
-    document.add_paragraph('Usable Office text')
+    document.add_paragraph('Before Office image')
     document.add_picture(str(picture))
+    document.add_paragraph('After Office image')
     document.save(source)
     code, stdout, stderr, bundle = _run_bundle(source, tmp_path / 'out')
     assert code == 0, stderr
+    data, _, markdown = _assert_single_office_bundle_image(bundle)
+    assert data['quality']['status'] == 'complete'
+    assert not any(item['code'] == 'office_embedded_images_not_exported' for item in data['quality']['warnings'])
+    significant = [
+        node['type'] for node in data['content']
+        if node['type'] != 'paragraph' or node.get('normalized_text', '').strip()
+    ]
+    assert significant == ['paragraph', 'image', 'paragraph']
+    assert markdown.index('Before Office image') < markdown.index('](') < markdown.index('After Office image')
+    assert '[PARTIAL]' not in stdout
+
+
+def test_pptx_bundle_exports_embedded_image_to_json_and_markdown(tmp_path):
+    from PIL import Image
+    from pptx import Presentation
+    from pptx.util import Inches
+
+    picture = tmp_path / 'slide.png'
+    Image.new('RGB', (16, 16), 'green').save(picture)
+    source = tmp_path / 'slides.pptx'
+    presentation = Presentation()
+    slide = presentation.slides.add_slide(presentation.slide_layouts[6])
+    slide.shapes.add_textbox(Inches(1), Inches(1), Inches(2), Inches(1)).text = 'Slide text'
+    slide.shapes.add_picture(str(picture), Inches(1), Inches(2))
+    presentation.save(source)
+
+    code, _, stderr, bundle = _run_bundle(source, tmp_path / 'out')
+    assert code == 0, stderr
+    data, _, markdown = _assert_single_office_bundle_image(bundle)
+    assert 'Slide text' in markdown
+    assert data['quality']['status'] == 'complete'
+
+
+def test_xlsx_bundle_exports_image_with_inferred_position_warning(tmp_path):
+    from PIL import Image
+    from openpyxl import Workbook
+    from openpyxl.drawing.image import Image as SpreadsheetImage
+
+    picture = tmp_path / 'sheet.png'
+    Image.new('RGB', (16, 16), 'purple').save(picture)
+    source = tmp_path / 'workbook.xlsx'
+    workbook = Workbook()
+    sheet = workbook.active
+    sheet['A1'] = 'Sheet text'
+    sheet.add_image(SpreadsheetImage(str(picture)), 'A3')
+    workbook.save(source)
+
+    code, _, stderr, bundle = _run_bundle(source, tmp_path / 'out')
+    assert code == 0, stderr
+    data, _, markdown = _assert_single_office_bundle_image(bundle)
+    assert 'Sheet text' in markdown
+    assert data['quality']['status'] == 'complete_with_warnings'
+    assert any(item['code'] == 'office_image_position_inferred' for item in data['quality']['warnings'])
+
+
+def test_docx_markdown_only_intentionally_omits_image_assets_and_links(tmp_path):
+    from docx import Document
+    from PIL import Image
+
+    inputs = tmp_path / 'inputs'
+    inputs.mkdir()
+    picture = inputs / 'office.png'
+    Image.new('RGB', (16, 16), 'blue').save(picture)
+    source = inputs / 'office.docx'
+    document = Document()
+    document.add_paragraph('Before')
+    document.add_picture(str(picture))
+    document.add_paragraph('After')
+    document.save(source)
+    output = tmp_path / 'output' / 'clean.md'
+
+    result = subprocess.run(
+        SCRIPT + CONFIG_ARG + ['--input', str(source), '--output-path', str(output)],
+        capture_output=True,
+    )
+
+    assert result.returncode == 0, result.stderr.decode(errors='replace')
+    assert sorted(path.name for path in output.parent.iterdir()) == ['clean.md']
+    markdown = output.read_text(encoding='utf-8')
+    assert 'Before' in markdown and 'After' in markdown
+    assert 'assets/images/' not in markdown
+    assert 'data:image/' not in markdown
+    assert '[PARTIAL]' not in result.stdout.decode(errors='replace')
+
+
+def test_docx_missing_embedded_image_publishes_text_without_dangling_link(tmp_path):
+    import zipfile
+    from docx import Document
+    from PIL import Image
+
+    picture = tmp_path / 'missing.png'
+    Image.new('RGB', (16, 16), 'red').save(picture)
+    source = tmp_path / 'broken-image.docx'
+    document = Document()
+    document.add_paragraph('Before missing image')
+    document.add_picture(str(picture))
+    document.add_paragraph('After missing image')
+    document.save(source)
+    rewritten = tmp_path / 'rewritten.docx'
+    with zipfile.ZipFile(source) as original, zipfile.ZipFile(rewritten, 'w') as replacement:
+        for item in original.infolist():
+            if '/media/' not in item.filename:
+                replacement.writestr(item, original.read(item.filename))
+    rewritten.replace(source)
+
+    code, _, stderr, bundle = _run_bundle(source, tmp_path / 'out')
+
+    assert code == 0, stderr
     data = _load_bundle(bundle)
+    assert data['assets'] == []
+    assert data['outputs']['assets'] == []
     assert data['quality']['status'] == 'partial'
-    assert any(item['code'] == 'office_embedded_images_not_exported' for item in data['quality']['warnings'])
-    assert 'Usable Office text' in (bundle / 'office.md').read_text(encoding='utf-8')
-    assert '[PARTIAL]' in stdout
+    assert any(item['code'] == 'office_image_target_missing' for item in data['quality']['warnings'])
+    markdown = (bundle / 'broken-image.md').read_text(encoding='utf-8')
+    assert 'Before missing image' in markdown and 'After missing image' in markdown
+    assert 'assets/images/' not in markdown
+    assert 'data:image/' not in markdown
 
 
 def test_pdf_fake_ocr_provider_contract_can_supply_nodes(tmp_path):

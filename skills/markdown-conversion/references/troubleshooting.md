@@ -11,7 +11,9 @@ Use `--overwrite` for transactional replacement or `--rename` for `_1`, `_2`, â€
 `report.json -> quality.warnings` for exact page/unit codes. In Markdown-only
 mode the same warnings are printed to stderr because no sidecar is allowed.
 
-Common codes include `ocr_required`, `office_embedded_images_not_exported`,
+Common codes include `ocr_required`, `office_image_target_missing`,
+`office_external_image_not_exported`, `office_image_media_type_unsupported`,
+`office_image_position_inferred`,
 `office_tracked_changes_not_preserved`, and `table_structure_uncertain`.
 
 ## No usable content

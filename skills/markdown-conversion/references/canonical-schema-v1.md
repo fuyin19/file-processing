@@ -67,6 +67,11 @@ Asset paths are bundle-relative and cannot contain `..`. Every asset records a
 SHA-256, media type, source locator, alt, and caption. Publication fails on a
 missing asset, path escape, dangling reference, or hash mismatch.
 
+PDF and referenced DOCX/PPTX/XLSX images use this same structure. Office asset
+locators include the OOXML package part; repeated uses of one embedded binary
+share one asset record and appear as separate `content` image references.
+Rendered Markdown uses the asset's bundle-relative `path` unchanged.
+
 ## Quality and publication
 
 - `complete`: no warning and no known loss.

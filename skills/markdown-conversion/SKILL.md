@@ -9,8 +9,10 @@ metadata:
 # Convert files to canonical JSON and Markdown
 
 Use `scripts/pipeline.py`. Local PDFs use the native PDFium adapter; Office and
-other supported formats use a reused MarkItDown adapter. Both adapters produce
-the same Canonical JSON v1 model and shared Markdown rendering.
+other supported formats use a reused MarkItDown adapter. In bundle mode,
+referenced images in DOCX, PPTX, and XLSX packages are exported alongside the
+MarkItDown text. Both adapters produce the same Canonical JSON v1 asset model
+and shared Markdown rendering.
 
 ## Interface
 
@@ -52,7 +54,8 @@ and no broken image links are emitted.
 ## Workflow
 
 1. Resolve and preflight every target before loading an expensive adapter.
-2. Extract local PDFs with PDFium; use MarkItDown for Office and other formats.
+2. Extract local PDFs with PDFium; use MarkItDown for Office text and export
+   referenced OOXML Office images when publishing a bundle.
 3. Build Canonical JSON v1 with source units, one ordered content stream,
    referenced tables/assets, stable IDs, and quality warnings.
 4. Preserve adapter `raw_text` and cleaned `text`; derive `normalized_text` with
@@ -90,8 +93,13 @@ JSON still contains document metadata.
 - PDF v6 targets born-digital text, rotation, conservative two-column ordering,
   headings, paragraphs, lists, tables, source bboxes, and extractable images.
 - OCR has an internal provider seam but v6 ships with `NullOcrProvider` only.
-- Office keeps MarkItDown. Detected tracked changes, comments, or unexported
-  embedded images become non-blocking quality warnings/partial output.
+- Office keeps MarkItDown for text. DOCX, PPTX, and XLSX bundle output exports
+  referenced embedded images to `assets/images/`; Canonical JSON stores their
+  relative paths, hashes, media types, locators, and ordered content references,
+  and Markdown uses those same relative paths. Missing, external, or unreadable
+  image targets become non-blocking quality warnings without dangling links.
+- Legacy binary Office formats may still omit embedded images; Markdown-only
+  intentionally publishes no image binaries or links.
 - v6 does not emit RAG chunks, bind an ingestion library, implement a native
   Office adapter, or claim semantic formula recognition.
 - Existing URL input remains a compatibility path through MarkItDown; its source
