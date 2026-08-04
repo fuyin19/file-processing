@@ -399,10 +399,13 @@ def _build_document(
         ocr_provider,
         ocr_mode,
     )
-    title = extracted.get("title") or _source_stem(identity_source)
-    if title == "untitled":
+    if is_url(identity_source):
+        title = extracted.get("title") or _source_stem(identity_source)
+        if title == "untitled":
+            title = _source_stem(identity_source)
+        title = convert_chinese(title, normalization)
+    else:
         title = _source_stem(identity_source)
-    title = convert_chinese(title, normalization)
     warnings = extracted.get("warnings", [])
     return {
         "schema_version": "1.0",

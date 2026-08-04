@@ -7,7 +7,7 @@ Converted files use this exact five-field YAML draft by default.
 ```yaml
 ---
 type: ""
-title: "<first H1 or source stem>"
+title: "<local input source stem>"
 description: ""
 tags: []
 timestamp: "<timezone-aware conversion time>"
@@ -21,7 +21,7 @@ timestamp: "<timezone-aware conversion time>"
 | Field | Conversion behavior |
 |---|---|
 | `type` | Empty string. |
-| `title` | First H1 after conversion, otherwise the input source stem. |
+| `title` | For local inputs, the original filename without its final extension; literal filename characters are preserved. URL inputs use the first H1 with a URL-derived stem/slug fallback. |
 | `description` | Empty string. |
 | `tags` | Empty list. |
 | `timestamp` | Timezone-aware conversion time, or the exact valid `--timestamp` value. |

@@ -85,7 +85,7 @@ Unless `--no-frontmatter` is supplied, Markdown begins with exactly:
 ```yaml
 ---
 type: ""
-title: "<first effective H1 or source stem>"
+title: "<local input source stem>"
 description: ""
 tags: []
 timestamp: "<timezone-aware conversion time>"
@@ -94,7 +94,11 @@ timestamp: "<timezone-aware conversion time>"
 
 `--timestamp` accepts an ISO date or RFC3339 timezone-aware datetime and
 preserves the supplied value. `--no-frontmatter` affects Markdown only; bundle
-JSON still contains document metadata.
+JSON still contains document metadata. Local input titles use the original
+filename without its final extension, preserve the filename's literal
+characters, and do not change with output renaming. URL inputs retain the
+compatibility behavior of using the first effective H1 with a URL-derived
+stem/slug fallback.
 
 ## Scope and limitations
 

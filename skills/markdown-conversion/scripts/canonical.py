@@ -224,7 +224,8 @@ def frontmatter(title: str, timestamp: str) -> str:
 
 def inject_frontmatter(text: str, source: str, timestamp: str) -> str:
     fallback = Path(source).stem if source else "untitled"
-    return frontmatter(title_from_markdown(text, fallback), timestamp) + text
+    title = title_from_markdown(text, fallback) if source.lower().startswith(("http://", "https://")) else fallback
+    return frontmatter(title or "untitled", timestamp) + text
 
 
 def quality_from_warnings(warnings: list[dict[str, Any]]) -> str:

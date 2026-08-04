@@ -101,23 +101,32 @@ def test_inject_frontmatter_is_exact_five_field_draft():
     assert 'Hello' in result
 
 
-def test_inject_frontmatter_prefers_first_h1_for_title():
+def test_inject_frontmatter_uses_source_stem_even_with_h1():
     from pipeline import inject_frontmatter
     result = inject_frontmatter('# Report Title\n\nBody', '/path/to/file.pdf', '2026-03-23T10:00:00')
-    assert 'title: "Report Title"' in result
+    assert 'title: "file"' in result
 
 
-def test_inject_frontmatter_ignores_fenced_code_and_trims_closing_hashes():
-    from pipeline import inject_frontmatter
+def test_title_from_markdown_ignores_fenced_code_and_trims_closing_hashes():
+    from pipeline import title_from_markdown
     body = '```markdown\n# Not a heading\n```\n\n# Actual Title ###\n'
-    result = inject_frontmatter(body, '/path/to/file.pdf', '2026-03-23')
-    assert 'title: "Actual Title"' in result
+    assert title_from_markdown(body, 'fallback') == 'Actual Title'
 
 
-def test_inject_frontmatter_uses_source_stem_without_h1():
+def test_inject_frontmatter_uses_multi_dot_source_stem_with_h1():
     from pipeline import inject_frontmatter
-    result = inject_frontmatter('Body only', '/path/to/quarterly.report.pdf', '2026-03-23')
+    result = inject_frontmatter('# Content Title\n\nBody', '/path/to/quarterly.report.pdf', '2026-03-23')
     assert 'title: "quarterly.report"' in result
+
+
+def test_inject_frontmatter_preserves_url_h1_title():
+    from pipeline import inject_frontmatter
+    result = inject_frontmatter(
+        '# Remote Heading\n\nBody',
+        'https://example.com/report.pdf',
+        '2026-03-23',
+    )
+    assert 'title: "Remote Heading"' in result
 
 
 # --- Vault write tests (pure function) ---------------------------------------
@@ -183,7 +192,7 @@ def test_full_pipeline_creates_vault_file(tmp_path):
     """Full pipeline: source file → pipeline → vault file with frontmatter."""
     # Create a simple text file (markitdown supports .txt)
     src = tmp_path / 'source.txt'
-    src.write_text('Hello world', encoding='utf-8')
+    src.write_text('# Content Heading\n\nHello world', encoding='utf-8')
     out = tmp_path / 'note.md'
 
     code, out_str, err, _ = _run_pipeline(str(src), output_path=str(out))
@@ -198,6 +207,7 @@ def test_full_pipeline_creates_vault_file(tmp_path):
         'tags: []',
     ]
     assert 'resource:' not in content
+    assert '# Content Heading' in content
     assert 'Hello world' in content
 
 
@@ -1005,6 +1015,72 @@ def test_default_bundle_contains_canonical_json_and_markdown(tmp_path):
     assert data['quality']['status'] == 'complete'
 
 
+def test_markitdown_local_title_uses_literal_source_stem_in_markdown_and_json(tmp_path):
+    src = tmp_path / '季度報告.final.txt'
+    src.write_text('# Content Heading\n\nBody', encoding='utf-8')
+    code, _, stderr, bundle = _run_bundle(src, tmp_path / 'out')
+
+    assert code == 0, stderr
+    data = _load_bundle(bundle)
+    markdown = (bundle / f'{bundle.name}.md').read_text(encoding='utf-8')
+    assert data['document']['title'] == '季度報告.final'
+    assert 'title: "季度報告.final"' in markdown
+    assert '# Content Heading' in markdown
+
+
+def test_url_title_keeps_content_h1_compatibility(monkeypatch):
+    import pipeline
+
+    extracted = {
+        'title': 'Remote Heading',
+        'adapter': {'name': 'markitdown', 'version': 'test', 'limitations': []},
+        'warnings': [],
+    }
+    monkeypatch.setattr(
+        pipeline,
+        '_extract',
+        lambda *args, **kwargs: (extracted, {'kind': 'url'}, 'sha256:test'),
+    )
+
+    document = pipeline._build_document(
+        'https://example.com/report.pdf',
+        '2026-08-04',
+        'preserve',
+        'markdown',
+        None,
+    )
+
+    assert document['document']['title'] == 'Remote Heading'
+
+
+def test_local_title_uses_original_identity_for_legacy_doc_temp_conversion(monkeypatch, tmp_path):
+    import pipeline
+
+    original = tmp_path / 'Original.Name.doc'
+    temporary = tmp_path / 'converted.docx'
+    extracted = {
+        'title': 'Content Heading',
+        'adapter': {'name': 'markitdown', 'version': 'test', 'limitations': []},
+        'warnings': [],
+    }
+    monkeypatch.setattr(
+        pipeline,
+        '_extract',
+        lambda *args, **kwargs: (extracted, {'kind': 'file'}, 'sha256:test'),
+    )
+
+    document = pipeline._build_document(
+        str(temporary),
+        '2026-08-04',
+        'simplified',
+        'markdown',
+        None,
+        identity_source=str(original),
+    )
+
+    assert document['document']['title'] == 'Original.Name'
+
+
 def test_single_file_without_output_flags_uses_sibling_bundle(tmp_path):
     src = tmp_path / 'sibling.txt'
     src.write_text('Body', encoding='utf-8')
@@ -1184,7 +1260,7 @@ def test_no_frontmatter_keeps_json_metadata(tmp_path):
 
 def test_bundle_rename_uses_deterministic_suffix_for_folder_and_files(tmp_path):
     src = tmp_path / 'report.txt'
-    src.write_text('Body', encoding='utf-8')
+    src.write_text('# Content Heading\n\nBody', encoding='utf-8')
     output = tmp_path / 'out'
     assert _run_bundle(src, output)[0] == 0
     code, _, stderr, _ = _run_bundle(src, output, ['--rename'])
@@ -1192,6 +1268,8 @@ def test_bundle_rename_uses_deterministic_suffix_for_folder_and_files(tmp_path):
     renamed = output / 'report_1'
     assert (renamed / 'report_1.json').exists()
     assert (renamed / 'report_1.md').exists()
+    assert _load_bundle(renamed)['document']['title'] == 'report'
+    assert 'title: "report"' in (renamed / 'report_1.md').read_text(encoding='utf-8')
 
 
 def test_collision_rename_preserves_dotted_logical_stem_in_both_modes(tmp_path):
@@ -1745,6 +1823,9 @@ def test_native_pdf_full_width_title_precedes_two_columns(tmp_path):
 
     assert code == 0, stderr
     data = _load_bundle(bundle)
+    markdown = (bundle / f'{bundle.name}.md').read_text(encoding='utf-8')
+    assert data['document']['title'] == 'title-columns'
+    assert 'title: "title-columns"' in markdown
     assert data['content'][0]['type'] == 'heading'
     assert data['content'][0]['normalized_text'] == 'Annual Research Report'
     assert data['content'][1]['normalized_text'] == 'Executive overview'
