@@ -11,7 +11,7 @@ claude skill add /path/to/file-processing
 
 ## Skills
 
-### markdown-conversion (v6.0.0)
+### markdown-conversion (v6.2.0)
 
 Convert local PDFs, Office documents, supported files, URLs, or directories
 through one canonical pipeline. Local PDFs use native PDFium extraction;
@@ -47,9 +47,23 @@ bundle-relative paths, and JSON records paths, hashes, media types, source
 locators, and ordered image nodes. Markdown-only intentionally omits binaries
 and image links.
 
-OCR is not bundled in v6. OCR-required pages and detected unsupported Office
-features produce publishable `partial` output when other usable content exists.
-The converter does not emit RAG chunks or bind an ingestion library.
+PDF OCR is an optional local path in v6.2. Install the tested
+`rapidocr==3.9.2` plus `onnxruntime>=1.20,<2`. The default `auto` mode OCRs only
+scanned, sparse-image, garbled, Unicode-map-damaged, or native-extraction-failed
+pages; `--ocr force` attempts every PDF page, and `--ocr off` preserves the
+zero-overhead native-only path. OCR text and rotated polygons are mapped back to
+PDF coordinates, merged with native text, and routed through the same layout
+pipeline. A force-only OCR failure never discards healthy native text.
+
+The PDF path also removes exact duplicate paint layers, classifies repeated
+headers/footers without deleting their canonical provenance, follows recursive
+multi-column reading order around full-width text and image obstacles, joins
+conservative cross-column/cross-page sentence continuations, recognizes
+high-confidence ruled and booktabs-style vector tables, and uses typography
+plus sequence evidence for headings and ordered lists. Unrecovered OCR pages
+and detected unsupported Office features produce publishable `partial` output
+when other usable content exists. The converter does not emit RAG chunks or
+bind an ingestion library.
 
 See [the skill contract](skills/markdown-conversion/SKILL.md) and
 [Canonical JSON v1 reference](skills/markdown-conversion/references/canonical-schema-v1.md).

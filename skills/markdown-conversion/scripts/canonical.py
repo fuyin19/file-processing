@@ -136,6 +136,11 @@ def normalize_canonical_text(
     content: list[dict[str, Any]], tables: list[dict[str, Any]], mode: str
 ) -> None:
     """Normalize all visible canonical text with one OpenCC call per document."""
+    def sync_headers() -> None:
+        for table in tables:
+            if table.get("headers") is not None and table.get("rows"):
+                table["headers"] = [cell["normalized_text"] for cell in table["rows"][0]]
+
     records: list[dict[str, Any]] = [
         node for node in content if node.get("type") in TEXT_NODE_TYPES - {"code"}
     ]
@@ -145,6 +150,7 @@ def normalize_canonical_text(
     if mode == "preserve":
         for record in records:
             record["normalized_text"] = record["text"]
+        sync_headers()
         return
     separator = "\n\ue0fe\ue0ff\n"
     while any(separator in str(record.get("text", "")) for record in records):
@@ -156,6 +162,7 @@ def normalize_canonical_text(
         raise CanonicalValidationError("language normalization changed the canonical record boundary")
     for record, value in zip(records, values, strict=True):
         record["normalized_text"] = value
+    sync_headers()
 
 
 def strip_images(text: str) -> str:
@@ -280,9 +287,7 @@ def render_markdown(document: dict[str, Any], include_frontmatter: bool = True, 
                 + str(node.get("text", ""))
                 + "\n```"
             )
-        elif kind == "boilerplate" and text:
-            lines.append(f"> {text}")
-        elif kind == "page_label" and text:
+        elif kind in {"boilerplate", "page_label"} and text:
             continue
         elif kind == "table":
             rendered = render_table(tables[node["table_id"]])
@@ -335,6 +340,17 @@ def validate_canonical(
     table_ids = {item["table_id"] for item in document.get("tables", [])}
     asset_ids = {item["asset_id"] for item in document.get("assets", [])}
     source_unit_ids = {item["id"] for item in document.get("source_units", [])}
+    locators = [node.get("source_locator", {}) for node in document.get("content", [])]
+    locators.extend(table.get("source_locator", {}) for table in document.get("tables", []))
+    locators.extend(asset.get("source_locator", {}) for asset in document.get("assets", []))
+    for locator in locators:
+        spans = locator.get("spans", [])
+        if spans is not None and not isinstance(spans, list):
+            raise CanonicalValidationError("source locator spans must be a list")
+        for span in spans or []:
+            source_unit_id = span.get("source_unit_id") if isinstance(span, dict) else None
+            if source_unit_id and source_unit_id not in source_unit_ids:
+                raise CanonicalValidationError(f"dangling source-unit span reference: {source_unit_id}")
     for node in document["content"]:
         source_unit_id = node.get("source_locator", {}).get("source_unit_id")
         if source_unit_id and source_unit_id not in source_unit_ids:

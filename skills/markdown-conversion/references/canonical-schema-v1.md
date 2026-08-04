@@ -1,6 +1,6 @@
 # Canonical JSON v1
 
-`<stem>.json` is the canonical, loss-aware output of `markdown-conversion` v6.
+`<stem>.json` is the canonical, loss-aware output of `markdown-conversion` v6.2.
 The machine-readable schema is `../schemas/canonical-v1.schema.json`.
 
 ## Top-level fields
@@ -44,7 +44,23 @@ Every text-bearing node stores:
 
 `raw_text` means the raw characters returned by the adapter, not raw OOXML/PDF
 binary syntax. Code, URLs, paths, IDs, hashes, and formulas are protected during
-language normalization.
+language normalization. For born-digital PDFs, the adapter only resolves an
+unmapped character as a hyphen when its glyph box is hyphen-like; otherwise it
+uses the replacement character and records a content-loss warning.
+
+When optional PDF OCR contributes to a node, its open `source_locator` records
+`extraction_method` (`ocr` or `native+ocr`), `ocr_provider`, `ocr_version`, and
+the conservative minimum `ocr_confidence` represented by that node. OCR boxes
+are converted from raster coordinates back to the same PDF canvas coordinate
+system used by native text. These provenance fields do not change the ordered
+content or text-field contract.
+
+The page source unit's open `locator.ocr` object records the provider and
+runtime versions, model profile, language, requested/effective DPI, confidence
+threshold, raster dimensions, and filtering/merge counts. Volatile elapsed time
+is not serialized. These audit fields are deliberately excluded from stable-id
+inputs, so upgrading an OCR runtime does not churn otherwise identical page or
+node identities.
 
 `content` is the only reading order. Tables and images appear as reference nodes:
 
@@ -62,6 +78,22 @@ Tables always contain `table_id`, `source_locator`, `raw_rows`, normalized
 normalized text, spans, and an optional parsed value. Headers, caption, units,
 currency, period, footnotes, and cross-page continuation are optional; the
 pipeline never invents them.
+
+The open table locator may include `table_detection` (`word_grid`,
+`vector_grid`, or `vector_booktabs`) and `vector_rule_count`. Vector-derived
+tables require high-confidence geometry; decorative frames, diagonal chart
+geometry, and ambiguous aligned prose remain outside table output.
+
+When one logical paragraph or table crosses pages, its locator may include a
+`spans` array. Every nested span carries its page/source-unit provenance and is
+validated against `source_units`; stable node/table IDs are generated only
+after continuation stitching is complete.
+
+Repeated running headers, footers, and page labels are represented as
+`boilerplate` or `page_label` content nodes. They remain available to canonical
+consumers and preserve locators, but the default Markdown renderer suppresses
+them. This allows continuation stitching to pass over page chrome without
+silently deleting source provenance.
 
 Asset paths are bundle-relative and cannot contain `..`. Every asset records a
 SHA-256, media type, source locator, alt, and caption. Publication fails on a

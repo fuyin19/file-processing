@@ -3,7 +3,7 @@ name: markdown-conversion
 description: |
   Convert local PDF and Office documents, supported files, URLs, or directories into a canonical JSON plus Markdown bundle, or one clean Markdown file. Use for native born-digital PDF extraction, MarkItDown-backed Office conversion, deterministic five-field frontmatter, Chinese language normalization, batch conversion, and transactional output handling.
 metadata:
-  version: 6.0.0
+  version: 6.2.0
 ---
 
 # Convert files to canonical JSON and Markdown
@@ -25,6 +25,9 @@ and shared Markdown rendering.
   [--no-frontmatter]
   [--overwrite | --rename]
   [--types pdf,docx] [--no-recursive]
+  [--ocr off|auto|force] [--ocr-engine rapidocr]
+  [--ocr-language ch] [--ocr-dpi 300]
+  [--ocr-max-long-edge 4096] [--ocr-min-confidence 0.5]
 ```
 
 `bundle` is the default. `--output-path` is the compatibility interface for one
@@ -55,7 +58,12 @@ and no broken image links are emitted.
 
 1. Resolve and preflight every target before loading an expensive adapter.
 2. Extract local PDFs with PDFium; use MarkItDown for Office text and export
-   referenced OOXML Office images when publishing a bundle.
+   referenced OOXML Office images when publishing a bundle. When enabled, local
+   OCR rasterizes only selected PDF pages, maps recognized lines back to PDF
+   coordinates, removes native/OCR duplicates, and sends the merged fragments
+   through the same table and reading-order pipeline. PDF vector rules, image
+   obstacles, repeated page chrome, and typography remain geometry/provenance
+   inputs rather than being flattened away before structure recovery.
 3. Build Canonical JSON v1 with source units, one ordered content stream,
    referenced tables/assets, stable IDs, and quality warnings.
 4. Preserve adapter `raw_text` and cleaned `text`; derive `normalized_text` with
@@ -90,9 +98,31 @@ JSON still contains document metadata.
 
 ## Scope and limitations
 
-- PDF v6 targets born-digital text, rotation, conservative two-column ordering,
-  headings, paragraphs, lists, tables, source bboxes, and extractable images.
-- OCR has an internal provider seam but v6 ships with `NullOcrProvider` only.
+- PDF v6.2 targets born-digital text, rotation, document-level typography,
+  recursive multi-column ordering around full-width text/image obstacles,
+  physical-line dewrapping, conservative cross-column and cross-page sentence
+  continuation, and geometry-backed tables. Table recovery covers the existing
+  character/word grid path plus high-confidence ruled and booktabs-style vector
+  tables; ambiguous prose, page frames, and chart grids fall back to ordinary
+  content. Source bboxes/spans and extractable images remain preserved.
+  Repeated running headers, footers, and page labels stay in Canonical JSON as
+  classified provenance but are suppressed from rendered Markdown. Exact
+  duplicate native paint layers are collapsed without removing visible shadows
+  or independently positioned text. Unmapped PDF glyphs are accepted as
+  hyphens only when their geometry is hyphen-like; other unknown glyphs produce
+  a content-loss warning.
+- OCR is optional and local. `auto` is the default, but its engine remains lazy:
+  healthy born-digital pages do not import or initialize an OCR model. Install
+  the tested `rapidocr==3.9.2` and `onnxruntime>=1.20,<2`; auto mode handles
+  no-text/scanned, dominant-image sparse-text, garbled, Unicode-map-damaged, or
+  native-fragment-extraction-failed pages, while
+  `--ocr off` preserves the native-only path and `--ocr force` attempts every
+  PDF page. The default `ch` RapidOCR model recognizes Chinese and English.
+  OCR polygon orientation is retained for rotated reading order. Confidence is
+  statistical, and a failed or empty required OCR page remains loss-aware
+  `partial` output; a force-only failure preserves healthy native output and is
+  only a warning. Runtime elapsed time is intentionally not serialized so
+  equivalent conversions remain deterministic.
 - Office keeps MarkItDown for text. DOCX, PPTX, and XLSX bundle output exports
   referenced embedded images to `assets/images/`; Canonical JSON stores their
   relative paths, hashes, media types, locators, and ordered content references,
@@ -100,7 +130,7 @@ JSON still contains document metadata.
   image targets become non-blocking quality warnings without dangling links.
 - Legacy binary Office formats may still omit embedded images; Markdown-only
   intentionally publishes no image binaries or links.
-- v6 does not emit RAG chunks, bind an ingestion library, implement a native
+- v6.2 does not emit RAG chunks, bind an ingestion library, implement a native
   Office adapter, or claim semantic formula recognition.
 - Existing URL input remains a compatibility path through MarkItDown; its source
   identity hashes extracted adapter text and is outside native PDF guarantees.

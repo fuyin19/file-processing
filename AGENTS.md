@@ -25,7 +25,7 @@ structure-safety and testability are prioritized over feature breadth.
 
 The four skills:
 
-- **markdown-conversion** (v6.0.0) — Convert local PDFs, Office documents, supported files, URLs, or directories through one canonical model. Born-digital PDFs use a native PDFium adapter; Office formats continue through MarkItDown. The default output is a JSON + Markdown bundle, while `--output-mode markdown` emits one clean Markdown file. Canonical output preserves raw/cleaned/normalized text, uses exact five-field YAML frontmatter, defaults Chinese normalization to simplified, and publishes transactionally.
+- **markdown-conversion** (v6.2.0) — Convert local PDFs, Office documents, supported files, URLs, or directories through one canonical model. Born-digital PDFs use a native PDFium adapter, with optional lazy local OCR for scanned pages or unusable native text; Office formats continue through MarkItDown. The default output is a JSON + Markdown bundle, while `--output-mode markdown` emits one clean Markdown file. Canonical output preserves raw/cleaned/normalized text, uses exact five-field YAML frontmatter, defaults Chinese normalization to simplified, and publishes transactionally.
 - **content-review** (v2.0.0) — Review files for grammar, typos, logic, and stylistic issues. Verify content against reference materials (fact-checking). `scripts/review_plan.py` computes a dimension × chunk matrix and assembles sub-agent results; `references/` (criteria + sub-agent prompts) and `assets/` (report template).
 - **markdown-cleanup** (v1.0.0) — Clean up formatting artifacts in markitdown-converted .md files. Pure Python stdlib.
 - **translate** (v2.0.0) — Translate files to a target language with optional reference-guided terminology. Hybrid architecture: Python pipeline (`translate_pipeline.py`, `glossary_utils.py`) for deterministic work (structure-safe chunking, source-driven glossary slicing, per-occurrence forced-application QA); Claude/sub-agents for linguistic work.
@@ -176,7 +176,7 @@ The plugin lives in `skills/` with one subdirectory per skill. Each skill has a 
 6. **Publication** — default `bundle` writes `<stem>/<stem>.json`, `<stem>.md`, and optional `assets/images/`; `--output-mode markdown` writes exactly one clean `.md` and omits image binaries/dead links.
 7. **Transactional replace** — stages complete output beside the target, validates before commit, rolls back pre-commit replacement failures, and treats post-commit backup cleanup failure as a non-fatal maintenance warning.
 
-PDF v6 intentionally ships without an OCR engine. OCR-required pages remain as source units and produce publishable `partial` output when other usable content exists. RAG chunk schemas, native Office adapters, advanced formulas, tracked-change preservation, and model enrichment remain non-goals.
+PDF v6.2 supports an optional local RapidOCR provider. The default `auto` mode keeps healthy born-digital pages on the native fast path and routes only pages that appear scanned or have unusable native text; `off` preserves the native-only path. OCR dependencies are never installed silently. OCR-required pages that cannot be recovered remain as source units and produce publishable `partial` output when other usable content exists. RAG chunk schemas, native Office adapters, advanced formulas, tracked-change preservation, and model enrichment remain non-goals.
 
 ### Cleanup Pipeline Flow (markdown-cleanup)
 

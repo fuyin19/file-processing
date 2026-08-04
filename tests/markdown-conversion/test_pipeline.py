@@ -329,6 +329,52 @@ def test_load_config_preserves_extra_keys(tmp_path, monkeypatch):
     assert cfg["custom_key"] == "custom-value"
 
 
+def test_pdf_ocr_config_merges_defaults_and_cli_takes_precedence():
+    from pipeline import DEFAULT_CONFIG, build_parser, resolve_ocr_settings
+
+    parser = build_parser()
+    assert resolve_ocr_settings(parser.parse_args([]), DEFAULT_CONFIG).mode == 'auto'
+    config = {
+        'pdf_ocr': {
+            'mode': 'auto',
+            'engine': 'rapidocr',
+            'language': 'ch',
+            'dpi': 240,
+            'max_long_edge': 3500,
+            'min_confidence': 0.62,
+        }
+    }
+    configured = resolve_ocr_settings(parser.parse_args([]), config)
+    assert configured.mode == 'auto'
+    assert configured.dpi == 240
+    assert configured.min_confidence == pytest.approx(0.62)
+
+    overridden = resolve_ocr_settings(
+        parser.parse_args([
+            '--ocr', 'force', '--ocr-dpi', '300',
+            '--ocr-min-confidence', '0.75',
+        ]),
+        config,
+    )
+    assert overridden.mode == 'force'
+    assert overridden.dpi == 300
+    assert overridden.min_confidence == pytest.approx(0.75)
+    assert overridden.max_long_edge == 3500
+
+
+def test_pdf_ocr_config_rejects_invalid_threshold(capsys):
+    from pipeline import build_parser, resolve_ocr_settings
+
+    with pytest.raises(SystemExit) as exc_info:
+        resolve_ocr_settings(
+            build_parser().parse_args([]),
+            {'pdf_ocr': {'mode': 'auto', 'min_confidence': 1.5}},
+        )
+
+    assert exc_info.value.code == 1
+    assert 'min_confidence' in capsys.readouterr().err
+
+
 def test_load_config_invalid_json_uses_defaults(tmp_path, monkeypatch):
     """Malformed config.json should warn and use defaults."""
     from pipeline import load_config, DEFAULT_CONFIG
@@ -649,7 +695,9 @@ def test_version_flag():
     assert 'Dependencies:' in stdout
     # Should show pip install names (not import names)
     assert 'opencc-python-reimplemented' in stdout
-    assert 'markdown-conversion v6.0.0' in stdout
+    assert 'markdown-conversion v6.2.0' in stdout
+    assert 'rapidocr:' in stdout
+    assert 'onnxruntime:' in stdout
     assert 'ruamel.yaml:' not in stdout
     assert 'cortex:' not in stdout
 
@@ -1058,6 +1106,23 @@ def test_semantic_validator_rejects_dangling_reference(tmp_path):
         validate_canonical(data, bundle)
 
 
+def test_semantic_validator_rejects_dangling_locator_span(tmp_path):
+    from canonical import CanonicalValidationError, validate_canonical
+
+    src = tmp_path / 'source.txt'
+    src.write_text('Body', encoding='utf-8')
+    bundle = _run_bundle(src, tmp_path / 'out')[3]
+    data = _load_bundle(bundle)
+    data['content'][0]['source_locator']['spans'] = [{
+        'page': 2,
+        'source_unit_id': 'unit-0000000000000000',
+        'bbox': [0, 0, 10, 10],
+    }]
+
+    with pytest.raises(CanonicalValidationError, match='dangling source-unit span'):
+        validate_canonical(data, bundle)
+
+
 def test_semantic_validator_rejects_asset_path_escape_and_hash_mismatch(tmp_path):
     from canonical import CanonicalValidationError, stable_id, validate_canonical
     src = tmp_path / 'source.txt'
@@ -1355,6 +1420,22 @@ def _make_pdf(path, draw):
     document.save()
 
 
+def _pdf_layout_line(text, y, font_size=10, left=50, right=300, cells=None):
+    bbox = [left, y, right, y + 10]
+    return {
+        'text': text,
+        'bbox': bbox,
+        'layout_bbox': bbox,
+        'font_size': font_size,
+        'font_weight': 400,
+        'cells': cells or [{
+            'text': text,
+            'bbox': bbox,
+            'layout_bbox': bbox,
+        }],
+    }
+
+
 def test_native_pdf_adapter_emits_page_locators_and_clean_markdown(tmp_path):
     pdf = tmp_path / 'native.pdf'
 
@@ -1412,6 +1493,270 @@ def test_pdf_line_joining_handles_cjk_hyphen_indent_and_list_continuation():
     assert len(indented) == 2
     listed = _classify_blocks([line('- List item', 50, 700, 710), line('continued text', 70, 688, 698)], 1)
     assert len(listed) == 1 and listed[0]['type'] == 'list_item'
+
+
+@pytest.mark.parametrize(
+    ('source', 'expected'),
+    [
+        ('Revenue increased\nduring the period.', 'Revenue increased during the period.'),
+        ('这是第一行\n接续内容。', '这是第一行接续内容。'),
+        ('The inter-\nnational market grew.', 'The international market grew.'),
+        ('First sentence.\nSecond sentence.', 'First sentence. Second sentence.'),
+    ],
+)
+def test_pdf_join_lines_normalizes_pdfium_physical_breaks(source, expected):
+    from pdf_adapter import _join_lines
+
+    actual = _join_lines([source])
+
+    assert actual == expected
+    assert not any(marker in actual for marker in ('\x02', '\r', '\n'))
+
+
+def test_pdf_physical_break_does_not_invent_hyphen_across_fragments():
+    from pdf_adapter import _join_lines, _merge_fragments
+
+    assert _join_lines(['Revenue\n', 'growth']) == 'Revenue growth'
+    fragments = [
+        {
+            'text': 'Revenue\n', 'bbox': [0, 0, 42, 10],
+            'layout_bbox': [0, 0, 42, 10], 'char_width': 6,
+        },
+        {
+            'text': 'growth', 'bbox': [48, 0, 84, 10],
+            'layout_bbox': [48, 0, 84, 10], 'char_width': 6,
+        },
+    ]
+
+    assert _merge_fragments(fragments) == 'Revenue growth'
+
+
+def test_pdf_unmapped_glyph_resolution_only_treats_hyphen_shape_as_hyphen():
+    from pdf_adapter import _join_lines, _resolve_unmapped_glyphs
+
+    fragment = {
+        'text': 'Organi\x02', 'font_size': 10, 'text_angle': 0,
+        'font_weight': 400, 'bbox': [0, 0, 40, 10], 'char_width': 5,
+    }
+    hyphen_characters = [
+        *[{'text': character, 'bbox': [index * 5, 0, index * 5 + 4, 7]} for index, character in enumerate('Organi')],
+        {'text': '\x02', 'bbox': [30, 3, 33, 3.7]},
+    ]
+    resolved, characters, unresolved = _resolve_unmapped_glyphs(fragment, hyphen_characters)
+
+    assert resolved['text'] == 'Organi-'
+    assert characters[-1]['text'] == '-'
+    assert unresolved == 0
+    assert _join_lines([resolved['text'], 'zation.']) == 'Organization.'
+
+    square_characters = [*hyphen_characters[:-1], {'text': '\x02', 'bbox': [30, 0, 37, 7]}]
+    resolved, characters, unresolved = _resolve_unmapped_glyphs(fragment, square_characters)
+    assert resolved['text'] == 'Organi�'
+    assert characters[-1]['text'] == '�'
+    assert unresolved == 1
+
+
+def test_pdf_dewrap_preserves_lexical_hyphen():
+    from pdf_adapter import _join_lines
+
+    assert _join_lines(['A state-of-', 'the-art system.']) == 'A state-of-the-art system.'
+    assert _join_lines(['The inter-', 'national market grew.']) == 'The international market grew.'
+    assert _join_lines(['A cost-', 'effective design.']) == 'A cost-effective design.'
+
+
+def test_pdf_merge_fragments_removes_boundary_newline():
+    from pdf_adapter import _merge_fragments
+
+    fragments = [
+        {
+            'text': 'Hello\n', 'bbox': [0, 0, 30, 10],
+            'layout_bbox': [0, 0, 30, 10], 'char_width': 6,
+        },
+        {
+            'text': 'world', 'bbox': [36, 0, 66, 10],
+            'layout_bbox': [36, 0, 66, 10], 'char_width': 6,
+        },
+    ]
+
+    assert _merge_fragments(fragments) == 'Hello world'
+
+
+def test_native_pdf_multiline_text_object_removes_physical_break_markers(tmp_path):
+    pdf = tmp_path / 'physical-wrap.pdf'
+
+    def draw(c):
+        text = c.beginText(72, 720)
+        text.setFont('Helvetica', 10)
+        text.textLine('Revenue increased')
+        text.textLine('during the period.')
+        text.textLine('The inter-')
+        text.textLine('national market grew.')
+        c.drawText(text)
+
+    _make_pdf(pdf, draw)
+    code, _, stderr, bundle = _run_bundle(pdf, tmp_path / 'out')
+
+    assert code == 0, stderr
+    data = _load_bundle(bundle)
+    paragraphs = [node['text'] for node in data['content'] if node['type'] == 'paragraph']
+    assert paragraphs == ['Revenue increased during the period. The international market grew.']
+    assert '\x02' not in (bundle / 'physical-wrap.md').read_text(encoding='utf-8')
+
+
+def test_pdf_dewrap_preserves_hard_paragraph_gap(tmp_path):
+    source = tmp_path / 'hard-paragraph-gap.pdf'
+
+    def draw(c):
+        text = c.beginText(72, 720)
+        text.setFont('Helvetica', 10)
+        text.textLine('First paragraph continues')
+        text.textLine('on its second line.')
+        text.textLine('')
+        text.textLine('Second paragraph starts here.')
+        c.drawText(text)
+
+    _make_pdf(source, draw)
+    code, _, stderr, bundle = _run_bundle(source, tmp_path / 'out')
+
+    assert code == 0, stderr
+    paragraphs = [
+        node['text'] for node in _load_bundle(bundle)['content']
+        if node['type'] == 'paragraph'
+    ]
+    assert paragraphs == [
+        'First paragraph continues on its second line.',
+        'Second paragraph starts here.',
+    ]
+
+
+def test_pdf_numbered_large_label_is_heading_before_list_detection():
+    from pdf_adapter import _classify_blocks
+
+    blocks = _classify_blocks(
+        [
+            _pdf_layout_line('1. Executive Summary', y=730, font_size=18),
+            _pdf_layout_line('Body paragraph one.', y=700, font_size=10),
+            _pdf_layout_line('Body paragraph two.', y=688, font_size=10),
+        ],
+        page_number=1,
+    )
+
+    assert blocks[0]['type'] == 'heading'
+    assert blocks[0]['level'] == 1
+    assert blocks[0]['text'] == '1. Executive Summary'
+
+    ordinary_list = _classify_blocks(
+        [
+            _pdf_layout_line('1. First item', y=730, font_size=10),
+            _pdf_layout_line('Ordinary body text.', y=700, font_size=10),
+        ],
+        page_number=1,
+    )
+    assert ordinary_list[0]['type'] == 'list_item'
+
+
+def test_document_body_size_uses_character_weighted_typography():
+    from pdf_adapter import _document_body_size
+
+    cover = [[_pdf_layout_line('Large Cover Title', y=700, font_size=28)]]
+    body = [[
+        _pdf_layout_line('A sufficiently long body paragraph for weighting.', y=700, font_size=10),
+        _pdf_layout_line('Another sufficiently long body paragraph.', y=680, font_size=10),
+    ]]
+
+    assert _document_body_size(cover + body) == pytest.approx(10.0)
+
+
+def test_document_typography_falls_back_to_line_height_when_font_size_is_degenerate():
+    from pdf_adapter import _classify_blocks
+
+    heading = _pdf_layout_line('Executive Summary', y=730, font_size=1)
+    heading['bbox'][3] = 752
+    heading['layout_bbox'][3] = 752
+    body_one = _pdf_layout_line('Ordinary body paragraph one.', y=700, font_size=1)
+    body_two = _pdf_layout_line('Ordinary body paragraph two.', y=686, font_size=1)
+
+    blocks = _classify_blocks(
+        [heading, body_one, body_two],
+        page_number=1,
+        document_body_size=1,
+        document_body_height=10,
+    )
+
+    assert blocks[0]['type'] == 'heading'
+    assert blocks[0]['level'] == 1
+    assert blocks[1]['type'] == 'paragraph'
+
+
+def test_document_typography_height_fallback_ignores_subscripts_and_rotated_text():
+    from pdf_adapter import _classify_blocks
+
+    heading = _pdf_layout_line('Executive Summary', y=730, font_size=1)
+    heading['bbox'][3] = heading['layout_bbox'][3] = 752
+    subscript = _pdf_layout_line('2', y=718, font_size=0.7, left=280, right=285)
+    rotated = _pdf_layout_line('CHART LABEL', y=620, font_size=1)
+    rotated['bbox'][3] = rotated['layout_bbox'][3] = 700
+    rotated['_layout_horizontal'] = False
+    body = _pdf_layout_line('Ordinary body paragraph.', y=590, font_size=1)
+
+    blocks = _classify_blocks(
+        [heading, subscript, rotated, body],
+        page_number=1,
+        document_body_size=1,
+        document_body_height=10,
+        document_has_heading_size_signal=False,
+    )
+
+    assert blocks[0]['type'] == 'heading'
+    rotated_block = next(block for block in blocks if 'CHART LABEL' in block['text'])
+    assert rotated_block['type'] == 'paragraph'
+
+
+def test_pdf_cjk_indent_does_not_force_independent_paragraphs_together():
+    from pdf_adapter import _classify_blocks
+
+    blocks = _classify_blocks(
+        [
+            _pdf_layout_line('第一段没有句号', y=700, left=50),
+            _pdf_layout_line('第二段另起缩进', y=688, left=90),
+        ],
+        page_number=1,
+        document_body_size=10,
+    )
+
+    assert [block['text'] for block in blocks] == ['第一段没有句号', '第二段另起缩进']
+
+
+def test_native_pdf_full_width_title_precedes_two_columns(tmp_path):
+    pdf = tmp_path / 'title-columns.pdf'
+
+    def draw(c):
+        c.setFont('Helvetica-Bold', 18)
+        c.drawCentredString(306, 750, 'Annual Research Report')
+        c.setFont('Helvetica', 11)
+        c.drawCentredString(306, 730, 'Executive overview')
+        c.setFont('Helvetica', 10)
+        for index, y in enumerate((700, 680, 660, 640), start=1):
+            c.drawString(60, y, f'L{index} left column')
+            c.drawString(340, y, f'R{index} right column')
+
+    _make_pdf(pdf, draw)
+    code, _, stderr, bundle = _run_bundle(pdf, tmp_path / 'out')
+
+    assert code == 0, stderr
+    data = _load_bundle(bundle)
+    assert data['content'][0]['type'] == 'heading'
+    assert data['content'][0]['normalized_text'] == 'Annual Research Report'
+    assert data['content'][1]['normalized_text'] == 'Executive overview'
+    ordered_text = '\n'.join(node.get('normalized_text', '') for node in data['content'])
+    anchors = [
+        'Annual Research Report', 'Executive overview',
+        'L1 left column', 'L2 left column', 'L3 left column', 'L4 left column',
+        'R1 right column', 'R2 right column', 'R3 right column', 'R4 right column',
+    ]
+    assert all(ordered_text.count(anchor) == 1 for anchor in anchors)
+    assert [ordered_text.index(anchor) for anchor in anchors] == sorted(ordered_text.index(anchor) for anchor in anchors)
+    assert any(item['code'] == 'multi_column_order_inferred' for item in data['quality']['warnings'])
 
 
 def test_ocr_required_page_publishes_partial_bundle(tmp_path):
@@ -1731,6 +2076,393 @@ def test_pdf_fake_ocr_provider_contract_can_supply_nodes(tmp_path):
     assert any(item['code'] == 'ocr_applied' for item in result['warnings'])
 
 
+def test_pdf_ocr_off_never_calls_provider(tmp_path):
+    from canonical import sha256_file
+    from pdf_adapter import PdfAdapter
+
+    source = tmp_path / 'ocr-off.pdf'
+    _make_pdf(source, lambda c: c.rect(72, 600, 200, 100, stroke=1, fill=0))
+
+    class RecordingOcr:
+        name = 'recording-ocr'
+
+        def __init__(self):
+            self.calls = []
+
+        def extract(self, _page, page_number):
+            self.calls.append(page_number)
+            return []
+
+    provider = RecordingOcr()
+    digest = sha256_file(source)
+    result = PdfAdapter(provider, ocr_mode='off').extract(
+        str(source), f'sha256:{digest}', 'preserve'
+    )
+
+    assert provider.calls == []
+    assert result['source_units'][0]['status'] == 'ocr_required'
+
+
+def test_pdf_ocr_auto_routing_ignores_small_logo_but_selects_dominant_scan():
+    from pdf_adapter import _analyze_ocr_need
+
+    healthy = _analyze_ocr_need(
+        'auto',
+        'A healthy born-digital paragraph with enough native text to trust.',
+        [{'text': 'healthy'}],
+        [[500, 740, 560, 780]],
+        1,
+        612,
+        792,
+        [],
+    )
+    scanned = _analyze_ocr_need(
+        'auto',
+        'Page 1',
+        [{'text': 'Page 1'}],
+        [[20, 20, 592, 772]],
+        1,
+        612,
+        792,
+        [],
+    )
+
+    assert healthy['should_run'] is False
+    assert scanned['should_run'] is True
+    assert 'sparse_text_with_dominant_image' in scanned['reasons']
+
+
+def test_pdf_ocr_auto_skips_native_page_and_recovers_scan_page(tmp_path):
+    from canonical import sha256_file
+    from pdf_adapter import PdfAdapter
+
+    source = tmp_path / 'mixed-ocr.pdf'
+
+    def draw(c):
+        c.drawString(72, 720, 'Native first page')
+        c.showPage()
+        c.rect(72, 600, 200, 100, stroke=1, fill=0)
+
+    _make_pdf(source, draw)
+
+    class RecordingOcr:
+        name = 'recording-ocr'
+
+        def __init__(self):
+            self.calls = []
+
+        def extract(self, _page, page_number):
+            self.calls.append(page_number)
+            return [{
+                'text': 'Recovered second page',
+                'bbox': [72.0, 600.0, 272.0, 700.0],
+                'confidence': 0.96,
+            }]
+
+    provider = RecordingOcr()
+    digest = sha256_file(source)
+    result = PdfAdapter(provider, ocr_mode='auto').extract(
+        str(source), f'sha256:{digest}', 'preserve'
+    )
+
+    assert provider.calls == [2]
+    text = '\n'.join(node.get('normalized_text', '') for node in result['content'])
+    assert text.index('Native first page') < text.index('Recovered second page')
+    assert result['source_units'][0]['status'] == 'complete'
+    assert result['source_units'][1]['status'] == 'warning'
+    assert any(item['code'] == 'ocr_applied' for item in result['warnings'])
+    recovered = next(node for node in result['content'] if 'Recovered second page' in node.get('text', ''))
+    assert recovered['source_locator']['extraction_method'] == 'ocr'
+    assert recovered['source_locator']['ocr_provider'] == 'recording-ocr'
+    assert recovered['source_locator']['ocr_confidence'] == pytest.approx(0.96)
+
+
+def test_pdf_ocr_records_reproducibility_provenance_without_changing_stable_ids(tmp_path):
+    from canonical import sha256_file
+    from ocr_provider import OcrPageResult, OcrSettings, OcrSpan
+    from pdf_adapter import PdfAdapter
+
+    source = tmp_path / 'ocr-provenance.pdf'
+    _make_pdf(source, lambda c: c.rect(72, 600, 200, 100, stroke=1, fill=0))
+
+    class ProvenanceOcr:
+        name = 'rapidocr'
+
+        def __init__(self, version, dpi):
+            self.version = version
+            self.settings = OcrSettings(mode='auto', language='ch', dpi=dpi)
+
+        def extract(self, _page, page_number):
+            polygon = ((72.0, 600.0), (272.0, 600.0), (272.0, 625.0), (72.0, 625.0))
+            return OcrPageResult(
+                page_number=page_number,
+                engine='rapidocr',
+                engine_version=self.version,
+                runtime='onnxruntime',
+                runtime_version='1.20.1',
+                model_profile='PP-OCRv6-small',
+                language='ch',
+                min_confidence=0.5,
+                spans=(OcrSpan('Auditable OCR text', 0.98, polygon, (72.0, 600.0, 272.0, 625.0)),),
+                requested_dpi=self.settings.dpi,
+                effective_dpi=self.settings.dpi,
+                raster_width=2448,
+                raster_height=3168,
+            )
+
+    digest = sha256_file(source)
+    first = PdfAdapter(ProvenanceOcr('3.9.2', 300)).extract(
+        str(source), f'sha256:{digest}', 'preserve'
+    )
+    second = PdfAdapter(ProvenanceOcr('future-version', 144)).extract(
+        str(source), f'sha256:{digest}', 'preserve'
+    )
+
+    provenance = first['source_units'][0]['locator']['ocr']
+    assert provenance == {
+        'provider': 'rapidocr',
+        'version': '3.9.2',
+        'runtime': 'onnxruntime',
+        'runtime_version': '1.20.1',
+        'model_profile': 'PP-OCRv6-small',
+        'language': 'ch',
+        'requested_dpi': 300.0,
+        'effective_dpi': 300.0,
+        'min_confidence': 0.5,
+        'raster_width': 2448,
+        'raster_height': 3168,
+        'usable_characters': 16,
+        'dropped_low_confidence': 0,
+        'dropped_invalid': 0,
+        'dropped_overlap': 0,
+        'replaced_native': 0,
+    }
+    assert first['source_units'][0]['id'] == second['source_units'][0]['id']
+    assert first['content'][0]['id'] == second['content'][0]['id']
+
+
+def test_pdf_ocr_required_page_keeps_partial_status_for_trivial_recovery(tmp_path):
+    from canonical import sha256_file
+    from pdf_adapter import PdfAdapter
+
+    source = tmp_path / 'trivial-ocr.pdf'
+    _make_pdf(source, lambda c: c.rect(72, 600, 200, 100, stroke=1, fill=0))
+
+    class TrivialOcr:
+        name = 'trivial-ocr'
+
+        def extract(self, _page, _page_number):
+            return [{'text': 'X', 'bbox': [72, 600, 90, 630], 'confidence': 0.99}]
+
+    digest = sha256_file(source)
+    result = PdfAdapter(TrivialOcr(), ocr_mode='auto').extract(
+        str(source), f'sha256:{digest}', 'preserve'
+    )
+
+    assert result['source_units'][0]['status'] == 'ocr_required'
+    assert any(item['code'] == 'ocr_incomplete_result' for item in result['warnings'])
+    assert any(item['code'] == 'ocr_required' for item in result['warnings'])
+
+
+def test_pdf_ocr_overlap_does_not_drop_semantically_different_contained_line():
+    from pdf_adapter import _merge_native_ocr_fragments
+
+    native = [{
+        'text': 'Page 1', 'bbox': [10, 10, 50, 20],
+        'font_size': 10, 'font_weight': 400, 'char_width': 5,
+    }]
+    ocr = [{
+        'text': 'Material financial disclosure completely different',
+        'bbox': [0, 0, 500, 40],
+        'font_size': 10, 'font_weight': 400, 'char_width': 5,
+        '_source_method': 'ocr', '_ocr_confidence': 0.98,
+    }]
+
+    merged, dropped_ocr, dropped_native = _merge_native_ocr_fragments(
+        native, ocr, native_unusable=False
+    )
+
+    assert {item['text'] for item in merged} == {
+        'Page 1', 'Material financial disclosure completely different'
+    }
+    assert dropped_ocr == 0
+    assert dropped_native == 0
+
+
+def test_pdf_ocr_force_deduplicates_native_overlap_and_keeps_spatial_order(tmp_path):
+    from canonical import sha256_file
+    from pdf_adapter import PdfAdapter
+
+    source = tmp_path / 'force-ocr.pdf'
+    _make_pdf(source, lambda c: c.drawString(72, 720, 'Native heading'))
+
+    class RecordingOcr:
+        name = 'recording-ocr'
+
+        def __init__(self):
+            self.calls = []
+
+        def extract(self, _page, page_number):
+            self.calls.append(page_number)
+            return [
+                {
+                    'text': 'Native heading',
+                    'bbox': [70.0, 715.0, 160.0, 735.0],
+                    'confidence': 0.99,
+                },
+                {
+                    'text': 'OCR-only lower line',
+                    'bbox': [72.0, 650.0, 220.0, 670.0],
+                    'confidence': 0.94,
+                },
+            ]
+
+    provider = RecordingOcr()
+    digest = sha256_file(source)
+    result = PdfAdapter(provider, ocr_mode='force').extract(
+        str(source), f'sha256:{digest}', 'preserve'
+    )
+
+    assert provider.calls == [1]
+    text = '\n'.join(node.get('normalized_text', '') for node in result['content'])
+    assert text.count('Native heading') == 1
+    assert text.count('OCR-only lower line') == 1
+    assert text.index('Native heading') < text.index('OCR-only lower line')
+
+
+def test_pdf_ocr_failure_is_normalized_and_preserves_other_pages(tmp_path):
+    from canonical import sha256_file
+    from ocr_provider import OcrProviderError
+    from pdf_adapter import PdfAdapter
+
+    source = tmp_path / 'failed-ocr.pdf'
+
+    def draw(c):
+        c.drawString(72, 720, 'Usable native page')
+        c.showPage()
+        c.rect(72, 600, 200, 100, stroke=1, fill=0)
+
+    _make_pdf(source, draw)
+
+    class FailingOcr:
+        name = 'failing-ocr'
+
+        def extract(self, _page, _page_number):
+            raise OcrProviderError('controlled test failure')
+
+    digest = sha256_file(source)
+    result = PdfAdapter(FailingOcr(), ocr_mode='auto').extract(
+        str(source), f'sha256:{digest}', 'preserve'
+    )
+
+    text = '\n'.join(node.get('normalized_text', '') for node in result['content'])
+    assert 'Usable native page' in text
+    assert result['source_units'][1]['status'] == 'ocr_required'
+    assert any(item['code'] == 'ocr_failed' for item in result['warnings'])
+    assert any(item['code'] == 'ocr_required' for item in result['warnings'])
+
+
+def test_rapidocr_provider_is_lazy_reused_and_maps_bitmap_to_pdf_coordinates():
+    from types import SimpleNamespace
+    from PIL import Image
+    from ocr_provider import OcrSettings, RapidOcrProvider
+
+    factory_calls = []
+    inference_calls = []
+
+    class Engine:
+        def __call__(self, image, **kwargs):
+            inference_calls.append((image.size, kwargs))
+            return SimpleNamespace(
+                boxes=[
+                    [[10, 10], [190, 10], [190, 30], [10, 30]],
+                    [[10, 40], [190, 40], [190, 60], [10, 60]],
+                ],
+                txts=['Mapped OCR line', 'Low confidence line'],
+                scores=[0.93, 0.2],
+                elapse=0.01,
+            )
+
+    def engine_factory():
+        factory_calls.append(True)
+        return Engine()
+
+    class PositionConverter:
+        def to_page(self, x, y):
+            return x / 2, 100 - y / 2
+
+    class Bitmap:
+        def __init__(self):
+            self.closed = False
+
+        def get_posconv(self, _page):
+            return PositionConverter()
+
+        def to_pil(self):
+            return Image.new('RGB', (400, 200), 'white')
+
+        def close(self):
+            self.closed = True
+
+    class Page:
+        def __init__(self):
+            self.bitmaps = []
+
+        def get_size(self):
+            return 200, 100
+
+        def render(self, **_kwargs):
+            bitmap = Bitmap()
+            self.bitmaps.append(bitmap)
+            return bitmap
+
+    provider = RapidOcrProvider(
+        OcrSettings(mode='auto', dpi=144, max_long_edge=4096, min_confidence=0.5),
+        engine_factory=engine_factory,
+    )
+    assert factory_calls == []
+
+    page = Page()
+    first = provider.extract(page, 1)
+    second = provider.extract(page, 2)
+
+    assert len(factory_calls) == 1
+    assert len(inference_calls) == 2
+    assert first.spans[0].bbox == pytest.approx((5.0, 85.0, 95.0, 95.0))
+    assert first.spans[0].confidence == pytest.approx(0.93)
+    assert first.dropped_low_confidence == 1
+    assert first.language == 'ch'
+    assert first.requested_dpi == 144
+    assert first.min_confidence == pytest.approx(0.5)
+    assert first.model_profile == 'PP-OCRv6-small'
+    assert first.runtime == 'injected'
+    assert second.page_number == 2
+    assert all(bitmap.closed for bitmap in page.bitmaps)
+
+
+def test_rapidocr_provider_caches_initialization_failure():
+    from ocr_provider import OcrSettings, OcrUnavailableError, RapidOcrProvider
+
+    calls = []
+
+    def unavailable_factory():
+        calls.append(True)
+        raise OcrUnavailableError('backend unavailable')
+
+    class Page:
+        def get_size(self):
+            return 200, 100
+
+    provider = RapidOcrProvider(
+        OcrSettings(mode='auto'), engine_factory=unavailable_factory
+    )
+    for _ in range(2):
+        with pytest.raises(OcrUnavailableError, match='backend unavailable'):
+            provider.extract(Page(), 1)
+
+    assert len(calls) == 1
+
+
 def test_pdf_rotation_is_normalized_while_source_orientation_is_recorded(tmp_path):
     source = tmp_path / 'rotated.pdf'
 
@@ -1752,6 +2484,8 @@ def test_pdf_rotation_is_normalized_while_source_orientation_is_recorded(tmp_pat
 
 
 def test_cross_page_paragraphs_merge_with_locator_span(tmp_path):
+    from canonical import stable_id
+
     source = tmp_path / 'continued.pdf'
 
     def draw(c):
@@ -1762,7 +2496,1350 @@ def test_cross_page_paragraphs_merge_with_locator_span(tmp_path):
     _make_pdf(source, draw)
     code, _, stderr, bundle = _run_bundle(source, tmp_path / 'out')
     assert code == 0, stderr
-    paragraphs = [node for node in _load_bundle(bundle)['content'] if node['type'] == 'paragraph']
+    data = _load_bundle(bundle)
+    paragraphs = [node for node in data['content'] if node['type'] == 'paragraph']
     assert len(paragraphs) == 1
     assert paragraphs[0]['text'] == 'This paragraph continues on the next page.'
     assert paragraphs[0]['source_locator']['continued_to_page'] == 2
+    assert [span['page'] for span in paragraphs[0]['source_locator']['spans']] == [1, 2]
+    assert paragraphs[0]['id'] == stable_id(
+        'node', data['document']['document_id'], paragraphs[0]['source_locator'], 'paragraph', 1,
+    )
+
+
+@pytest.mark.parametrize('blocker', ['completed', 'colon', 'middle', 'other_column'])
+def test_cross_page_paragraph_merge_respects_semantic_and_geometry_blockers(tmp_path, blocker):
+    source = tmp_path / f'blocked-{blocker}.pdf'
+
+    def draw(c):
+        previous = {
+            'completed': 'This sentence is complete.',
+            'colon': 'Key findings:',
+            'middle': 'This fragment continues',
+            'other_column': 'This fragment continues',
+        }[blocker]
+        previous_y = 400 if blocker == 'middle' else 72
+        c.drawString(72, previous_y, previous)
+        c.showPage()
+        current_x = 340 if blocker == 'other_column' else 72
+        c.drawString(current_x, 740, 'on the next page.')
+
+    _make_pdf(source, draw)
+    code, _, stderr, bundle = _run_bundle(source, tmp_path / 'out')
+
+    assert code == 0, stderr
+    paragraphs = [node for node in _load_bundle(bundle)['content'] if node['type'] == 'paragraph']
+    assert len(paragraphs) == 2
+    assert all('continued_to_page' not in node['source_locator'] for node in paragraphs)
+
+
+def test_cross_page_paragraph_merge_rejects_repeated_page_header(tmp_path):
+    source = tmp_path / 'repeated-header.pdf'
+
+    def draw(c):
+        c.drawString(72, 740, 'confidential report')
+        c.drawString(72, 72, 'This paragraph continues')
+        c.showPage()
+        c.drawString(72, 740, 'confidential report')
+
+    _make_pdf(source, draw)
+    code, _, stderr, bundle = _run_bundle(source, tmp_path / 'out')
+
+    assert code == 0, stderr
+    data = _load_bundle(bundle)
+    paragraphs = [node for node in data['content'] if node['type'] == 'paragraph']
+    boilerplate = [node for node in data['content'] if node['type'] == 'boilerplate']
+    assert [node['text'] for node in paragraphs] == ['This paragraph continues']
+    assert [node['text'] for node in boilerplate] == [
+        'confidential report', 'confidential report',
+    ]
+    markdown = (bundle / 'repeated-header.md').read_text(encoding='utf-8')
+    assert 'confidential report' not in markdown
+
+
+def test_cross_page_paragraph_merge_skips_classified_running_chrome(tmp_path):
+    source = tmp_path / 'continued-through-chrome.pdf'
+
+    def draw(c):
+        c.drawString(72, 760, 'CONFIDENTIAL REPORT')
+        c.drawString(72, 72, 'This paragraph continues')
+        c.drawString(72, 25, 'Acme Research')
+        c.showPage()
+        c.drawString(72, 760, 'CONFIDENTIAL REPORT')
+        c.drawString(72, 730, 'on the next page without truncation.')
+        c.drawString(72, 25, 'Acme Research')
+
+    _make_pdf(source, draw)
+    code, _, stderr, bundle = _run_bundle(source, tmp_path / 'out')
+
+    assert code == 0, stderr
+    data = _load_bundle(bundle)
+    paragraphs = [node for node in data['content'] if node['type'] == 'paragraph']
+    assert [node['text'] for node in paragraphs] == [
+        'This paragraph continues on the next page without truncation.'
+    ]
+    assert [span['page'] for span in paragraphs[0]['source_locator']['spans']] == [1, 2]
+
+
+def test_pdf_borderless_table_keeps_text_header_and_sparse_cells(tmp_path):
+    source = tmp_path / 'borderless-table.pdf'
+
+    def draw(c):
+        rows = [
+            ('Item', 'Region', 'Amount'),
+            ('Widget', 'North', '1,200'),
+            ('Service', '', '950'),
+        ]
+        for y, row in zip((710, 690, 670), rows):
+            if row[0]:
+                c.drawString(72, y, row[0])
+            if row[1]:
+                c.drawString(250, y, row[1])
+            if row[2]:
+                c.drawRightString(500, y, row[2])
+
+    _make_pdf(source, draw)
+    code, _, stderr, bundle = _run_bundle(source, tmp_path / 'out')
+
+    assert code == 0, stderr
+    data = _load_bundle(bundle)
+    assert len(data['tables']) == 1
+    assert data['tables'][0]['raw_rows'] == [
+        ['Item', 'Region', 'Amount'],
+        ['Widget', 'North', '1,200'],
+        ['Service', '', '950'],
+    ]
+    assert [node['type'] for node in data['content']] == ['table']
+
+
+def test_pdf_word_grid_splits_single_text_object_rows_and_keeps_sparse_cells(tmp_path):
+    source = tmp_path / 'single-object-table.pdf'
+
+    def draw(c):
+        c.setFont('Courier', 10)
+        rows = [
+            ('Item', 'Region', 'Amount'),
+            ('Widget', 'North', '1,200'),
+            ('Service', '', '950'),
+        ]
+        for y, row in zip((730, 710, 690), rows):
+            c.drawString(72, y, f'{row[0]:<20}{row[1]:<15}{row[2]:>10}')
+
+    _make_pdf(source, draw)
+    code, _, stderr, bundle = _run_bundle(source, tmp_path / 'out')
+
+    assert code == 0, stderr
+    data = _load_bundle(bundle)
+    assert len(data['tables']) == 1
+    assert data['tables'][0]['raw_rows'] == [
+        ['Item', 'Region', 'Amount'],
+        ['Widget', 'North', '1,200'],
+        ['Service', '', '950'],
+    ]
+    assert [node['type'] for node in data['content']] == ['table']
+
+
+def test_pdf_four_column_sparse_row_is_not_folded_into_previous_row(tmp_path):
+    source = tmp_path / 'four-column-sparse-row.pdf'
+
+    def draw(c):
+        rows = [
+            (730, ('H1', 'H2', 'H3', 'H4')),
+            (710, ('A1', 'A2', 'A3', '10')),
+            (690, ('B1', '', '', '20')),
+            (670, ('C1', 'C2', 'C3', '30')),
+        ]
+        for y, row in rows:
+            for x, value in zip((72, 200, 330, 480), row):
+                if value:
+                    c.drawString(x, y, value)
+
+    _make_pdf(source, draw)
+    code, _, stderr, bundle = _run_bundle(source, tmp_path / 'out')
+
+    assert code == 0, stderr
+    tables = _load_bundle(bundle)['tables']
+    assert len(tables) == 1
+    assert tables[0]['raw_rows'] == [
+        ['H1', 'H2', 'H3', 'H4'],
+        ['A1', 'A2', 'A3', '10'],
+        ['B1', '', '', '20'],
+        ['C1', 'C2', 'C3', '30'],
+    ]
+
+
+def test_pdf_header_only_column_does_not_disqualify_numeric_table(tmp_path):
+    source = tmp_path / 'header-only-column.pdf'
+
+    def draw(c):
+        for x, value in zip((72, 180, 290, 390, 470), ('Metric', 'Prior', 'Current', 'Rate', 'Reason')):
+            c.drawString(x, 730, value)
+        for y, row in (
+            (710, ('Revenue', '100', '120', '20% growth')),
+            (690, ('Profit', '20', '30', '50% margin')),
+        ):
+            for x, value in zip((72, 180, 290, 470), row):
+                c.drawString(x, y, value)
+
+    _make_pdf(source, draw)
+    code, _, stderr, bundle = _run_bundle(source, tmp_path / 'out')
+
+    assert code == 0, stderr
+    table = _load_bundle(bundle)['tables'][0]
+    assert table['raw_rows'] == [
+        ['Metric', 'Prior', 'Current', 'Rate', 'Reason'],
+        ['Revenue', '100', '120', '', '20% growth'],
+        ['Profit', '20', '30', '', '50% margin'],
+    ]
+
+
+def test_pdf_pure_text_label_value_table_is_not_split_into_columns(tmp_path):
+    source = tmp_path / 'label-value-table.pdf'
+
+    def draw(c):
+        for y, label, value in (
+            (710, 'Employee Name', 'Michael Tran'),
+            (690, 'Department', 'Client Services'),
+            (670, 'Manager Approver', 'Laura Simmons'),
+        ):
+            c.drawString(72, y, label)
+            c.drawString(250, y, value)
+
+    _make_pdf(source, draw)
+    code, _, stderr, bundle = _run_bundle(source, tmp_path / 'out')
+
+    assert code == 0, stderr
+    data = _load_bundle(bundle)
+    assert len(data['tables']) == 1
+    assert data['tables'][0]['raw_rows'] == [
+        ['Employee Name', 'Michael Tran'],
+        ['Department', 'Client Services'],
+        ['Manager Approver', 'Laura Simmons'],
+    ]
+    assert [node['type'] for node in data['content']] == ['table']
+
+
+def test_pdf_wrapped_table_line_can_continue_multiple_cells(tmp_path):
+    source = tmp_path / 'multi-cell-wrap.pdf'
+
+    def draw(c):
+        for x, text in ((72, 'Date'), (180, 'Description'), (390, 'Category')):
+            c.drawString(x, 730, text)
+        c.drawRightString(520, 730, 'Amount')
+        for x, text in ((72, 'January 5th,'), (180, 'Taxi from airport'), (390, 'Ground')):
+            c.drawString(x, 710, text)
+        c.drawRightString(520, 710, '$48.00')
+        c.drawString(72, 698, '2026')
+        c.drawString(390, 698, 'transportation')
+        for x, text in ((72, 'January 6th, 2026'), (180, 'Client dinner'), (390, 'Meals')):
+            c.drawString(x, 678, text)
+        c.drawRightString(520, 678, '$186.20')
+
+    _make_pdf(source, draw)
+    code, _, stderr, bundle = _run_bundle(source, tmp_path / 'out')
+
+    assert code == 0, stderr
+    table = _load_bundle(bundle)['tables'][0]
+    assert table['raw_rows'][1] == [
+        'January 5th, 2026', 'Taxi from airport', 'Ground transportation', '$48.00',
+    ]
+
+
+def test_pdf_patterned_tail_continuation_is_kept_but_total_row_is_separate(tmp_path):
+    source = tmp_path / 'tail-continuation-and-total.pdf'
+
+    def draw(c):
+        for x, text in ((72, 'Date'), (180, 'Description'), (390, 'Category')):
+            c.drawString(x, 730, text)
+        c.drawRightString(520, 730, 'Amount')
+        for y, date, description, category, amount in (
+            (710, 'January 5th,', 'Taxi', 'Ground', '$48.00'),
+            (678, 'January 6th,', 'Dinner', 'Meals', '$80.00'),
+        ):
+            c.drawString(72, y, date)
+            c.drawString(180, y, description)
+            c.drawString(390, y, category)
+            c.drawRightString(520, y, amount)
+            c.drawString(72, y - 12, '2026')
+        c.drawString(180, 640, 'Total Reimbursement')
+        c.drawRightString(520, 640, '$128.00')
+
+    _make_pdf(source, draw)
+    code, _, stderr, bundle = _run_bundle(source, tmp_path / 'out')
+
+    assert code == 0, stderr
+    data = _load_bundle(bundle)
+    expense_table = max(data['tables'], key=lambda table: len(table['raw_rows'][0]))
+    assert expense_table['raw_rows'] == [
+        ['Date', 'Description', 'Category', 'Amount'],
+        ['January 5th, 2026', 'Taxi', 'Ground', '$48.00'],
+        ['January 6th, 2026', 'Dinner', 'Meals', '$80.00'],
+    ]
+    assert 'Total Reimbursement' not in str(expense_table['raw_rows'])
+    assert any(
+        table is not expense_table and 'Total Reimbursement' in str(table['raw_rows'])
+        for table in data['tables']
+    )
+
+
+def test_pdf_wrapped_table_cell_and_multiple_tables_preserve_boundaries(tmp_path):
+    source = tmp_path / 'wrapped-and-multiple.pdf'
+
+    def draw(c):
+        c.drawString(72, 730, 'Description')
+        c.drawRightString(500, 730, 'Amount')
+        c.drawString(72, 710, 'Advisory services for the')
+        c.drawRightString(500, 710, '1,500')
+        c.drawString(72, 698, 'year ended December')
+        c.drawString(72, 678, 'Software')
+        c.drawRightString(500, 678, '900')
+        c.drawString(72, 630, 'Narrative between tables.')
+        c.drawString(72, 580, 'Category')
+        c.drawRightString(500, 580, 'Count')
+        c.drawString(72, 560, 'Open')
+        c.drawRightString(500, 560, '7')
+        c.drawString(72, 540, 'Closed')
+        c.drawRightString(500, 540, '3')
+
+    _make_pdf(source, draw)
+    code, _, stderr, bundle = _run_bundle(source, tmp_path / 'out')
+
+    assert code == 0, stderr
+    data = _load_bundle(bundle)
+    assert len(data['tables']) == 2
+    assert data['tables'][0]['raw_rows'] == [
+        ['Description', 'Amount'],
+        ['Advisory services for the year ended December', '1,500'],
+        ['Software', '900'],
+    ]
+    assert data['tables'][1]['raw_rows'] == [
+        ['Category', 'Count'],
+        ['Open', '7'],
+        ['Closed', '3'],
+    ]
+    assert [node['type'] for node in data['content']] == ['table', 'paragraph', 'table']
+    assert data['content'][1]['text'] == 'Narrative between tables.'
+
+
+def test_pdf_table_does_not_absorb_trailing_source_note(tmp_path):
+    source = tmp_path / 'table-with-source-note.pdf'
+
+    def draw(c):
+        for y, left, right in (
+            (730, 'Item', 'Amount'),
+            (710, 'Alpha', '10'),
+            (690, 'Beta', '20'),
+        ):
+            c.drawString(72, y, left)
+            c.drawRightString(500, y, right)
+        c.drawString(72, 678, 'Source: company filings')
+
+    _make_pdf(source, draw)
+    code, _, stderr, bundle = _run_bundle(source, tmp_path / 'out')
+
+    assert code == 0, stderr
+    data = _load_bundle(bundle)
+    assert data['tables'][0]['raw_rows'][-1] == ['Beta', '20']
+    assert [node['type'] for node in data['content']] == ['table', 'paragraph']
+    assert data['content'][1]['text'] == 'Source: company filings'
+
+
+def test_pdf_caption_between_compatible_rows_preserves_physical_order(tmp_path):
+    source = tmp_path / 'table-caption-order.pdf'
+
+    def draw(c):
+        for y, left, right in (
+            (730, 'Item', 'Amount'),
+            (710, 'Alpha', '10'),
+        ):
+            c.drawString(72, y, left)
+            c.drawRightString(500, y, right)
+        c.drawString(72, 698, 'Note: unaudited interim values.')
+        c.drawString(72, 678, 'Beta')
+        c.drawRightString(500, 678, '20')
+
+    _make_pdf(source, draw)
+    code, _, stderr, bundle = _run_bundle(source, tmp_path / 'out')
+
+    assert code == 0, stderr
+    data = _load_bundle(bundle)
+    content = data['content']
+    assert [node['type'] for node in content] == ['table', 'paragraph', 'table']
+    tables = {table['table_id']: table for table in data['tables']}
+    assert tables[content[0]['table_id']]['raw_rows'] == [['Item', 'Amount'], ['Alpha', '10']]
+    assert content[1]['text'] == 'Note: unaudited interim values.'
+    assert tables[content[2]['table_id']]['raw_rows'] == [['Beta', '20']]
+
+
+def test_pdf_adjacent_same_shape_tables_with_different_headers_remain_separate(tmp_path):
+    source = tmp_path / 'adjacent-independent-tables.pdf'
+
+    def draw(c):
+        for y, left, right in (
+            (740, 'Item', 'Amount'), (720, 'Alpha', '10'), (700, 'Beta', '20'),
+            (670, 'Metric', 'Value'), (650, 'Open', '7'), (630, 'Closed', '3'),
+        ):
+            c.drawString(72, y, left)
+            c.drawRightString(500, y, right)
+
+    _make_pdf(source, draw)
+    code, _, stderr, bundle = _run_bundle(source, tmp_path / 'out')
+
+    assert code == 0, stderr
+    tables = _load_bundle(bundle)['tables']
+    assert len(tables) == 2
+    assert tables[0]['raw_rows'][0] == ['Item', 'Amount']
+    assert tables[1]['raw_rows'][0] == ['Metric', 'Value']
+
+
+def test_pdf_cross_page_table_stitches_and_deduplicates_header(tmp_path):
+    from canonical import stable_id
+
+    source = tmp_path / 'continued-table.pdf'
+
+    def draw(c):
+        for y, left, right in (
+            (110, 'Item', 'Amount'),
+            (90, 'Alpha', '10'),
+            (70, 'Beta', '20'),
+        ):
+            c.drawString(72, y, left)
+            c.drawRightString(500, y, right)
+        c.showPage()
+        for y, left, right in (
+            (740, 'Item', 'Amount'),
+            (720, 'Gamma', '30'),
+            (700, 'Delta', '40'),
+        ):
+            c.drawString(72, y, left)
+            c.drawRightString(500, y, right)
+
+    _make_pdf(source, draw)
+    code, _, stderr, bundle = _run_bundle(source, tmp_path / 'out')
+
+    assert code == 0, stderr
+    data = _load_bundle(bundle)
+    assert len(data['tables']) == 1
+    table = data['tables'][0]
+    assert table['cross_page_continuation'] is True
+    assert table['raw_rows'] == [
+        ['Item', 'Amount'], ['Alpha', '10'], ['Beta', '20'],
+        ['Gamma', '30'], ['Delta', '40'],
+    ]
+    assert [span['page'] for span in table['source_locator']['spans']] == [1, 2]
+    assert data['content'][0]['source_locator'] == table['source_locator']
+    assert table['table_id'] == stable_id(
+        'table', data['document']['document_id'], table['source_locator'], 'table', 1,
+    )
+    assert data['content'][0]['id'] == stable_id(
+        'node', data['document']['document_id'], table['source_locator'], 'table', 1,
+    )
+
+
+def test_pdf_cross_page_table_stitching_skips_running_chrome_nodes():
+    from pdf_adapter import _merge_cross_page_tables
+
+    def locator(page, box):
+        return {
+            'source_unit_id': f'unit-{page}',
+            'page': page,
+            'bbox': box,
+            'layout_bbox': box,
+            'page_width': 612,
+            'page_height': 792,
+            'layout_column': 'single',
+            'column_ranges': [[50, 250], [300, 550]],
+            'table_detection': 'vector_grid',
+            'vector_rule_count': 6,
+        }
+
+    previous_locator = locator(1, [50, 0, 550, 45])
+    current_locator = locator(2, [50, 747, 550, 792])
+    tables = [
+        {
+            'table_id': 'table-1',
+            'source_locator': previous_locator,
+            'raw_rows': [['Name', 'Amount'], ['Alpha', '1']],
+            'rows': [['Name', 'Amount'], ['Alpha', '1']],
+        },
+        {
+            'table_id': 'table-2',
+            'source_locator': current_locator,
+            'raw_rows': [['Name', 'Amount'], ['Beta', '2']],
+            'rows': [['Name', 'Amount'], ['Beta', '2']],
+        },
+    ]
+    content = [
+        {'type': 'table', 'table_id': 'table-1', 'source_locator': previous_locator},
+        {'type': 'boilerplate', 'text': 'Confidential', 'source_locator': {'page': 1}},
+        {'type': 'page_label', 'text': '1', 'source_locator': {'page': 1}},
+        {'type': 'boilerplate', 'text': 'Confidential', 'source_locator': {'page': 2}},
+        {'type': 'table', 'table_id': 'table-2', 'source_locator': current_locator},
+    ]
+
+    _merge_cross_page_tables(content, tables)
+
+    assert len(tables) == 1
+    assert tables[0]['raw_rows'] == [
+        ['Name', 'Amount'], ['Alpha', '1'], ['Beta', '2']
+    ]
+    assert tables[0]['cross_page_continuation'] is True
+    assert [node['type'] for node in content] == [
+        'table', 'boilerplate', 'page_label', 'boilerplate'
+    ]
+    assert [span['page'] for span in tables[0]['source_locator']['spans']] == [1, 2]
+    assert all(
+        span['table_detection'] == 'vector_grid'
+        for span in tables[0]['source_locator']['spans']
+    )
+
+
+def test_pdf_same_shape_tables_away_from_page_edges_remain_independent(tmp_path):
+    source = tmp_path / 'independent-tables.pdf'
+
+    def draw(c):
+        for y, left, right in ((500, 'Item', 'Amount'), (480, 'Alpha', '10')):
+            c.drawString(72, y, left)
+            c.drawRightString(500, y, right)
+        c.showPage()
+        for y, left, right in ((740, 'Item', 'Amount'), (720, 'Beta', '20')):
+            c.drawString(72, y, left)
+            c.drawRightString(500, y, right)
+
+    _make_pdf(source, draw)
+    code, _, stderr, bundle = _run_bundle(source, tmp_path / 'out')
+
+    assert code == 0, stderr
+    data = _load_bundle(bundle)
+    assert len(data['tables']) == 2
+    assert all(not table.get('cross_page_continuation', False) for table in data['tables'])
+
+
+def test_pdf_boundary_tables_without_repeated_header_remain_independent(tmp_path):
+    source = tmp_path / 'boundary-independent-tables.pdf'
+
+    def draw(c):
+        for y, left, right in (
+            (110, 'Item', 'Amount'), (90, 'Alpha', '10'), (70, 'Beta', '20'),
+        ):
+            c.drawString(72, y, left)
+            c.drawRightString(500, y, right)
+        c.showPage()
+        for y, left, right in (
+            (740, 'Metric', 'Value'), (720, 'Open', '7'), (700, 'Closed', '3'),
+        ):
+            c.drawString(72, y, left)
+            c.drawRightString(500, y, right)
+
+    _make_pdf(source, draw)
+    code, _, stderr, bundle = _run_bundle(source, tmp_path / 'out')
+
+    assert code == 0, stderr
+    tables = _load_bundle(bundle)['tables']
+    assert len(tables) == 2
+    assert all(not table.get('cross_page_continuation', False) for table in tables)
+
+
+# --- v6.1.1 correctness foundation -------------------------------------------
+
+
+def test_pdf_running_chrome_is_canonical_but_hidden_from_markdown(tmp_path):
+    source = tmp_path / 'running-chrome.pdf'
+
+    def draw(c):
+        for page in range(1, 5):
+            if page == 1:
+                c.drawString(72, 765, 'Acme Capital letterhead')
+            if page == 3:
+                c.drawString(72, 748, 'One-page edge disclosure')
+            c.drawString(72, 730, 'CONFIDENTIAL REPORT')
+            c.drawString(72, 395, 'Recurring body marker')
+            c.drawString(72, 360, f'Unique body paragraph {page}.')
+            c.drawString(72, 45, 'Acme Research')
+            c.drawCentredString(306, 25, f'Page {page} of 4')
+            if page != 4:
+                c.showPage()
+
+    _make_pdf(source, draw)
+    code, _, stderr, bundle = _run_bundle(source, tmp_path / 'out')
+
+    assert code == 0, stderr
+    data = _load_bundle(bundle)
+    boilerplate = [node for node in data['content'] if node['type'] == 'boilerplate']
+    labels = [node for node in data['content'] if node['type'] == 'page_label']
+    assert [node['text'] for node in boilerplate].count('CONFIDENTIAL REPORT') == 4
+    assert [node['text'] for node in boilerplate].count('Acme Research') == 4
+    assert [node['text'] for node in labels] == [f'Page {page} of 4' for page in range(1, 5)]
+    assert all(node['source_locator']['page'] in {1, 2, 3, 4} for node in boilerplate + labels)
+
+    markdown = (bundle / 'running-chrome.md').read_text(encoding='utf-8')
+    assert 'CONFIDENTIAL REPORT' not in markdown
+    assert 'Acme Research' not in markdown
+    assert 'Page 1 of 4' not in markdown
+    assert 'Acme Capital letterhead' in markdown
+    assert 'One-page edge disclosure' in markdown
+    assert markdown.count('Recurring body marker') == 4
+    assert not any(
+        item['content_loss']
+        for item in data['quality']['warnings']
+        if item['code'] == 'running_chrome_classified'
+    )
+
+
+def _native_fragment(text, bbox, *, angle=0, object_index=1, container_context=()):
+    fragment = {
+        'text': text,
+        'bbox': list(bbox),
+        'text_angle': angle,
+        'font_size': 10.0,
+        'font_weight': 400,
+        'char_width': 5.0,
+        '_object_index': object_index,
+    }
+    if container_context:
+        fragment['_container_context'] = tuple(container_context)
+    return fragment
+
+
+def test_pdf_native_duplicate_paint_layer_deduplicates_exact_geometry_only():
+    from pdf_adapter import _deduplicate_native_fragments
+
+    exact = _native_fragment('Duplicate paint layer', [72, 700, 190, 712], object_index=1)
+    duplicate = _native_fragment('Duplicate paint layer', [72, 700, 190, 712], object_index=2)
+    retained, dropped = _deduplicate_native_fragments([exact, duplicate])
+
+    assert [item['text'] for item in retained] == ['Duplicate paint layer']
+    assert dropped == 1
+
+
+@pytest.mark.parametrize(
+    'candidate',
+    [
+        _native_fragment('Repeated label', [200, 700, 280, 712], object_index=2),
+        _native_fragment('Repeated label', [72, 700, 152, 712], angle=90, object_index=2),
+        _native_fragment('Repeated label', [73.25, 698.75, 153.25, 710.75], object_index=2),
+        _native_fragment('Different label', [72, 700, 152, 712], object_index=2),
+    ],
+    ids=['different-position', 'different-rotation', 'visible-shadow', 'different-text'],
+)
+def test_pdf_native_overlap_dedup_preserves_non_equivalent_layers(candidate):
+    from pdf_adapter import _deduplicate_native_fragments
+
+    original = _native_fragment('Repeated label', [72, 700, 152, 712], object_index=1)
+    retained, dropped = _deduplicate_native_fragments([original, candidate])
+
+    assert len(retained) == 2
+    assert dropped == 0
+
+
+def test_pdf_native_overlap_dedup_preserves_distinct_container_contexts():
+    from pdf_adapter import _deduplicate_native_fragments
+
+    first = _native_fragment(
+        'Nested Form content', [72, 700, 170, 712],
+        object_index=1, container_context=(101, 1),
+    )
+    second = _native_fragment(
+        'Nested Form content', [72, 700, 170, 712],
+        object_index=2, container_context=(202, 1),
+    )
+
+    retained, dropped = _deduplicate_native_fragments([first, second])
+
+    assert retained == [first, second]
+    assert dropped == 0
+
+
+def test_pdf_container_chain_identity_tracks_nested_form_ancestry():
+    import ctypes
+    from types import SimpleNamespace
+
+    from pdf_adapter import _container_chain_identity
+
+    page = SimpleNamespace(raw=ctypes.c_void_p(101), container=None)
+    outer_form = SimpleNamespace(raw=ctypes.c_void_p(202), container=page)
+    inner_form = SimpleNamespace(raw=ctypes.c_void_p(303), container=outer_form)
+    text_object = SimpleNamespace(container=inner_form)
+
+    assert _container_chain_identity(text_object) == (303, 202, 101)
+
+
+def test_pdf_character_geometry_refinement_preserves_internal_context():
+    from pdf_adapter import _fragments_from_character_geometry
+
+    fragment = _native_fragment(
+        'Alpha Beta', [72, 700, 130, 712],
+        object_index=7, container_context=(303, 9),
+    )
+    fragment['_object_key'] = 707
+    characters = [
+        {'text': char, 'bbox': [72 + index * 5, 700, 76 + index * 5, 712]}
+        for index, char in enumerate('Alpha Beta')
+    ]
+
+    refined = _fragments_from_character_geometry(fragment, characters)
+
+    assert [item['text'] for item in refined] == ['Alpha', 'Beta']
+    assert all(item['_container_context'] == (303, 9) for item in refined)
+    assert all(item['_object_key'] == 707 for item in refined)
+    assert all(item['_object_index'] == 7 for item in refined)
+
+
+def test_pdf_native_duplicate_paint_layer_emits_text_once(tmp_path):
+    source = tmp_path / 'duplicate-paint.pdf'
+
+    def draw(c):
+        c.drawString(72, 720, 'Duplicate paint layer')
+        c.drawString(72, 720, 'Duplicate paint layer')
+        c.drawString(72, 680, 'Independent body text.')
+
+    _make_pdf(source, draw)
+    code, _, stderr, bundle = _run_bundle(source, tmp_path / 'out')
+
+    assert code == 0, stderr
+    data = _load_bundle(bundle)
+    canonical_text = '\n'.join(node.get('text', '') for node in data['content'])
+    markdown = (bundle / 'duplicate-paint.md').read_text(encoding='utf-8')
+    assert canonical_text.count('Duplicate paint layer') == 1
+    assert markdown.count('Duplicate paint layer') == 1
+    assert 'Independent body text.' in markdown
+
+
+def test_pdf_ocr_auto_routes_fragment_and_unicode_map_failures():
+    from pdf_adapter import _analyze_ocr_need
+
+    fragment_failure = _analyze_ocr_need(
+        'auto',
+        'Healthy native text content ' * 8,
+        [],
+        [],
+        1,
+        612,
+        792,
+        [{'code': 'pdf_text_object_error', 'content_loss': True}],
+    )
+    unicode_failure = _analyze_ocr_need(
+        'auto',
+        'Readable-looking native text ' * 8,
+        [{'text': 'Readable-looking native text'}],
+        [],
+        1,
+        612,
+        792,
+        [],
+        unicode_map_error_ratio=0.35,
+    )
+
+    assert fragment_failure['should_run'] is True
+    assert fragment_failure['native_unusable'] is True
+    assert 'native_fragment_extraction_failed' in fragment_failure['reasons']
+    assert unicode_failure['should_run'] is True
+    assert unicode_failure['native_unusable'] is True
+    assert 'unicode_map_error' in unicode_failure['reasons']
+
+
+@pytest.mark.parametrize('provider_kind', ['failure', 'empty'])
+def test_pdf_ocr_force_only_failure_keeps_healthy_native_page(tmp_path, provider_kind):
+    from canonical import sha256_file
+    from ocr_provider import OcrProviderError
+    from pdf_adapter import PdfAdapter
+
+    source = tmp_path / f'force-{provider_kind}.pdf'
+    _make_pdf(
+        source,
+        lambda c: c.drawString(
+            72, 720, 'Healthy native paragraph remains authoritative after forced OCR.'
+        ),
+    )
+
+    class Provider:
+        name = 'controlled-ocr'
+
+        def extract(self, _page, _page_number):
+            if provider_kind == 'failure':
+                raise OcrProviderError('controlled failure')
+            return []
+
+    digest = sha256_file(source)
+    result = PdfAdapter(Provider(), ocr_mode='force').extract(
+        str(source), f'sha256:{digest}', 'preserve'
+    )
+
+    assert result['source_units'][0]['status'] == 'warning'
+    warning = next(
+        item for item in result['source_units'][0]['warnings']
+        if item['code'] == ('ocr_failed' if provider_kind == 'failure' else 'ocr_empty_result')
+    )
+    assert warning['content_loss'] is False
+    assert not any(item['code'] == 'ocr_required' for item in result['warnings'])
+    text = '\n'.join(node.get('text', '') for node in result['content'])
+    assert text.count('Healthy native paragraph remains authoritative after forced OCR.') == 1
+
+
+def test_pdf_ocr_elapsed_time_is_not_published_and_output_is_deterministic(tmp_path):
+    from canonical import sha256_file
+    from ocr_provider import OcrPageResult, OcrSettings, OcrSpan
+    from pdf_adapter import PdfAdapter
+
+    source = tmp_path / 'ocr-timing.pdf'
+    _make_pdf(source, lambda c: c.rect(72, 600, 200, 100, stroke=1, fill=0))
+
+    class TimedOcr:
+        name = 'timed-ocr'
+        version = '1.0'
+        settings = OcrSettings(mode='auto', dpi=144)
+
+        def __init__(self, elapsed):
+            self.elapsed = elapsed
+
+        def extract(self, _page, page_number):
+            polygon = ((72.0, 620.0), (250.0, 620.0), (250.0, 642.0), (72.0, 642.0))
+            return OcrPageResult(
+                page_number=page_number,
+                engine=self.name,
+                engine_version=self.version,
+                runtime='injected',
+                runtime_version='1.0',
+                model_profile='test',
+                language='ch',
+                min_confidence=0.5,
+                spans=(OcrSpan('Deterministic OCR result', 0.98, polygon, (72, 620, 250, 642)),),
+                requested_dpi=144,
+                effective_dpi=144,
+                raster_width=1224,
+                raster_height=1584,
+                elapsed_seconds=self.elapsed,
+            )
+
+    digest = sha256_file(source)
+    first = PdfAdapter(TimedOcr(0.01), ocr_mode='auto').extract(
+        str(source), f'sha256:{digest}', 'preserve'
+    )
+    second = PdfAdapter(TimedOcr(9.99), ocr_mode='auto').extract(
+        str(source), f'sha256:{digest}', 'preserve'
+    )
+
+    assert 'elapsed_seconds' not in first['source_units'][0]['locator']['ocr']
+    assert first == second
+
+
+def test_pdf_ocr_only_rotated_page_uses_polygon_for_display_order(tmp_path):
+    from canonical import sha256_file
+    from ocr_provider import OcrPageResult, OcrSettings, OcrSpan
+    from pdf_adapter import PdfAdapter
+
+    source = tmp_path / 'rotated-ocr-only.pdf'
+    _make_pdf(source, lambda c: c.rect(72, 600, 200, 100, stroke=1, fill=0))
+
+    class RotatedOcr:
+        name = 'rotated-ocr'
+        version = '1.0'
+        settings = OcrSettings(mode='auto', dpi=144)
+
+        def extract(self, _page, page_number):
+            first_polygon = ((100.0, 100.0), (100.0, 200.0), (120.0, 200.0), (120.0, 100.0))
+            second_polygon = ((200.0, 300.0), (200.0, 400.0), (220.0, 400.0), (220.0, 300.0))
+            return OcrPageResult(
+                page_number=page_number,
+                engine=self.name,
+                engine_version=self.version,
+                runtime='injected',
+                runtime_version='1.0',
+                model_profile='test',
+                language='ch',
+                min_confidence=0.5,
+                spans=(
+                    OcrSpan('First OCR line', 0.98, first_polygon, (100, 100, 120, 200)),
+                    OcrSpan('Second OCR line', 0.98, second_polygon, (200, 300, 220, 400)),
+                ),
+                requested_dpi=144,
+                effective_dpi=144,
+                raster_width=1224,
+                raster_height=1584,
+            )
+
+    digest = sha256_file(source)
+    result = PdfAdapter(RotatedOcr(), ocr_mode='auto').extract(
+        str(source), f'sha256:{digest}', 'preserve'
+    )
+
+    unit_locator = result['source_units'][0]['locator']
+    assert unit_locator['dominant_text_angle'] == 90
+    assert unit_locator['orientation_normalized'] is True
+    values = [node.get('text', '') for node in result['content']]
+    assert values == ['First OCR line', 'Second OCR line']
+    assert result['content'][0]['source_locator']['bbox'] == [100.0, 100.0, 120.0, 200.0]
+    assert result['content'][0]['source_locator']['layout_bbox'] != result['content'][0]['source_locator']['bbox']
+
+
+def test_pdf_two_column_tail_continues_into_right_column_once_with_spans(tmp_path):
+    source = tmp_path / 'column-flow.pdf'
+
+    def draw(c):
+        for y, text in (
+            (740, 'Left context one.'),
+            (650, 'Left context two.'),
+            (560, 'Left context three.'),
+            (470, 'Left context four.'),
+            (80, 'This analysis continues'),
+        ):
+            c.drawString(50, y, text)
+        for y, text in (
+            (740, 'on the next column without truncation.'),
+            (650, 'Right context one.'),
+            (560, 'Right context two.'),
+            (470, 'Right context three.'),
+            (380, 'Right context four.'),
+        ):
+            c.drawString(330, y, text)
+
+    _make_pdf(source, draw)
+    code, _, stderr, bundle = _run_bundle(source, tmp_path / 'out')
+
+    assert code == 0, stderr
+    data = _load_bundle(bundle)
+    joined = next(
+        node for node in data['content']
+        if node.get('text') == 'This analysis continues on the next column without truncation.'
+    )
+    spans = joined['source_locator']['spans']
+    assert [span['layout_column'] for span in spans] == ['left', 'right']
+    assert [span['page'] for span in spans] == [1, 1]
+    assert all('bbox' in span and 'layout_bbox' in span for span in spans)
+    markdown = (bundle / 'column-flow.md').read_text(encoding='utf-8')
+    assert markdown.count('This analysis continues') == 1
+    assert markdown.count('on the next column without truncation.') == 1
+
+
+# --- v6.2 vector-table enhancement -------------------------------------------
+
+
+def test_pdf_vector_ruled_grid_recovers_short_all_text_table(tmp_path):
+    source = tmp_path / 'vector-ruled-table.pdf'
+
+    def draw(c):
+        for x in (72, 250, 500):
+            c.line(x, 650, x, 730)
+        for y in (650, 690, 730):
+            c.line(72, y, 500, y)
+        c.drawString(82, 705, 'Category')
+        c.drawString(260, 705, 'Region')
+        c.drawString(82, 665, 'Services')
+        c.drawString(260, 665, 'Asia Pacific')
+
+    _make_pdf(source, draw)
+    code, _, stderr, bundle = _run_bundle(source, tmp_path / 'out')
+
+    assert code == 0, stderr
+    data = _load_bundle(bundle)
+    assert len(data['tables']) == 1
+    table = data['tables'][0]
+    assert table['raw_rows'] == [
+        ['Category', 'Region'],
+        ['Services', 'Asia Pacific'],
+    ]
+    assert table['headers'] == ['Category', 'Region']
+    assert table['source_locator']['table_detection'] == 'vector_grid'
+    assert table['source_locator']['column_ranges'] == [[72.0, 250.0], [250.0, 500.0]]
+
+
+def test_pdf_vector_ruled_grid_does_not_invent_numeric_data_header(tmp_path):
+    source = tmp_path / 'vector-data-only-table.pdf'
+
+    def draw(c):
+        for x in (72, 250, 500):
+            c.line(x, 650, x, 730)
+        for y in (650, 690, 730):
+            c.line(72, y, 500, y)
+        c.drawString(82, 705, 'Alpha')
+        c.drawString(260, 705, '101')
+        c.drawString(82, 665, 'Beta')
+        c.drawString(260, 665, '202')
+
+    _make_pdf(source, draw)
+    code, _, stderr, bundle = _run_bundle(source, tmp_path / 'out')
+
+    assert code == 0, stderr
+    table = _load_bundle(bundle)['tables'][0]
+    assert table['raw_rows'] == [['Alpha', '101'], ['Beta', '202']]
+    assert 'headers' not in table
+
+
+def test_pdf_vector_booktabs_uses_midrule_as_header_evidence(tmp_path):
+    source = tmp_path / 'vector-booktabs-table.pdf'
+
+    def draw(c):
+        for y in (620, 700, 740):
+            c.line(72, y, 500, y)
+        for y, left, right in (
+            (715, 'Business', 'Market'),
+            (670, 'Cloud services', 'Asia Pacific'),
+            (640, 'Advisory', 'Europe'),
+        ):
+            c.drawString(82, y, left)
+            c.drawString(330, y, right)
+
+    _make_pdf(source, draw)
+    code, _, stderr, bundle = _run_bundle(source, tmp_path / 'out')
+
+    assert code == 0, stderr
+    data = _load_bundle(bundle)
+    assert len(data['tables']) == 1
+    table = data['tables'][0]
+    assert table['raw_rows'] == [
+        ['Business', 'Market'],
+        ['Cloud services', 'Asia Pacific'],
+        ['Advisory', 'Europe'],
+    ]
+    assert table['headers'] == ['Business', 'Market']
+    assert table['source_locator']['table_detection'] == 'vector_booktabs'
+
+
+def test_pdf_vector_thin_filled_rectangles_act_as_booktabs_rules(tmp_path):
+    source = tmp_path / 'vector-filled-booktabs.pdf'
+
+    def draw(c):
+        for y in (620, 700, 740):
+            c.rect(72, y, 428, 1, stroke=0, fill=1)
+        for y, left, right in (
+            (715, 'Product', 'Territory'),
+            (670, 'Analytics', 'Americas'),
+            (640, 'Consulting', 'Europe'),
+        ):
+            c.drawString(82, y, left)
+            c.drawString(330, y, right)
+
+    _make_pdf(source, draw)
+    code, _, stderr, bundle = _run_bundle(source, tmp_path / 'out')
+
+    assert code == 0, stderr
+    data = _load_bundle(bundle)
+    assert len(data['tables']) == 1
+    assert data['tables'][0]['raw_rows'][0] == ['Product', 'Territory']
+    assert data['tables'][0]['source_locator']['table_detection'] == 'vector_booktabs'
+
+
+def test_pdf_vector_page_frame_is_not_a_table(tmp_path):
+    source = tmp_path / 'vector-page-frame.pdf'
+
+    def draw(c):
+        c.rect(20, 20, 572, 752, stroke=1, fill=0)
+        c.drawString(72, 720, 'Ordinary paragraph inside a decorative page frame.')
+
+    _make_pdf(source, draw)
+    code, _, stderr, bundle = _run_bundle(source, tmp_path / 'out')
+
+    assert code == 0, stderr
+    data = _load_bundle(bundle)
+    assert data['tables'] == []
+    assert 'Ordinary paragraph inside a decorative page frame.' in (
+        bundle / 'vector-page-frame.md'
+    ).read_text(encoding='utf-8')
+
+
+def test_pdf_vector_chart_grid_with_diagonal_falls_back_losslessly(tmp_path):
+    source = tmp_path / 'vector-chart-grid.pdf'
+
+    def draw(c):
+        for x in (100, 200, 300):
+            c.line(x, 100, x, 300)
+        for y in (100, 200, 300):
+            c.line(100, y, 300, y)
+        c.line(100, 100, 300, 300)
+        c.drawString(110, 250, 'Chart label alpha')
+        c.drawString(110, 150, 'Chart label beta')
+        c.drawString(72, 720, 'Narrative remains outside the chart.')
+
+    _make_pdf(source, draw)
+    code, _, stderr, bundle = _run_bundle(source, tmp_path / 'out')
+
+    assert code == 0, stderr
+    data = _load_bundle(bundle)
+    assert data['tables'] == []
+    markdown = (bundle / 'vector-chart-grid.md').read_text(encoding='utf-8')
+    assert 'Narrative remains outside the chart.' in markdown
+    assert 'Chart label alpha' in markdown
+    assert 'Chart label beta' in markdown
+
+
+# --- v6.2 recursive layout ----------------------------------------------------
+
+
+def test_pdf_aligned_three_column_prose_is_not_table_and_orders_column_major(tmp_path):
+    source = tmp_path / 'aligned-three-column-prose.pdf'
+
+    def draw(c):
+        for index, y in enumerate((740, 715, 690, 665), start=1):
+            c.drawString(35, y, f'L{index} left narrative sentence.')
+            c.drawString(225, y, f'M{index} middle narrative sentence.')
+            c.drawString(420, y, f'R{index} right narrative sentence.')
+
+    _make_pdf(source, draw)
+    code, _, stderr, bundle = _run_bundle(source, tmp_path / 'out')
+
+    assert code == 0, stderr
+    data = _load_bundle(bundle)
+    assert data['tables'] == []
+    markdown = (bundle / 'aligned-three-column-prose.md').read_text(encoding='utf-8')
+    labels = [f'{column}{index}' for column in 'LMR' for index in range(1, 5)]
+    positions = [markdown.index(label) for label in labels]
+    assert positions == sorted(positions)
+
+
+def test_pdf_recursive_layout_orders_three_staggered_columns(tmp_path):
+    source = tmp_path / 'staggered-three-columns.pdf'
+
+    def draw(c):
+        for index, y in enumerate((740, 710, 680), start=1):
+            c.drawString(35, y, f'L{index} left column.')
+        for index, y in enumerate((732, 702, 672), start=1):
+            c.drawString(225, y, f'M{index} middle column.')
+        for index, y in enumerate((724, 694, 664), start=1):
+            c.drawString(420, y, f'R{index} right column.')
+
+    _make_pdf(source, draw)
+    code, _, stderr, bundle = _run_bundle(source, tmp_path / 'out')
+
+    assert code == 0, stderr
+    markdown = (bundle / 'staggered-three-columns.md').read_text(encoding='utf-8')
+    labels = [f'{column}{index}' for column in 'LMR' for index in range(1, 4)]
+    positions = [markdown.index(label) for label in labels]
+    assert positions == sorted(positions)
+
+
+def test_pdf_recursive_layout_preserves_full_width_anchor_between_three_column_bands(tmp_path):
+    source = tmp_path / 'three-column-bands.pdf'
+
+    def draw(c):
+        for prefix, y in (('Top', 700), ('Bottom', 350)):
+            c.drawString(35, y, f'{prefix} left narrative.')
+            c.drawString(225, y, f'{prefix} middle narrative.')
+            c.drawString(420, y, f'{prefix} right narrative.')
+            c.drawString(35, y - 22, f'{prefix} left continuation.')
+            c.drawString(225, y - 22, f'{prefix} middle continuation.')
+            c.drawString(420, y - 22, f'{prefix} right continuation.')
+            c.drawString(35, y - 44, f'{prefix} left final line.')
+            c.drawString(225, y - 44, f'{prefix} middle final line.')
+            c.drawString(420, y - 44, f'{prefix} right final line.')
+        c.setFont('Helvetica-Bold', 14)
+        c.drawCentredString(306, 500, 'FULL WIDTH SECTION ANCHOR')
+
+    _make_pdf(source, draw)
+    code, _, stderr, bundle = _run_bundle(source, tmp_path / 'out')
+
+    assert code == 0, stderr
+    markdown = (bundle / 'three-column-bands.md').read_text(encoding='utf-8')
+    expected = [
+        'Top left narrative.', 'Top middle narrative.', 'Top right narrative.',
+        'FULL WIDTH SECTION ANCHOR',
+        'Bottom left narrative.', 'Bottom middle narrative.', 'Bottom right narrative.',
+    ]
+    positions = [markdown.index(value) for value in expected]
+    assert positions == sorted(positions)
+
+
+def test_pdf_recursive_layout_uses_full_width_image_as_band_obstacle(tmp_path):
+    from PIL import Image
+
+    image_path = tmp_path / 'wide-obstacle.png'
+    Image.new('RGB', (400, 80), 'navy').save(image_path)
+    source = tmp_path / 'image-obstacle-columns.pdf'
+
+    def draw(c):
+        for prefix, base_y in (('Top', 700), ('Bottom', 320)):
+            for index, y in enumerate((base_y, base_y - 22, base_y - 44), start=1):
+                c.drawString(35, y, f'{prefix} L{index} narrative.')
+                c.drawString(225, y, f'{prefix} M{index} narrative.')
+                c.drawString(420, y, f'{prefix} R{index} narrative.')
+        c.drawImage(str(image_path), 106, 430, width=400, height=80)
+
+    _make_pdf(source, draw)
+    code, _, stderr, bundle = _run_bundle(source, tmp_path / 'out')
+
+    assert code == 0, stderr
+    data = _load_bundle(bundle)
+    image_index = next(index for index, node in enumerate(data['content']) if node['type'] == 'image')
+    before = data['content'][:image_index]
+    after = data['content'][image_index + 1:]
+    before_text = '\n'.join(node.get('text', '') for node in before)
+    after_text = '\n'.join(node.get('text', '') for node in after)
+    assert all(f'Top {column}1 narrative.' in before_text for column in 'LMR')
+    assert all(f'Bottom {column}1 narrative.' in after_text for column in 'LMR')
+    assert not any('Bottom ' in node.get('text', '') for node in before)
+    assert not any('Top ' in node.get('text', '') for node in after)
+
+
+def test_pdf_recursive_layout_keeps_currency_form_rows_in_physical_order():
+    from pdf_adapter import _classify_blocks, _order_lines
+
+    def cell(text, left, right, y):
+        box = [left, y, right, y + 10]
+        return {'text': text, 'bbox': box, 'layout_bbox': box}
+
+    lines = [
+        _pdf_layout_line(
+            'Total Reimbursement $1,701.64', y=520, left=278, right=531,
+            cells=[
+                cell('Total Reimbursement', 278, 374, 520),
+                cell('$1,701.64', 489, 531, 520),
+            ],
+        ),
+        _pdf_layout_line('Reimbursement Method', y=485, left=58, right=183),
+        _pdf_layout_line(
+            'Reimbursement Method Direct deposit', y=455, left=58, right=293,
+            cells=[
+                cell('Reimbursement Method', 58, 172, 455),
+                cell('Direct deposit', 231, 293, 455),
+            ],
+        ),
+        _pdf_layout_line('Notes', y=420, left=58, right=88),
+        _pdf_layout_line(
+            'All receipts are attached and comply with company travel',
+            y=390, left=57, right=528,
+        ),
+        _pdf_layout_line('policy.', y=376, left=58, right=85),
+        _pdf_layout_line('Approval', y=343, left=57, right=103),
+        _pdf_layout_line(
+            'Laura Simmons, Manager Michael Tran, Employee', y=285,
+            left=58, right=392,
+            cells=[
+                cell('Laura Simmons, Manager', 58, 200, 285),
+                cell('Michael Tran, Employee', 297, 392, 285),
+            ],
+        ),
+    ]
+
+    ordered, layout = _order_lines(lines, 612)
+
+    ordered_text = [line['text'] for line in ordered]
+    assert layout is None
+    assert ordered_text[0] == 'Total Reimbursement $1,701.64'
+    assert ordered_text.index('Direct deposit') < ordered_text.index('Notes')
+    blocks = _classify_blocks(
+        ordered,
+        2,
+        document_body_size=10,
+        document_body_height=10,
+        document_has_heading_size_signal=False,
+    )
+    assert any(
+        'All receipts are attached and comply with company travel policy.'
+        in block.get('text', '')
+        for block in blocks
+    )
+
+
+# --- v6.2 typography and sequence evidence -----------------------------------
+
+
+def test_pdf_body_size_bold_wrapped_heading_uses_context(tmp_path):
+    source = tmp_path / 'body-size-bold-heading.pdf'
+
+    def draw(c):
+        c.setFont('Helvetica-Bold', 12)
+        c.drawString(72, 740, 'Strategic priorities and')
+        c.drawString(72, 725, 'market positioning')
+        c.setFont('Helvetica', 12)
+        c.drawString(72, 690, 'The ordinary body paragraph begins here and continues.')
+        c.drawString(72, 674, 'It contains the document body typography evidence.')
+
+    _make_pdf(source, draw)
+    code, _, stderr, bundle = _run_bundle(source, tmp_path / 'out')
+
+    assert code == 0, stderr
+    data = _load_bundle(bundle)
+    headings = [node for node in data['content'] if node['type'] == 'heading']
+    assert [node['text'] for node in headings] == [
+        'Strategic priorities and market positioning'
+    ]
+    assert headings[0]['level'] == 3
+
+
+@pytest.mark.parametrize(
+    'value',
+    [
+        'Figure 2. Revenue trend',
+        'Table 4. Segment results',
+        'Risk factors ................ 12',
+        'A.',
+        'I.',
+    ],
+)
+def test_pdf_heading_evidence_rejects_caption_toc_and_marker(value):
+    from pdf_adapter import _classify_blocks
+
+    candidate = _pdf_layout_line(value, y=730, font_size=10)
+    candidate['font_weight'] = 700
+    body = _pdf_layout_line(
+        'Ordinary body paragraph provides regular-weight context.', y=690, font_size=10
+    )
+    blocks = _classify_blocks([candidate, body], page_number=1)
+
+    assert blocks[0]['type'] == 'paragraph'
+
+
+@pytest.mark.parametrize(
+    ('values', 'ordinals'),
+    [
+        (['A) Alpha item', 'B) Beta item', 'C) Gamma item'], [1, 2, 3]),
+        (['(i) First roman item', '(ii) Second roman item', '(iii) Third roman item'], [1, 2, 3]),
+    ],
+)
+def test_pdf_alpha_and_roman_runs_emit_true_ordinals(values, ordinals):
+    from pdf_adapter import _classify_blocks
+
+    lines = [
+        _pdf_layout_line(value, y=730 - index * 24, font_size=10)
+        for index, value in enumerate(values)
+    ]
+    blocks = _classify_blocks(lines, page_number=1)
+
+    assert [block['type'] for block in blocks] == ['list_item'] * 3
+    assert [block['ordered'] for block in blocks] == [True, True, True]
+    assert [block['ordinal'] for block in blocks] == ordinals
+    assert [block['text'] for block in blocks] == [
+        value.split(maxsplit=1)[1] for value in values
+    ]
+    assert [block['raw_text'] for block in blocks] == values
+
+
+@pytest.mark.parametrize('value', ['A. Smith', 'I. Introduction'])
+def test_pdf_isolated_alpha_or_roman_marker_remains_paragraph(value):
+    from pdf_adapter import _classify_blocks
+
+    blocks = _classify_blocks(
+        [
+            _pdf_layout_line(value, y=730, font_size=10),
+            _pdf_layout_line('Ordinary prose follows.', y=690, font_size=10),
+        ],
+        page_number=1,
+    )
+
+    assert blocks[0]['type'] == 'paragraph'
+
+
+def test_pdf_list_marker_is_not_duplicated_in_markdown(tmp_path):
+    source = tmp_path / 'alpha-list.pdf'
+
+    def draw(c):
+        for y, value in zip(
+            (730, 705, 680),
+            ('A) Alpha item', 'B) Beta item', 'C) Gamma item'),
+        ):
+            c.drawString(72, y, value)
+
+    _make_pdf(source, draw)
+    code, _, stderr, bundle = _run_bundle(source, tmp_path / 'out')
+
+    assert code == 0, stderr
+    data = _load_bundle(bundle)
+    items = [node for node in data['content'] if node['type'] == 'list_item']
+    assert [node['ordinal'] for node in items] == [1, 2, 3]
+    assert [node['raw_text'] for node in items] == [
+        'A) Alpha item', 'B) Beta item', 'C) Gamma item'
+    ]
+    markdown = (bundle / 'alpha-list.md').read_text(encoding='utf-8')
+    assert '1. Alpha item' in markdown
+    assert '2. Beta item' in markdown
+    assert '3. Gamma item' in markdown
+    assert 'A) Alpha item' not in markdown

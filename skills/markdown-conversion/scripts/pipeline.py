@@ -34,11 +34,21 @@ from canonical import (
     validate_canonical,
 )
 from canonical import MOJIBAKE_PATTERNS
+from ocr_provider import NullOcrProvider, OcrSettings, RapidOcrProvider
 from pdf_adapter import PdfAdapter, transform_bbox_for_orientation
 
 
-VERSION = "6.0.0"
-DEFAULT_CONFIG: dict[str, Any] = {}
+VERSION = "6.2.0"
+DEFAULT_CONFIG: dict[str, Any] = {
+    "pdf_ocr": {
+        "mode": "auto",
+        "engine": "rapidocr",
+        "language": "ch",
+        "dpi": 300.0,
+        "max_long_edge": 4096,
+        "min_confidence": 0.5,
+    }
+}
 CONFIG_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "config.json")
 SUPPORTED_EXTENSIONS = {
     ".pdf", ".docx", ".doc", ".pptx", ".ppt", ".xlsx", ".xls",
@@ -54,6 +64,8 @@ DEPS = [
     ("pypdfium2", "pypdfium2", True),
     ("chardet", "chardet", True),
     ("doc2docx", "doc2docx", False),
+    ("rapidocr", "rapidocr", False),
+    ("onnxruntime", "onnxruntime", False),
 ]
 _rfc3339_datetime_re = re.compile(
     r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$"
@@ -152,8 +164,43 @@ def load_config() -> dict[str, Any]:
         print(f"Warning: config.json parse error ({exc}), using defaults", file=sys.stderr)
         return dict(DEFAULT_CONFIG)
     result = dict(DEFAULT_CONFIG)
-    result.update(value)
+    for key, item in value.items():
+        if isinstance(item, dict) and isinstance(DEFAULT_CONFIG.get(key), dict):
+            result[key] = {**DEFAULT_CONFIG[key], **item}
+        else:
+            result[key] = item
     return result
+
+
+def resolve_ocr_settings(args, config: dict[str, Any]) -> OcrSettings:
+    raw = config.get("pdf_ocr", {})
+    if not isinstance(raw, dict):
+        die("config pdf_ocr must be an object")
+    values = dict(raw)
+    overrides = {
+        "mode": getattr(args, "ocr", None),
+        "engine": getattr(args, "ocr_engine", None),
+        "language": getattr(args, "ocr_language", None),
+        "dpi": getattr(args, "ocr_dpi", None),
+        "max_long_edge": getattr(args, "ocr_max_long_edge", None),
+        "min_confidence": getattr(args, "ocr_min_confidence", None),
+    }
+    values.update({key: value for key, value in overrides.items() if value is not None})
+    try:
+        settings = OcrSettings.from_mapping(values)
+    except (TypeError, ValueError) as exc:
+        die(f"Invalid PDF OCR configuration: {exc}")
+    if settings.mode != "off" and settings.engine != "rapidocr":
+        die(f"Unsupported OCR engine: {settings.engine}")
+    return settings
+
+
+def create_ocr_provider(settings: OcrSettings):
+    if settings.mode == "off":
+        return NullOcrProvider(settings)
+    if settings.engine == "rapidocr":
+        return RapidOcrProvider(settings)
+    raise PipelineError(f"Unsupported OCR engine: {settings.engine}")
 
 
 def _normalize_mode(args) -> None:
@@ -303,6 +350,8 @@ def _extract(
     mode: str,
     asset_dir: Path | None,
     identity_source: str | None = None,
+    ocr_provider=None,
+    ocr_mode: str = "off",
 ) -> tuple[dict[str, Any], dict[str, Any], str]:
     identity_source = identity_source or source
     if is_url(source):
@@ -323,7 +372,9 @@ def _extract(
         return result, source_record, document_id
     source_record, document_id = _source_record(identity_source)
     if Path(source).suffix.lower() == ".pdf":
-        result = PdfAdapter().extract(source, document_id, mode, asset_dir)
+        result = PdfAdapter(ocr_provider, ocr_mode=ocr_mode).extract(
+            source, document_id, mode, asset_dir
+        )
     else:
         result = MarkItDownAdapter().extract(source, document_id, mode, asset_dir)
     return result, source_record, document_id
@@ -336,9 +387,18 @@ def _build_document(
     output_mode: str,
     asset_dir: Path | None,
     identity_source: str | None = None,
+    ocr_provider=None,
+    ocr_mode: str = "off",
 ) -> dict[str, Any]:
     identity_source = identity_source or source
-    extracted, source_record, document_id = _extract(source, normalization, asset_dir, identity_source)
+    extracted, source_record, document_id = _extract(
+        source,
+        normalization,
+        asset_dir,
+        identity_source,
+        ocr_provider,
+        ocr_mode,
+    )
     title = extracted.get("title") or _source_stem(identity_source)
     if title == "untitled":
         title = _source_stem(identity_source)
@@ -420,6 +480,8 @@ def _write_markdown_file(markdown: str, target: Path, overwrite: bool) -> None:
 
 def convert_one(args, source: str, relative_path: Path | None = None) -> tuple[Path, str, list[dict[str, Any]]]:
     target = _preflight_target(resolve_target(args, source, relative_path), source, args.overwrite, args.rename)
+    ocr_settings = getattr(args, "ocr_settings", OcrSettings(mode="off", engine="none"))
+    ocr_provider = getattr(args, "ocr_provider", None)
     temporary_docx: str | None = None
     actual_source = source
     if not is_url(source) and Path(source).suffix.lower() == ".doc":
@@ -434,6 +496,8 @@ def convert_one(args, source: str, relative_path: Path | None = None) -> tuple[P
                 document = _build_document(
                     actual_source, args.timestamp, args.language_normalization, "bundle", asset_dir,
                     identity_source=source,
+                    ocr_provider=ocr_provider,
+                    ocr_mode=ocr_settings.mode,
                 )
                 markdown_name = f"{target.stem}.md"
                 json_name = f"{target.stem}.json"
@@ -461,6 +525,8 @@ def convert_one(args, source: str, relative_path: Path | None = None) -> tuple[P
             document = _build_document(
                 actual_source, args.timestamp, args.language_normalization, "markdown", None,
                 identity_source=source,
+                ocr_provider=ocr_provider,
+                ocr_mode=ocr_settings.mode,
             )
             markdown = render_markdown(document, not args.no_frontmatter, "markdown")
             document["outputs"] = {
@@ -553,6 +619,17 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--timestamp", default="")
     parser.add_argument("--no-recursive", action="store_true")
     parser.add_argument("--types", default="")
+    parser.add_argument(
+        "--ocr",
+        choices=["off", "auto", "force"],
+        default=None,
+        help="PDF OCR policy; defaults to config pdf_ocr.mode (auto)",
+    )
+    parser.add_argument("--ocr-engine", choices=["rapidocr"], default=None)
+    parser.add_argument("--ocr-language", default=None)
+    parser.add_argument("--ocr-dpi", type=float, default=None)
+    parser.add_argument("--ocr-max-long-edge", type=int, default=None)
+    parser.add_argument("--ocr-min-confidence", type=float, default=None)
     return parser
 
 
@@ -564,7 +641,9 @@ def main() -> int:
         return 0
     if args.config:
         CONFIG_PATH = str(Path(args.config).resolve())
-    load_config()
+    config = load_config()
+    args.ocr_settings = resolve_ocr_settings(args, config)
+    args.ocr_provider = create_ocr_provider(args.ocr_settings)
     precheck(args)
     args.timestamp = resolve_timestamp(args.timestamp)
     if args.input_dir:
