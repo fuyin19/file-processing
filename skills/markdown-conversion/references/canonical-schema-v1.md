@@ -1,6 +1,6 @@
 # Canonical JSON v1
 
-`<stem>.json` is the canonical, loss-aware output of `markdown-conversion` v6.2.
+`<stem>.json` is the canonical, loss-aware output of `markdown-conversion` v6.3.
 The machine-readable schema is `../schemas/canonical-v1.schema.json`.
 
 ## Top-level fields
@@ -26,9 +26,14 @@ The machine-readable schema is `../schemas/canonical-v1.schema.json`.
 - `document.document_id` is `sha256:<source.sha256>`; no registry is required.
 - IDs are deterministic hashes of document ID, source locator, node type, and
   occurrence. They contain no timestamp or random value.
-- `adapter` records only backend name/version and static limitations.
-- `source_units` represent pages or logical Office documents and carry locator,
-  extraction status, and unit-level warnings.
+- `adapter` records only backend name/version and static limitations. Local PDF
+  output names `pdf-inspector` as the backend. The full Inspector document
+  retains Inspector provenance; OCR nodes carry exact page provenance whether
+  triggered per page, by `force`, or by a document-level safety fallback.
+- `source_units` represent logical documents and/or pages and carry locator,
+  extraction status, and unit-level warnings. PDF output includes one
+  document-range unit for Inspector content plus page units for exact OCR and
+  image provenance.
 
 ## Text and reading order
 
@@ -42,17 +47,19 @@ Every text-bearing node stores:
 }
 ```
 
-`raw_text` means the raw characters returned by the adapter, not raw OOXML/PDF
-binary syntax. Code, URLs, paths, IDs, hashes, and formulas are protected during
-language normalization. For born-digital PDFs, the adapter only resolves an
-unmapped character as a hyphen when its glyph box is hyphen-like; otherwise it
-uses the replacement character and records a content-loss warning.
+`raw_text` means the raw characters returned by the selected adapter, not
+raw OOXML/PDF binary syntax. Code, URLs, paths, IDs, hashes, and formulas are
+protected during language normalization. Full-document PDF Inspector nodes
+record `extraction_method: pdf-inspector` and `page_range`; OCR replacement nodes record
+`extraction_method: ocr` plus their provider, version, confidence, and page
+geometry. PDFium native text is not emitted as a fallback. Standard Adobe CJK Identity fonts missing
+`ToUnicode` are repaired only in a temporary PDF copy before Inspector runs.
 
 When optional PDF OCR contributes to a node, its open `source_locator` records
-`extraction_method` (`ocr` or `native+ocr`), `ocr_provider`, `ocr_version`, and
+`extraction_method: ocr`, `ocr_provider`, `ocr_version`, and
 the conservative minimum `ocr_confidence` represented by that node. OCR boxes
 are converted from raster coordinates back to the same PDF canvas coordinate
-system used by native text. These provenance fields do not change the ordered
+system used by PDF page locators. These provenance fields do not change the ordered
 content or text-field contract.
 
 The page source unit's open `locator.ocr` object records the provider and
@@ -79,21 +86,22 @@ normalized text, spans, and an optional parsed value. Headers, caption, units,
 currency, period, footnotes, and cross-page continuation are optional; the
 pipeline never invents them.
 
-The open table locator may include `table_detection` (`word_grid`,
-`vector_grid`, or `vector_booktabs`) and `vector_rule_count`. Vector-derived
-tables require high-confidence geometry; decorative frames, diagonal chart
-geometry, and ambiguous aligned prose remain outside table output.
+The open table locator may include adapter-specific detection metadata. The
+main PDF path publishes Inspector's Markdown tables without PDFium
+repartitioning, header inference, continuation stitching, or semantic
+reclassification.
 
-When one logical paragraph or table crosses pages, its locator may include a
-`spans` array. Every nested span carries its page/source-unit provenance and is
-validated against `source_units`; stable node/table IDs are generated only
-after continuation stitching is complete.
+For adapters that emit one stitched logical paragraph or table across pages,
+its locator may include a `spans` array. Every nested span carries its
+page/source-unit provenance and is validated against `source_units`; stable
+node/table IDs are generated only after any adapter-provided stitching is
+complete. The v6.3 Inspector path does not perform this stitching and instead
+uses document-range provenance for Inspector nodes.
 
-Repeated running headers, footers, and page labels are represented as
-`boilerplate` or `page_label` content nodes. They remain available to canonical
-consumers and preserve locators, but the default Markdown renderer suppresses
-them. This allows continuation stitching to pass over page chrome without
-silently deleting source provenance.
+The main PDF path adds no custom running-header, footer, or page-label rewrite;
+PDF Inspector's full-document defaults are authoritative. The `boilerplate`
+and `page_label` node types remain valid for other adapters, but the main PDF
+path does not infer them from PDFium native text.
 
 Asset paths are bundle-relative and cannot contain `..`. Every asset records a
 SHA-256, media type, source locator, alt, and caption. Publication fails on a
@@ -103,6 +111,11 @@ PDF and referenced DOCX/PPTX/XLSX images use this same structure. Office asset
 locators include the OOXML package part; repeated uses of one embedded binary
 share one asset record and appear as separate `content` image references.
 Rendered Markdown uses the asset's bundle-relative `path` unchanged.
+PDF bundle images are exported by a lightweight PDFium image-object pass. Raw
+neighboring text may be consulted only to prove an image insertion point; it is
+not emitted and does not alter Inspector paragraphs, headings, lists, or tables.
+An image with an ambiguous position remains an asset without an invented
+reading-order placement and produces a warning.
 
 ## Quality and publication
 

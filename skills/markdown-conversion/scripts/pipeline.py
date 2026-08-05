@@ -35,10 +35,10 @@ from canonical import (
 )
 from canonical import MOJIBAKE_PATTERNS
 from ocr_provider import NullOcrProvider, OcrSettings, RapidOcrProvider
-from pdf_adapter import PdfAdapter, transform_bbox_for_orientation
+from pdf_inspector_adapter import PdfInspectorAdapter
 
 
-VERSION = "6.2.0"
+VERSION = "6.3.0"
 DEFAULT_CONFIG: dict[str, Any] = {
     "pdf_ocr": {
         "mode": "auto",
@@ -62,6 +62,9 @@ DEPS = [
     ("markdown_it", "markdown-it-py", True),
     ("jsonschema", "jsonschema", True),
     ("pypdfium2", "pypdfium2", True),
+    ("pdf_inspector", "pdf-inspector==0.2.6", True),
+    ("pypdf", "pypdf==6.14.2", True),
+    ("pdfminer", "pdfminer.six==20251230", True),
     ("chardet", "chardet", True),
     ("doc2docx", "doc2docx", False),
     ("rapidocr", "rapidocr", False),
@@ -114,15 +117,39 @@ def _source_stem(source: str) -> str:
 
 
 def _ensure_package(package: str, install_name: str | None = None):
-    try:
-        return __import__(package)
-    except ImportError:
+    install_name = install_name or package
+    distribution_name = re.split(r"[<>=!~]", install_name, maxsplit=1)[0]
+    exact_match = re.fullmatch(r"[^=<>!~]+==([^=<>!~]+)", install_name)
+    install_required = False
+    if exact_match is not None:
+        try:
+            installed = importlib.metadata.version(distribution_name)
+        except importlib.metadata.PackageNotFoundError:
+            installed = ""
+        install_required = installed != exact_match.group(1)
+    if not install_required:
+        try:
+            return __import__(package)
+        except ImportError:
+            install_required = True
+    if install_required:
         import subprocess
 
-        install_name = install_name or package
         print(f"Installing {install_name}...", file=sys.stderr)
         subprocess.check_call([sys.executable, "-m", "pip", "install", install_name])
+    try:
         return __import__(package)
+    except ImportError as exc:
+        raise PipelineError(
+            f"Installed {install_name}, but Python still cannot import {package}"
+        ) from exc
+
+
+def ensure_pdf_dependencies() -> None:
+    pdf_imports = {"pypdfium2", "pdf_inspector", "pypdf", "pdfminer"}
+    for import_name, install_name, required in DEPS:
+        if required and import_name in pdf_imports:
+            _ensure_package(import_name, install_name)
 
 
 def convert_doc_to_docx(doc_path: str) -> str:
@@ -372,7 +399,8 @@ def _extract(
         return result, source_record, document_id
     source_record, document_id = _source_record(identity_source)
     if Path(source).suffix.lower() == ".pdf":
-        result = PdfAdapter(ocr_provider, ocr_mode=ocr_mode).extract(
+        ensure_pdf_dependencies()
+        result = PdfInspectorAdapter(ocr_provider, ocr_mode=ocr_mode).extract(
             source, document_id, mode, asset_dir
         )
     else:
@@ -595,10 +623,11 @@ def show_version() -> None:
     print(f"markdown-conversion v{VERSION}")
     print("Dependencies:")
     for import_name, install_name, required in DEPS:
+        distribution_name = re.split(r"[<>=!~]", install_name, maxsplit=1)[0]
         try:
             __import__(import_name)
             try:
-                version = importlib.metadata.version(install_name)
+                version = importlib.metadata.version(distribution_name)
             except importlib.metadata.PackageNotFoundError:
                 version = "installed"
         except ImportError:

@@ -705,7 +705,7 @@ def test_version_flag():
     assert 'Dependencies:' in stdout
     # Should show pip install names (not import names)
     assert 'opencc-python-reimplemented' in stdout
-    assert 'markdown-conversion v6.2.0' in stdout
+    assert 'markdown-conversion v6.3.0' in stdout
     assert 'rapidocr:' in stdout
     assert 'onnxruntime:' in stdout
     assert 'ruamel.yaml:' not in stdout
@@ -984,7 +984,7 @@ def test_strip_images_preserves_links():
 # --- v6 canonical bundle and adapter acceptance tests -------------------------
 
 
-def _run_bundle(source, output_dir, extra_args=None):
+def _run_pipeline_bundle(source, output_dir, extra_args=None):
     args = SCRIPT + CONFIG_ARG + ['--input', str(source), '--output-dir', str(output_dir)]
     if extra_args:
         args += list(extra_args)
@@ -998,6 +998,68 @@ def _run_bundle(source, output_dir, extra_args=None):
     )
 
 
+def _run_legacy_pdfium_fixture_bundle(source, output_dir):
+    """Characterize the retired v6.2 adapter; never use as product evidence."""
+    from canonical import quality_from_warnings, render_markdown, sha256_file
+    from pdf_adapter import PdfAdapter
+
+    source = Path(source)
+    bundle = Path(output_dir) / source.stem
+    bundle.mkdir(parents=True, exist_ok=True)
+    document_id = f'sha256:{sha256_file(source)}'
+    extracted = PdfAdapter(ocr_mode='off').extract(
+        str(source),
+        document_id,
+        'preserve',
+        bundle / 'assets' / 'images',
+    )
+    warnings = extracted.get('warnings', [])
+    document = {
+        'schema_version': '1.0',
+        'source': {
+            'kind': 'local_file',
+            'path': str(source.resolve()),
+            'media_type': 'application/pdf',
+            'size': source.stat().st_size,
+            'sha256': sha256_file(source),
+            'hash_basis': 'bytes',
+        },
+        'document': {
+            'document_id': document_id,
+            'title': source.stem,
+            'conversion_timestamp': '2026-01-01T00:00:00+00:00',
+            'language_normalization': 'preserve',
+        },
+        'adapter': extracted['adapter'],
+        'source_units': extracted.get('source_units', []),
+        'content': extracted.get('content', []),
+        'tables': extracted.get('tables', []),
+        'assets': extracted.get('assets', []),
+        'relationships': extracted.get('relationships', []),
+        'quality': {
+            'status': quality_from_warnings(warnings),
+            'warnings': warnings,
+        },
+        'outputs': {
+            'mode': 'bundle',
+            'markdown': {'path': f'{source.stem}.md', 'sha256': '0' * 64},
+            'assets': [],
+        },
+    }
+    (bundle / f'{source.stem}.json').write_text(
+        json.dumps(document, ensure_ascii=False, indent=2), encoding='utf-8'
+    )
+    (bundle / f'{source.stem}.md').write_text(
+        render_markdown(document), encoding='utf-8'
+    )
+    return 0, '', '', bundle
+
+
+def _run_product_bundle(source, output_dir, extra_args=None):
+    """Exercise the same production pipeline used by the CLI for every format."""
+    return _run_pipeline_bundle(source, output_dir, extra_args)
+
+
 def _load_bundle(bundle):
     return json.loads((bundle / f'{bundle.name}.json').read_text(encoding='utf-8'))
 
@@ -1005,7 +1067,7 @@ def _load_bundle(bundle):
 def test_default_bundle_contains_canonical_json_and_markdown(tmp_path):
     src = tmp_path / 'report.txt'
     src.write_text('# Report\n\nBody', encoding='utf-8')
-    code, stdout, stderr, bundle = _run_bundle(src, tmp_path / 'out')
+    code, stdout, stderr, bundle = _run_product_bundle(src, tmp_path / 'out')
     assert code == 0, stderr
     assert sorted(path.name for path in bundle.iterdir()) == ['report.json', 'report.md']
     data = _load_bundle(bundle)
@@ -1018,7 +1080,7 @@ def test_default_bundle_contains_canonical_json_and_markdown(tmp_path):
 def test_markitdown_local_title_uses_literal_source_stem_in_markdown_and_json(tmp_path):
     src = tmp_path / '季度報告.final.txt'
     src.write_text('# Content Heading\n\nBody', encoding='utf-8')
-    code, _, stderr, bundle = _run_bundle(src, tmp_path / 'out')
+    code, _, stderr, bundle = _run_product_bundle(src, tmp_path / 'out')
 
     assert code == 0, stderr
     data = _load_bundle(bundle)
@@ -1125,7 +1187,7 @@ def test_markdown_only_emits_exactly_one_file_and_no_dead_image_links(tmp_path):
 def test_traditional_raw_text_is_preserved_while_markdown_is_simplified(tmp_path):
     src = tmp_path / 'traditional.txt'
     src.write_text('繁體中文與軟體', encoding='utf-8')
-    code, _, stderr, bundle = _run_bundle(src, tmp_path / 'out')
+    code, _, stderr, bundle = _run_product_bundle(src, tmp_path / 'out')
     assert code == 0, stderr
     data = _load_bundle(bundle)
     node = data['content'][0]
@@ -1151,8 +1213,8 @@ def test_language_normalization_protects_code_url_path_hash_and_formula():
 def test_same_source_produces_stable_document_and_node_ids(tmp_path):
     src = tmp_path / 'stable.txt'
     src.write_text('# Stable\n\nSame bytes', encoding='utf-8')
-    first = _run_bundle(src, tmp_path / 'first')[3]
-    second = _run_bundle(src, tmp_path / 'second')[3]
+    first = _run_product_bundle(src, tmp_path / 'first')[3]
+    second = _run_product_bundle(src, tmp_path / 'second')[3]
     left, right = _load_bundle(first), _load_bundle(second)
     assert left['document']['document_id'] == right['document']['document_id']
     assert [node['id'] for node in left['content']] == [node['id'] for node in right['content']]
@@ -1161,7 +1223,7 @@ def test_same_source_produces_stable_document_and_node_ids(tmp_path):
 def test_content_is_authoritative_order_for_table_reference(tmp_path):
     src = tmp_path / 'table.md'
     src.write_text('Before\n\n| Name | Value |\n| --- | --- |\n| A | 1 |\n\nAfter', encoding='utf-8')
-    code, _, stderr, bundle = _run_bundle(src, tmp_path / 'out')
+    code, _, stderr, bundle = _run_product_bundle(src, tmp_path / 'out')
     assert code == 0, stderr
     data = _load_bundle(bundle)
     types = [node['type'] for node in data['content']]
@@ -1175,7 +1237,7 @@ def test_semantic_validator_rejects_dangling_reference(tmp_path):
     from canonical import CanonicalValidationError, validate_canonical
     src = tmp_path / 'source.txt'
     src.write_text('Body', encoding='utf-8')
-    bundle = _run_bundle(src, tmp_path / 'out')[3]
+    bundle = _run_product_bundle(src, tmp_path / 'out')[3]
     data = _load_bundle(bundle)
     data['content'][0].update({'type': 'table', 'table_id': 'table-0000000000000000'})
     with pytest.raises(CanonicalValidationError, match='dangling table'):
@@ -1187,7 +1249,7 @@ def test_semantic_validator_rejects_dangling_locator_span(tmp_path):
 
     src = tmp_path / 'source.txt'
     src.write_text('Body', encoding='utf-8')
-    bundle = _run_bundle(src, tmp_path / 'out')[3]
+    bundle = _run_product_bundle(src, tmp_path / 'out')[3]
     data = _load_bundle(bundle)
     data['content'][0]['source_locator']['spans'] = [{
         'page': 2,
@@ -1203,7 +1265,7 @@ def test_semantic_validator_rejects_asset_path_escape_and_hash_mismatch(tmp_path
     from canonical import CanonicalValidationError, stable_id, validate_canonical
     src = tmp_path / 'source.txt'
     src.write_text('Body', encoding='utf-8')
-    bundle = _run_bundle(src, tmp_path / 'out')[3]
+    bundle = _run_product_bundle(src, tmp_path / 'out')[3]
     data = _load_bundle(bundle)
     document_id = data['document']['document_id']
     locator = {'source_unit_id': data['source_units'][0]['id'], 'index': 1}
@@ -1238,7 +1300,7 @@ def test_semantic_validator_rejects_quality_and_output_manifest_mismatch(tmp_pat
     from canonical import CanonicalValidationError, validate_canonical
     src = tmp_path / 'source.txt'
     src.write_text('Body', encoding='utf-8')
-    bundle = _run_bundle(src, tmp_path / 'out')[3]
+    bundle = _run_product_bundle(src, tmp_path / 'out')[3]
     data = _load_bundle(bundle)
     data['quality']['status'] = 'partial'
     with pytest.raises(CanonicalValidationError, match='quality status'):
@@ -1252,7 +1314,7 @@ def test_semantic_validator_rejects_quality_and_output_manifest_mismatch(tmp_pat
 def test_no_frontmatter_keeps_json_metadata(tmp_path):
     src = tmp_path / 'plain.txt'
     src.write_text('Body', encoding='utf-8')
-    code, _, stderr, bundle = _run_bundle(src, tmp_path / 'out', ['--no-frontmatter', '--timestamp', '2026-08-02'])
+    code, _, stderr, bundle = _run_product_bundle(src, tmp_path / 'out', ['--no-frontmatter', '--timestamp', '2026-08-02'])
     assert code == 0, stderr
     assert not (bundle / 'plain.md').read_text(encoding='utf-8').startswith('---')
     assert _load_bundle(bundle)['document']['conversion_timestamp'] == '2026-08-02'
@@ -1262,8 +1324,8 @@ def test_bundle_rename_uses_deterministic_suffix_for_folder_and_files(tmp_path):
     src = tmp_path / 'report.txt'
     src.write_text('# Content Heading\n\nBody', encoding='utf-8')
     output = tmp_path / 'out'
-    assert _run_bundle(src, output)[0] == 0
-    code, _, stderr, _ = _run_bundle(src, output, ['--rename'])
+    assert _run_product_bundle(src, output)[0] == 0
+    code, _, stderr, _ = _run_product_bundle(src, output, ['--rename'])
     assert code == 0, stderr
     renamed = output / 'report_1'
     assert (renamed / 'report_1.json').exists()
@@ -1278,8 +1340,8 @@ def test_collision_rename_preserves_dotted_logical_stem_in_both_modes(tmp_path):
     src.write_text('Body', encoding='utf-8')
 
     bundle_output = tmp_path / 'bundles'
-    assert _run_bundle(src, bundle_output)[0] == 0
-    code, _, stderr, _ = _run_bundle(src, bundle_output, ['--rename'])
+    assert _run_product_bundle(src, bundle_output)[0] == 0
+    code, _, stderr, _ = _run_product_bundle(src, bundle_output, ['--rename'])
     assert code == 0, stderr
     renamed_bundle = bundle_output / f'{stem}_1'
     assert (renamed_bundle / f'{stem}_1.json').exists()
@@ -1514,7 +1576,7 @@ def _pdf_layout_line(text, y, font_size=10, left=50, right=300, cells=None):
     }
 
 
-def test_native_pdf_adapter_emits_page_locators_and_clean_markdown(tmp_path):
+def test_product_pdf_bundle_uses_inspector_and_emits_clean_markdown(tmp_path):
     pdf = tmp_path / 'native.pdf'
 
     def draw(c):
@@ -1525,18 +1587,1303 @@ def test_native_pdf_adapter_emits_page_locators_and_clean_markdown(tmp_path):
         c.drawString(72, 698, 'continues here.')
 
     _make_pdf(pdf, draw)
-    code, _, stderr, bundle = _run_bundle(pdf, tmp_path / 'out')
+    code, _, stderr, bundle = _run_product_bundle(pdf, tmp_path / 'out')
     assert code == 0, stderr
     data = _load_bundle(bundle)
-    assert data['adapter']['name'] == 'pdfium'
-    assert data['source_units'][0]['locator']['page'] == 1
-    assert all('bbox' in node['source_locator'] for node in data['content'])
+    assert data['adapter']['name'] == 'pdf-inspector'
+    page_unit = next(unit for unit in data['source_units'] if unit['type'] == 'page')
+    assert page_unit['locator']['page'] == 1
+    assert all(node['source_locator'].get('page_range') == [1, 1] for node in data['content'])
+    assert any(
+        node['source_locator'].get('extraction_method') == 'pdf-inspector'
+        for node in data['content']
+        if node['type'] != 'image'
+    )
     markdown = (bundle / 'native.md').read_text(encoding='utf-8')
     assert 'block:' not in markdown
     assert 'Native PDF' in markdown
 
 
-def test_native_pdf_two_columns_are_not_interleaved(tmp_path):
+def test_product_sparse_readable_pdf_is_not_deleted_by_full_result_ocr_signal(
+    tmp_path,
+):
+    pdf = tmp_path / 'sparse-readable.pdf'
+
+    def draw(c):
+        for page in range(1, 4):
+            c.setFont('Helvetica', 10)
+            c.drawString(72, 720, f'Precisely readable sparse page {page}.')
+            if page < 3:
+                c.showPage()
+
+    _make_pdf(pdf, draw)
+    code, _, stderr, bundle = _run_product_bundle(
+        pdf,
+        tmp_path / 'out',
+        ['--ocr', 'off'],
+    )
+
+    assert code == 0, stderr
+    data = _load_bundle(bundle)
+    markdown = (bundle / 'sparse-readable.md').read_text(encoding='utf-8')
+    for page in range(1, 4):
+        assert f'Precisely readable sparse page {page}.' in markdown
+    assert not any(
+        warning['code'] == 'ocr_required'
+        for warning in data['quality']['warnings']
+    )
+
+
+def _processed_result(markdown, page_count, *, ocr_pages=(), reasons=None):
+    reason_items = []
+    for page, values in (reasons or {}).items():
+        reason_items.append(type('Reason', (), {
+            'page': page,
+            'reasons': list(values),
+        })())
+    return type('Result', (), {
+        'markdown': markdown,
+        'page_count': page_count,
+        'pages_needing_ocr': list(ocr_pages),
+        'ocr_reasons_by_page': reason_items,
+    })()
+
+
+def test_pdf_inspector_healthy_page_is_authoritative(monkeypatch, tmp_path):
+    import pdf_inspector_adapter as module
+    from canonical import make_text_fields, stable_id
+
+    source = tmp_path / 'authoritative.pdf'
+    source.write_bytes(b'%PDF fake')
+    document_id = 'sha256:' + ('a' * 64)
+    monkeypatch.setattr(module, '_pdf_page_count', lambda _source: 1)
+    monkeypatch.setattr(
+        module, 'repair_standard_cid_tounicode', lambda _source, _target: (0, [])
+    )
+    unit_locator = {'page': 1}
+    unit_id = stable_id('unit', document_id, unit_locator, 'page', 1)
+
+    class NativeSupport:
+        def extract(self, _source, _document_id, mode, _asset_dir=None):
+            locator = {'source_unit_id': unit_id, 'page': 1}
+            return {
+                'source_units': [{
+                    'id': unit_id, 'type': 'page', 'index': 1,
+                    'locator': unit_locator, 'status': 'complete', 'warnings': [],
+                }],
+                'content': [{
+                    'id': 'native', 'type': 'paragraph', 'source_locator': locator,
+                    **make_text_fields('PDFium replacement', 'PDFium replacement', mode),
+                }],
+                'tables': [], 'assets': [], 'relationships': [], 'warnings': [],
+            }
+
+    calls = []
+
+    def process(_source, pages=None):
+        calls.append(pages)
+        assert pages is None
+        return _processed_result(
+            'CONFIDENTIAL\n\n# 2024\n\n'
+            '| Item | Amount |\n| --- | --- |\n| Revenue | 100 |',
+            1,
+        )
+
+    inspector = type('Inspector', (), {'process_pdf': staticmethod(process)})()
+
+    def unexpected_ocr(*_args):
+        raise AssertionError('healthy Inspector pages must not invoke OCR')
+
+    result = module.PdfInspectorAdapter(
+        inspector=inspector,
+        fallback_adapter=NativeSupport(),
+        ocr_mode='auto',
+        ocr_runner=unexpected_ocr,
+    ).extract(str(source), document_id, 'preserve')
+
+    assert [node['type'] for node in result['content']] == [
+        'paragraph', 'heading', 'table'
+    ]
+    assert result['content'][0]['text'] == 'CONFIDENTIAL'
+    assert result['content'][1]['text'] == '2024'
+    assert result['content'][1]['level'] == 1
+    assert result['tables'][0]['raw_rows'][1] == ['Revenue', '100']
+    assert not any('PDFium replacement' in node.get('text', '') for node in result['content'])
+    assert not any(warning['code'] == 'ocr_applied' for warning in result['warnings'])
+    assert calls == [None]
+
+
+def test_pdf_inspector_preserves_global_outline_levels(monkeypatch, tmp_path):
+    import pdf_inspector_adapter as module
+
+    source = tmp_path / 'global-outline.pdf'
+    source.write_bytes(b'%PDF fake')
+    document_id = 'sha256:' + ('1' * 64)
+    monkeypatch.setattr(module, '_pdf_page_count', lambda _source: 3)
+    monkeypatch.setattr(
+        module, 'repair_standard_cid_tounicode', lambda _source, _target: (0, [])
+    )
+    calls = []
+
+    def process(_source, pages=None):
+        calls.append(pages)
+        return _processed_result(
+            '# Cover\n\n### Warning\n\nBody.\n\n## Main section',
+            3,
+        )
+
+    result = module.PdfInspectorAdapter(
+        inspector=type('Inspector', (), {'process_pdf': staticmethod(process)})(),
+        ocr_mode='auto',
+        ocr_runner=lambda *_args: (_ for _ in ()).throw(
+            AssertionError('healthy full-document Inspector output must not invoke OCR')
+        ),
+    ).extract(str(source), document_id, 'preserve')
+
+    headings = [
+        (node['text'], node['level'])
+        for node in result['content']
+        if node['type'] == 'heading'
+    ]
+    assert headings == [('Cover', 1), ('Warning', 3), ('Main section', 2)]
+    assert calls == [None]
+
+
+def test_pdf_inspector_affine_page_alignment_rejects_unproven_page_edges():
+    import pdf_inspector_adapter as module
+
+    common = ''.join(f'Block{index:03d}AlphaBetaGamma' for index in range(80))
+    page = ('Changed page prefix ' * 8) + common
+    global_markdown = ('Earlier document text ' * 30) + common
+
+    assert module._align_selected_page(global_markdown, page) is None
+
+
+def test_pdf_inspector_page_alignment_rejects_ambiguous_duplicate_signature():
+    import pdf_inspector_adapter as module
+
+    assert module._align_selected_page(
+        'Repeated healthy marker\n\nMiddle\n\nRepeated healthy marker',
+        'Repeated healthy marker',
+    ) is None
+
+
+def test_pdf_inspector_raw_alignment_never_consumes_same_line_healthy_text():
+    import pdf_inspector_adapter as module
+
+    global_markdown = 'HEALTHY_PREFIX FLAGGED TEXT HEALTHY_SUFFIX\n\n# Tail'
+    alignment = module._align_selected_page(global_markdown, 'FLAGGED TEXT')
+
+    assert alignment is not None
+    raw_start = module._raw_alignment_start(global_markdown, alignment)
+    raw_end = module._raw_alignment_end(global_markdown, alignment)
+    assert global_markdown[:raw_start] == 'HEALTHY_PREFIX '
+    assert global_markdown[raw_start:raw_end] == 'FLAGGED TEXT'
+    assert global_markdown[raw_end:].startswith(' HEALTHY_SUFFIX')
+
+
+def test_pdf_inspector_affine_page_alignment_rejects_reordered_runs():
+    import pdf_inspector_adapter as module
+
+    first = ''.join(f'First{index:03d}Alpha' for index in range(40))
+    second = ''.join(f'Second{index:03d}Beta' for index in range(40))
+    third = ''.join(f'Third{index:03d}Gamma' for index in range(40))
+    page = first + second + third
+    global_markdown = (
+        'Healthy prefix\n\n' + first + ('Z' * 32) + third + second + '\n\nTail'
+    )
+
+    assert module._align_selected_page(global_markdown, page) is None
+
+
+def test_pdf_inspector_direct_flagged_span_preserves_sparse_front_matter(
+    monkeypatch, tmp_path
+):
+    import pdf_inspector_adapter as module
+
+    source = tmp_path / 'sparse-front-matter.pdf'
+    source.write_bytes(b'%PDF fake')
+    document_id = 'sha256:' + ('f' * 64)
+    monkeypatch.setattr(module, '_pdf_page_count', lambda _source: 3)
+    monkeypatch.setattr(
+        module, 'repair_standard_cid_tounicode', lambda _source, _target: (0, [])
+    )
+    healthy = (
+        '# Cover\n\nImportant application terms.\n\n'
+        '## Important notice\n\n– i –\n\n'
+        '## Expected timetable\n\n– v –'
+    )
+    flagged_core = ''.join(
+        f'FlaggedTocEntry{index:03d}UniqueValue\n' for index in range(30)
+    )
+    stale_folio = 'I-1\n\nII-1\n\nIII-1\n\nIV-1\n\nV-1\n\n– vii –'
+    tail = '## Summary\n\nHealthy tail content.'
+    global_markdown = (
+        healthy + '\n\n' + flagged_core + '\n' + stale_folio + '\n\n' + tail
+    )
+    selected_bad_page = flagged_core + '\n' + stale_folio
+
+    def process(_source, pages=None):
+        if pages is None:
+            return _processed_result(
+                global_markdown,
+                3,
+                ocr_pages=(2,),
+                reasons={2: ('suspected_garbled_text',)},
+            )
+        assert pages == [2]
+        return _processed_result(selected_bad_page, 3, ocr_pages=(2,))
+
+    def run_ocr(_source, pages, _provider):
+        assert pages == {2}
+        return {
+            2: ([{
+                'text': 'OCR replacement table of contents',
+                'bbox': [10, 20, 200, 40],
+                'confidence': 0.99,
+            }], None, None)
+        }
+
+    result = module.PdfInspectorAdapter(
+        type('Provider', (), {
+            'available': True, 'name': 'fake-ocr', 'version': '1.0'
+        })(),
+        inspector=type('Inspector', (), {'process_pdf': staticmethod(process)})(),
+        ocr_mode='auto',
+        ocr_runner=run_ocr,
+    ).extract(str(source), document_id, 'preserve')
+
+    texts = [node['text'] for node in result['content']]
+    assert 'Cover' in texts
+    assert 'Important application terms.' in texts
+    assert 'Important notice' in texts
+    assert 'Expected timetable' in texts
+    assert 'OCR replacement table of contents' in texts
+    assert 'Summary' in texts
+    assert 'Healthy tail content.' in texts
+    assert not any('FlaggedTocEntry' in text for text in texts)
+    assert not any(text in {'I-1', 'II-1', 'III-1', 'IV-1', 'V-1'} for text in texts)
+
+
+def test_pdf_inspector_retains_readable_page_after_standard_cid_repair(
+    monkeypatch, tmp_path
+):
+    import pdf_inspector_adapter as module
+
+    source = tmp_path / 'cid-readable.pdf'
+    source.write_bytes(b'%PDF fake')
+    document_id = 'sha256:' + ('6' * 64)
+    monkeypatch.setattr(module, '_pdf_page_count', lambda _source: 1)
+    monkeypatch.setattr(
+        module,
+        'repair_standard_cid_tounicode',
+        lambda _source, _target: (1, ['Adobe-CNS1']),
+    )
+    inspector_markdown = (
+        '# 行业概览\n\n'
+        '本页在标准字符映射修复后具有完整且清晰可读的中文内容。\n\n'
+        '| 排名 | 供应商 | 收益 |\n'
+        '| --- | --- | --- |\n'
+        '| 1 | 公司I | 100 |\n'
+        '| 2 | 公司II | 90 |'
+    )
+
+    def process(_source, pages=None):
+        assert pages in (None, [1])
+        return _processed_result(
+            inspector_markdown,
+            1,
+            ocr_pages=(1,),
+            reasons={1: ('suspected_garbled_text',)},
+        )
+
+    result = module.PdfInspectorAdapter(
+        type('Provider', (), {'available': True})(),
+        inspector=type('Inspector', (), {'process_pdf': staticmethod(process)})(),
+        ocr_mode='auto',
+        ocr_runner=lambda *_args: (_ for _ in ()).throw(
+            AssertionError('readable CID-repaired Inspector page must win over OCR')
+        ),
+    ).extract(str(source), document_id, 'preserve')
+
+    texts = [node.get('text', '') for node in result['content']]
+    assert '行业概览' in texts
+    assert result['tables'][0]['raw_rows'][1] == ['1', '公司I', '100']
+    assert any(
+        warning['code'] == 'pdf_inspector_cid_page_retained'
+        for warning in result['warnings']
+    )
+    assert not any(warning['code'] == 'ocr_applied' for warning in result['warnings'])
+
+
+def test_pdf_inspector_cid_readability_never_overrides_other_ocr_reasons():
+    import pdf_inspector_adapter as module
+
+    readable = '完整且清晰可读的标准字符映射修复内容。' * 4
+    assert module._cid_repaired_page_is_readable(
+        readable, 'suspected_garbled_text'
+    )
+    assert not module._cid_repaired_page_is_readable(
+        readable, 'scanned, suspected_garbled_text'
+    )
+
+
+def test_pdf_inspector_unusable_page_uses_ocr_only(monkeypatch, tmp_path):
+    import pdf_inspector_adapter as module
+
+    source = tmp_path / 'ocr-only.pdf'
+    source.write_bytes(b'%PDF fake')
+    document_id = 'sha256:' + ('b' * 64)
+    monkeypatch.setattr(module, '_pdf_page_count', lambda _source: 3)
+    monkeypatch.setattr(
+        module, 'repair_standard_cid_tounicode', lambda _source, _target: (0, [])
+    )
+    process_calls = []
+
+    def process(_source, pages=None):
+        process_calls.append(pages)
+        if pages is None:
+            return _processed_result(
+                '# Inspector title\n\nHealthy page.\n\n'
+                '## Flagged native page\n\nFLAGGED_NATIVE SHOULD BE REPLACED.\n\n'
+                '## Final page\n\nTail content.',
+                3,
+                ocr_pages=(2,),
+                reasons={2: ('suspected_garbled_text',)},
+            )
+        if pages == [2]:
+            return _processed_result(
+                '## Flagged native page\n\nFLAGGED_NATIVE SHOULD BE REPLACED.',
+                3,
+                ocr_pages=(2,),
+            )
+        raise AssertionError(f'unexpected selected-page request: {pages}')
+
+    inspector = type('Inspector', (), {'process_pdf': staticmethod(process)})()
+    ocr_result = type('OcrResult', (), {
+        'engine': 'fake-ocr',
+        'engine_version': '1.0',
+        'runtime': 'test',
+        'runtime_version': '1',
+        'model_profile': 'fixture',
+        'language': 'ch',
+        'min_confidence': 0.5,
+        'requested_dpi': 300.0,
+        'effective_dpi': 300.0,
+        'raster_width': 1200,
+        'raster_height': 1600,
+        'dropped_low_confidence': 0,
+        'dropped_invalid': 0,
+        'spans': (
+            {'text': 'OCR recovered amount 12', 'bbox': [10, 20, 200, 40], 'confidence': 0.99},
+        ),
+    })()
+    requested = []
+
+    def run_ocr(_source, pages, _provider):
+        requested.append(set(pages))
+        return {2: (ocr_result, None, None)}
+
+    provider = type('Provider', (), {'available': True, 'name': 'fake-ocr'})()
+    result = module.PdfInspectorAdapter(
+        provider,
+        inspector=inspector,
+        ocr_mode='auto',
+        ocr_runner=run_ocr,
+    ).extract(str(source), document_id, 'preserve')
+
+    assert requested == [{2}]
+    texts = [node.get('text', '') for node in result['content']]
+    assert 'Healthy page.' in texts
+    assert 'OCR recovered amount 12' in texts
+    assert 'Flagged native page' not in texts
+    assert 'FLAGGED_NATIVE SHOULD BE REPLACED.' not in texts
+    assert texts.index('Healthy page.') < texts.index('OCR recovered amount 12')
+    assert texts.index('OCR recovered amount 12') < texts.index('Final page')
+    recovered = next(node for node in result['content'] if node.get('text') == 'OCR recovered amount 12')
+    assert recovered['source_locator']['extraction_method'] == 'ocr'
+    page_two = next(
+        unit for unit in result['source_units']
+        if unit['type'] == 'page' and unit['index'] == 2
+    )
+    assert page_two['status'] == 'warning'
+    assert any(warning['code'] == 'ocr_applied' for warning in result['warnings'])
+    assert not any('pdfium' in warning['message'].casefold() for warning in result['warnings'])
+    assert process_calls == [None, [2]]
+
+
+def test_pdf_inspector_all_flagged_pages_replace_retained_document_markdown(
+    monkeypatch, tmp_path
+):
+    import pdf_inspector_adapter as module
+
+    source = tmp_path / 'all-pages-retained.pdf'
+    source.write_bytes(b'%PDF fake')
+    document_id = 'sha256:' + ('0' * 64)
+    monkeypatch.setattr(module, '_pdf_page_count', lambda _source: 3)
+    monkeypatch.setattr(
+        module, 'repair_standard_cid_tounicode', lambda _source, _target: (0, [])
+    )
+    calls = []
+    per_page_calls = []
+
+    def process(_source, pages=None):
+        calls.append(pages)
+        assert pages is None
+        return _processed_result(
+            '# NATIVE PAGE 1\n\nNATIVE PAGE 2\n\nNATIVE PAGE 3',
+            3,
+            ocr_pages=(1, 2, 3),
+            reasons={
+                1: ('suspected_garbled_text',),
+                2: ('suspected_garbled_text',),
+                3: ('suspected_garbled_text',),
+            },
+        )
+
+    def run_ocr(_source, pages, _provider):
+        assert pages == {1, 2, 3}
+        return {
+            page: ([{
+                'text': f'OCR replacement page {page}',
+                'bbox': [10, 20, 200, 40],
+                'confidence': 0.99,
+            }], None, None)
+            for page in pages
+        }
+
+    def extract_pages(_source, pages=None):
+        per_page_calls.append(pages)
+        return type('PagesResult', (), {
+            'pages': [
+                type('PageResult', (), {
+                    'page': page,
+                    'needs_ocr': True,
+                })()
+                for page in pages
+            ],
+            'pages_needing_ocr': [],
+        })()
+
+    provider = type('Provider', (), {
+        'available': True, 'name': 'fake-ocr', 'version': '1.0'
+    })()
+    result = module.PdfInspectorAdapter(
+        provider,
+        inspector=type('Inspector', (), {
+            'process_pdf': staticmethod(process),
+            'extract_pages_markdown': staticmethod(extract_pages),
+        })(),
+        ocr_mode='auto',
+        ocr_runner=run_ocr,
+    ).extract(str(source), document_id, 'preserve')
+
+    assert [node['text'] for node in result['content']] == [
+        'OCR replacement page 1',
+        'OCR replacement page 2',
+        'OCR replacement page 3',
+    ]
+    assert calls == [None]
+    assert per_page_calls == [[0, 1, 2]]
+
+
+def test_pdf_inspector_consecutive_middle_run_replaces_entire_proven_span(
+    monkeypatch, tmp_path
+):
+    import pdf_inspector_adapter as module
+
+    source = tmp_path / 'middle-run-retained.pdf'
+    source.write_bytes(b'%PDF fake')
+    document_id = 'sha256:' + ('2' * 64)
+    monkeypatch.setattr(module, '_pdf_page_count', lambda _source: 4)
+    monkeypatch.setattr(
+        module, 'repair_standard_cid_tounicode', lambda _source, _target: (0, [])
+    )
+    page_one = '# Healthy page 1\n\nHEALTHY_ONE'
+    page_four = '# Healthy page 4\n\nHEALTHY_FOUR'
+    calls = []
+
+    def process(_source, pages=None):
+        calls.append(pages)
+        if pages is None:
+            return _processed_result(
+                page_one
+                + '\n\n# Flagged page 2\n\nSTALE_TWO'
+                + '\n\n# Flagged page 3\n\nSTALE_THREE\n\n'
+                + page_four,
+                4,
+                ocr_pages=(2, 3),
+                reasons={2: ('scanned',), 3: ('scanned',)},
+            )
+        if pages == [2]:
+            return _processed_result(
+                '# Flagged page 2\n\nSTALE_TWO', 4, ocr_pages=(2,)
+            )
+        if pages == [3]:
+            return _processed_result(
+                '# Flagged page 3\n\nSTALE_THREE', 4, ocr_pages=(3,)
+            )
+        raise AssertionError(f'unexpected selected-page request: {pages}')
+
+    def run_ocr(_source, pages, _provider):
+        assert pages == {2, 3}
+        return {
+            page: ([{
+                'text': f'OCR middle page {page}',
+                'bbox': [10, 20, 200, 40],
+                'confidence': 0.99,
+            }], None, None)
+            for page in pages
+        }
+
+    provider = type('Provider', (), {
+        'available': True, 'name': 'fake-ocr', 'version': '1.0'
+    })()
+    result = module.PdfInspectorAdapter(
+        provider,
+        inspector=type('Inspector', (), {'process_pdf': staticmethod(process)})(),
+        ocr_mode='auto',
+        ocr_runner=run_ocr,
+    ).extract(str(source), document_id, 'preserve')
+
+    texts = [node['text'] for node in result['content']]
+    assert texts == [
+        'Healthy page 1',
+        'HEALTHY_ONE',
+        'OCR middle page 2',
+        'OCR middle page 3',
+        'Healthy page 4',
+        'HEALTHY_FOUR',
+    ]
+    assert 'STALE_TWO' not in texts
+    assert 'STALE_THREE' not in texts
+    assert calls == [None, [2], [3]]
+
+
+def test_pdf_inspector_failed_ocr_removes_stale_flagged_page_text(
+    monkeypatch, tmp_path
+):
+    import pdf_inspector_adapter as module
+
+    source = tmp_path / 'failed-ocr-retained.pdf'
+    source.write_bytes(b'%PDF fake')
+    document_id = 'sha256:' + ('3' * 64)
+    monkeypatch.setattr(module, '_pdf_page_count', lambda _source: 3)
+    monkeypatch.setattr(
+        module, 'repair_standard_cid_tounicode', lambda _source, _target: (0, [])
+    )
+    page_one = '# Healthy page 1\n\nHEALTHY_ONE'
+    page_three = '# Healthy page 3\n\nHEALTHY_THREE'
+
+    def process(_source, pages=None):
+        if pages is None:
+            return _processed_result(
+                page_one + '\n\n# Flagged page 2\n\nSTALE_UNUSABLE\n\n' + page_three,
+                3,
+                ocr_pages=(2,),
+                reasons={2: ('suspected_garbled_text',)},
+            )
+        if pages == [2]:
+            return _processed_result(
+                '# Flagged page 2\n\nSTALE_UNUSABLE', 3, ocr_pages=(2,)
+            )
+        raise AssertionError(f'unexpected selected-page request: {pages}')
+
+    provider = type('Provider', (), {
+        'available': True, 'name': 'fake-ocr', 'version': '1.0'
+    })()
+    result = module.PdfInspectorAdapter(
+        provider,
+        inspector=type('Inspector', (), {'process_pdf': staticmethod(process)})(),
+        ocr_mode='auto',
+        ocr_runner=lambda _source, _pages, _provider: {
+            2: (None, 'ocr_failed', 'synthetic OCR failure')
+        },
+    ).extract(str(source), document_id, 'preserve')
+
+    texts = [node['text'] for node in result['content']]
+    assert texts == [
+        'Healthy page 1', 'HEALTHY_ONE', 'Healthy page 3', 'HEALTHY_THREE'
+    ]
+    assert 'STALE_UNUSABLE' not in texts
+    page_two = next(
+        unit for unit in result['source_units']
+        if unit['type'] == 'page' and unit['index'] == 2
+    )
+    assert page_two['status'] == 'ocr_required'
+    assert any(warning['code'] == 'ocr_failed' for warning in result['warnings'])
+    assert any(warning['code'] == 'ocr_required' for warning in result['warnings'])
+
+
+def test_pdf_inspector_failed_ocr_never_uses_native_text(monkeypatch, tmp_path):
+    import pdf_inspector_adapter as module
+
+    source = tmp_path / 'ocr-unavailable.pdf'
+    source.write_bytes(b'%PDF fake')
+    document_id = 'sha256:' + ('c' * 64)
+    monkeypatch.setattr(module, '_pdf_page_count', lambda _source: 2)
+    monkeypatch.setattr(
+        module, 'repair_standard_cid_tounicode', lambda _source, _target: (0, [])
+    )
+    def process(_source, pages=None):
+        if pages is None:
+            return _processed_result(
+                '# Healthy Inspector content\n\nFirst page remains.\n\n'
+                '# Flagged page\n\nSTALE_GARBLED',
+                2,
+                ocr_pages=(2,),
+                reasons={2: ('suspected_garbled_text',)},
+            )
+        assert pages == [2]
+        return _processed_result(
+            '# Flagged page\n\nSTALE_GARBLED', 2, ocr_pages=(2,)
+        )
+
+    inspector = type('Inspector', (), {'process_pdf': staticmethod(process)})()
+
+    result = module.PdfInspectorAdapter(
+        type('Provider', (), {'available': False})(),
+        inspector=inspector,
+        ocr_mode='auto',
+        ocr_runner=lambda _source, _pages, _provider: {
+            2: (None, 'ocr_unavailable', 'backend missing')
+        },
+    ).extract(str(source), document_id, 'preserve')
+
+    assert [node.get('text') for node in result['content']] == [
+        'Healthy Inspector content', 'First page remains.'
+    ]
+    assert all('STALE_GARBLED' not in node.get('text', '') for node in result['content'])
+    page_two = next(
+        unit for unit in result['source_units']
+        if unit['type'] == 'page' and unit['index'] == 2
+    )
+    assert page_two['status'] == 'ocr_required'
+    assert any(warning['code'] == 'ocr_unavailable' for warning in result['warnings'])
+    assert any(warning['code'] == 'ocr_required' for warning in result['warnings'])
+    assert all(warning['content_loss'] for warning in result['warnings'])
+
+
+def test_pdf_inspector_document_failure_routes_every_page_to_ocr(monkeypatch, tmp_path):
+    import pdf_inspector_adapter as module
+
+    source = tmp_path / 'inspector-failed.pdf'
+    source.write_bytes(b'%PDF fake')
+    document_id = 'sha256:' + ('d' * 64)
+    monkeypatch.setattr(module, '_pdf_page_count', lambda _source: 2)
+    monkeypatch.setattr(
+        module, 'repair_standard_cid_tounicode', lambda _source, _target: (0, [])
+    )
+
+    def fail(_source, pages=None):
+        raise RuntimeError('synthetic Inspector failure')
+
+    requested = []
+
+    def run_ocr(_source, pages, _provider):
+        requested.append(set(pages))
+        return {
+            page: ([{
+                'text': f'OCR page {page} recovered',
+                'bbox': [10, 20, 200, 40],
+                'confidence': 0.98,
+            }], None, None)
+            for page in pages
+        }
+
+    inspector = type('Inspector', (), {'process_pdf': staticmethod(fail)})()
+    provider = type('Provider', (), {
+        'available': True, 'name': 'fake-ocr', 'version': '1.0'
+    })()
+    result = module.PdfInspectorAdapter(
+        provider,
+        inspector=inspector,
+        ocr_mode='auto',
+        ocr_runner=run_ocr,
+    ).extract(str(source), document_id, 'preserve')
+
+    assert requested == [{1, 2}]
+    assert [node['text'] for node in result['content']] == [
+        'OCR page 1 recovered', 'OCR page 2 recovered'
+    ]
+    assert all(
+        node['source_locator']['extraction_method'] == 'ocr'
+        for node in result['content']
+    )
+    assert any(
+        warning['code'] == 'pdf_inspector_document_ocr_fallback'
+        for warning in result['warnings']
+    )
+
+
+def test_pdf_inspector_ocr_off_marks_omitted_page_without_fallback(monkeypatch, tmp_path):
+    import pdf_inspector_adapter as module
+
+    source = tmp_path / 'ocr-off.pdf'
+    source.write_bytes(b'%PDF fake')
+    document_id = 'sha256:' + ('e' * 64)
+    monkeypatch.setattr(module, '_pdf_page_count', lambda _source: 2)
+    monkeypatch.setattr(
+        module, 'repair_standard_cid_tounicode', lambda _source, _target: (0, [])
+    )
+    def process(_source, pages=None):
+        if pages is None:
+            return _processed_result(
+                '# Healthy page\n\nInspector content.\n\n'
+                '# Flagged page\n\nSTALE_GARBLED',
+                2,
+                ocr_pages=(2,),
+                reasons={2: ('suspected_garbled_text',)},
+            )
+        assert pages == [2]
+        return _processed_result(
+            '# Flagged page\n\nSTALE_GARBLED', 2, ocr_pages=(2,)
+        )
+
+    inspector = type('Inspector', (), {'process_pdf': staticmethod(process)})()
+
+    result = module.PdfInspectorAdapter(
+        inspector=inspector,
+        ocr_mode='off',
+        ocr_runner=lambda *_args: (_ for _ in ()).throw(
+            AssertionError('OCR-off mode must not invoke OCR')
+        ),
+    ).extract(str(source), document_id, 'preserve')
+
+    assert [node['text'] for node in result['content']] == [
+        'Healthy page', 'Inspector content.'
+    ]
+    assert all('STALE_GARBLED' not in node.get('text', '') for node in result['content'])
+    page_two = next(
+        unit for unit in result['source_units']
+        if unit['type'] == 'page' and unit['index'] == 2
+    )
+    assert page_two['status'] == 'ocr_required'
+    assert any(warning['code'] == 'ocr_required' for warning in result['warnings'])
+
+
+def test_pdf_inspector_one_based_ocr_pages_keep_first_and_last_in_order(
+    monkeypatch, tmp_path
+):
+    import pdf_inspector_adapter as module
+
+    source = tmp_path / 'boundary-pages.pdf'
+    source.write_bytes(b'%PDF fake')
+    document_id = 'sha256:' + ('7' * 64)
+    monkeypatch.setattr(module, '_pdf_page_count', lambda _source: 3)
+    monkeypatch.setattr(
+        module, 'repair_standard_cid_tounicode', lambda _source, _target: (0, [])
+    )
+    calls = []
+
+    def process(_source, pages=None):
+        calls.append(pages)
+        if pages is None:
+            return _processed_result(
+                '# STALE FIRST\n\n'
+                '## Middle page\n\nMiddle Inspector content.\n\n'
+                '# STALE LAST',
+                3,
+                ocr_pages=(1, 3),
+                reasons={1: ('scanned',), 3: ('scanned',)},
+            )
+        assert pages in ([1], [3])
+        return _processed_result(
+            '# STALE FIRST' if pages == [1] else '# STALE LAST',
+            3,
+            ocr_pages=tuple(pages),
+        )
+
+    def run_ocr(_source, pages, _provider):
+        assert pages == {1, 3}
+        return {
+            page: ([{
+                'text': f'OCR physical page {page}',
+                'bbox': [10, 20, 200, 40],
+                'confidence': 0.99,
+            }], None, None)
+            for page in pages
+        }
+
+    provider = type('Provider', (), {
+        'available': True, 'name': 'fake-ocr', 'version': '1.0'
+    })()
+    result = module.PdfInspectorAdapter(
+        provider,
+        inspector=type('Inspector', (), {'process_pdf': staticmethod(process)})(),
+        ocr_mode='auto',
+        ocr_runner=run_ocr,
+    ).extract(str(source), document_id, 'preserve')
+
+    assert [node['text'] for node in result['content']] == [
+        'OCR physical page 1',
+        'Middle page',
+        'Middle Inspector content.',
+        'OCR physical page 3',
+    ]
+    assert calls == [None, [1], [3]]
+    assert {
+        warning['source_unit']
+        for warning in result['warnings']
+        if warning['code'] == 'ocr_applied'
+    } == {
+        next(
+            unit['id']
+            for unit in result['source_units']
+            if unit['type'] == 'page' and unit['index'] == 1
+        ),
+        next(
+            unit['id']
+            for unit in result['source_units']
+            if unit['type'] == 'page' and unit['index'] == 3
+        ),
+    }
+
+
+def test_pdf_inspector_unprovable_boundary_routes_entire_document_to_ocr(
+    monkeypatch, tmp_path
+):
+    import pdf_inspector_adapter as module
+
+    source = tmp_path / 'unprovable-boundary.pdf'
+    source.write_bytes(b'%PDF fake')
+    document_id = 'sha256:' + ('8' * 64)
+    monkeypatch.setattr(module, '_pdf_page_count', lambda _source: 3)
+    monkeypatch.setattr(
+        module, 'repair_standard_cid_tounicode', lambda _source, _target: (0, [])
+    )
+
+    def process(_source, pages=None):
+        if pages is None:
+            return _processed_result(
+                '# Inspector content\n\nHealthy native text.',
+                3,
+                ocr_pages=(2,),
+                reasons={2: ('scanned',)},
+            )
+        return _processed_result('No matching global anchor exists.', 3)
+
+    requested = []
+
+    def run_ocr(_source, pages, _provider):
+        requested.append(set(pages))
+        return {
+            page: ([{
+                'text': f'Ordered OCR page {page}',
+                'bbox': [10, 20, 200, 40],
+                'confidence': 0.99,
+            }], None, None)
+            for page in pages
+        }
+
+    provider = type('Provider', (), {
+        'available': True, 'name': 'fake-ocr', 'version': '1.0'
+    })()
+    result = module.PdfInspectorAdapter(
+        provider,
+        inspector=type('Inspector', (), {'process_pdf': staticmethod(process)})(),
+        ocr_mode='auto',
+        ocr_runner=run_ocr,
+    ).extract(str(source), document_id, 'preserve')
+
+    assert requested == [{1, 2, 3}]
+    assert [node['text'] for node in result['content']] == [
+        'Ordered OCR page 1', 'Ordered OCR page 2', 'Ordered OCR page 3'
+    ]
+    assert all(
+        node['source_locator']['extraction_method'] == 'ocr'
+        for node in result['content']
+    )
+    assert any(
+        warning['code'] == 'pdf_inspector_alignment_ocr_fallback'
+        for warning in result['warnings']
+    )
+
+
+def test_pdf_inspector_unprovable_span_with_ocr_off_reports_discard(
+    monkeypatch, tmp_path
+):
+    import pdf_inspector_adapter as module
+
+    source = tmp_path / 'unprovable-ocr-off.pdf'
+    source.write_bytes(b'%PDF fake')
+    document_id = 'sha256:' + ('a' * 64)
+    monkeypatch.setattr(module, '_pdf_page_count', lambda _source: 2)
+    monkeypatch.setattr(
+        module, 'repair_standard_cid_tounicode', lambda _source, _target: (0, [])
+    )
+
+    def process(_source, pages=None):
+        if pages is None:
+            return _processed_result(
+                '# Healthy content\n\nUnlocatable retained text.',
+                2,
+                ocr_pages=(2,),
+                reasons={2: ('suspected_garbled_text',)},
+            )
+        return _processed_result('Different selected-page text.', 2)
+
+    result = module.PdfInspectorAdapter(
+        inspector=type('Inspector', (), {'process_pdf': staticmethod(process)})(),
+        ocr_mode='off',
+        ocr_runner=lambda *_args: (_ for _ in ()).throw(
+            AssertionError('OCR-off mode must not invoke OCR')
+        ),
+    ).extract(str(source), document_id, 'preserve')
+
+    assert result['content'] == []
+    warning = next(
+        item for item in result['warnings']
+        if item['code'] == 'pdf_inspector_alignment_ocr_fallback'
+    )
+    assert 'OCR was disabled' in warning['message']
+    assert 'routed to ordered OCR' not in warning['message']
+
+
+@pytest.mark.parametrize('ocr_mode', ['off', 'auto'])
+def test_pdf_inspector_empty_selected_page_never_publishes_stale_text(
+    monkeypatch, tmp_path, ocr_mode
+):
+    import pdf_inspector_adapter as module
+
+    source = tmp_path / f'empty-selected-{ocr_mode}.pdf'
+    source.write_bytes(b'%PDF fake')
+    document_id = 'sha256:' + ('c' * 64)
+    monkeypatch.setattr(module, '_pdf_page_count', lambda _source: 2)
+    monkeypatch.setattr(
+        module, 'repair_standard_cid_tounicode', lambda _source, _target: (0, [])
+    )
+    per_page_calls = []
+
+    def process(_source, pages=None):
+        if pages is None:
+            return _processed_result(
+                '# Healthy content\n\nKEEP\n\n'
+                '## Flagged content\n\nSTALE_GARBLED',
+                2,
+                ocr_pages=(2,),
+                reasons={2: ('suspected_garbled_text',)},
+            )
+        assert pages == [2]
+        return _processed_result('', 2, ocr_pages=(2,))
+
+    def extract_pages(_source, pages=None):
+        per_page_calls.append(pages)
+        return type('PagesResult', (), {
+            'pages': [
+                type('PageResult', (), {
+                    'page': page,
+                    'markdown': (
+                        '# Healthy content\n\nKEEP' if page == 0 else ''
+                    ),
+                    'needs_ocr': page == 1,
+                })()
+                for page in pages
+            ],
+            'pages_needing_ocr': [2],
+        })()
+
+    provider = None
+    kwargs = {}
+    if ocr_mode == 'off':
+        kwargs['ocr_runner'] = lambda *_args: (_ for _ in ()).throw(
+            AssertionError('OCR-off mode must not invoke OCR')
+        )
+    else:
+        provider = type('UnavailableProvider', (), {'available': False})()
+
+    result = module.PdfInspectorAdapter(
+        provider,
+        inspector=type('Inspector', (), {
+            'process_pdf': staticmethod(process),
+            'extract_pages_markdown': staticmethod(extract_pages),
+        })(),
+        ocr_mode=ocr_mode,
+        **kwargs,
+    ).extract(str(source), document_id, 'preserve')
+
+    assert per_page_calls == [[1], [0, 1]]
+    assert result['content'] == []
+    assert not any(
+        'STALE_GARBLED' in node.get('text', '')
+        for node in result['content']
+    )
+    warning = next(
+        item for item in result['warnings']
+        if item['code'] == 'pdf_inspector_alignment_ocr_fallback'
+    )
+    if ocr_mode == 'off':
+        assert 'OCR was disabled' in warning['message']
+        assert not any(
+            item['code'] == 'ocr_unavailable'
+            for item in result['warnings']
+        )
+    else:
+        assert 'routed to ordered OCR' in warning['message']
+        unavailable_pages = {
+            item['source_unit']
+            for item in result['warnings']
+            if item['code'] == 'ocr_unavailable'
+        }
+        assert len(unavailable_pages) == 2
+
+
+def test_pdf_inspector_out_of_order_flagged_spans_route_all_pages_to_ocr(
+    monkeypatch, tmp_path
+):
+    import pdf_inspector_adapter as module
+
+    source = tmp_path / 'overlapping-anchors.pdf'
+    source.write_bytes(b'%PDF fake')
+    document_id = 'sha256:' + ('4' * 64)
+    monkeypatch.setattr(module, '_pdf_page_count', lambda _source: 5)
+    monkeypatch.setattr(
+        module, 'repair_standard_cid_tounicode', lambda _source, _target: (0, [])
+    )
+    page_one = '# Healthy page 1\n\nHEALTHY_ONE'
+    page_four = '# Healthy page 4\n\nHEALTHY_FOUR'
+    page_two = '# Flagged page 2\n\nSTALE_TWO'
+    page_five = '# Flagged page 5\n\nSTALE_FIVE'
+
+    def process(_source, pages=None):
+        if pages is None:
+            return _processed_result(
+                page_one
+                + '\n\n' + page_five
+                + '\n\n# Healthy page 3\n\nHEALTHY_THREE\n\n'
+                + page_four
+                + '\n\n' + page_two,
+                5,
+                ocr_pages=(2, 5),
+                reasons={2: ('scanned',), 5: ('scanned',)},
+            )
+        selected = {
+            (2,): page_two,
+            (5,): page_five,
+        }
+        return _processed_result(selected[tuple(pages)], 5)
+
+    requested = []
+
+    def run_ocr(_source, pages, _provider):
+        requested.append(set(pages))
+        return {
+            page: ([{
+                'text': f'Fallback OCR page {page}',
+                'bbox': [10, 20, 200, 40],
+                'confidence': 0.99,
+            }], None, None)
+            for page in pages
+        }
+
+    provider = type('Provider', (), {
+        'available': True, 'name': 'fake-ocr', 'version': '1.0'
+    })()
+    result = module.PdfInspectorAdapter(
+        provider,
+        inspector=type('Inspector', (), {'process_pdf': staticmethod(process)})(),
+        ocr_mode='auto',
+        ocr_runner=run_ocr,
+    ).extract(str(source), document_id, 'preserve')
+
+    assert requested == [{1, 2, 3, 4, 5}]
+    assert [node['text'] for node in result['content']] == [
+        f'Fallback OCR page {page}' for page in range(1, 6)
+    ]
+    assert any(
+        warning['code'] == 'pdf_inspector_alignment_ocr_fallback'
+        for warning in result['warnings']
+    )
+
+
+def test_pdf_inspector_force_uses_ordered_ocr_without_calling_inspector(
+    monkeypatch, tmp_path
+):
+    import pdf_inspector_adapter as module
+
+    source = tmp_path / 'forced-ocr.pdf'
+    source.write_bytes(b'%PDF fake')
+    document_id = 'sha256:' + ('9' * 64)
+    monkeypatch.setattr(module, '_pdf_page_count', lambda _source: 2)
+
+    def unexpected_process(*_args, **_kwargs):
+        raise AssertionError('force mode must not call PDF Inspector')
+
+    requested = []
+
+    def run_ocr(_source, pages, _provider):
+        requested.append(set(pages))
+        return {
+            page: ([{
+                'text': f'Forced OCR page {page}',
+                'bbox': [10, 20, 200, 40],
+                'confidence': 0.99,
+            }], None, None)
+            for page in pages
+        }
+
+    provider = type('Provider', (), {
+        'available': True, 'name': 'fake-ocr', 'version': '1.0'
+    })()
+    result = module.PdfInspectorAdapter(
+        provider,
+        inspector=type('Inspector', (), {
+            'process_pdf': staticmethod(unexpected_process)
+        })(),
+        ocr_mode='force',
+        ocr_runner=run_ocr,
+    ).extract(str(source), document_id, 'preserve')
+
+    assert requested == [{1, 2}]
+    assert [node['text'] for node in result['content']] == [
+        'Forced OCR page 1', 'Forced OCR page 2'
+    ]
+
+
+def test_pdf_inspector_adapter_does_not_filter_inspector_header_footer_text(
+    monkeypatch, tmp_path
+):
+    import pdf_inspector_adapter as module
+
+    source = tmp_path / 'inspector-chrome.pdf'
+    source.write_bytes(b'%PDF fake')
+    document_id = 'sha256:' + ('6' * 64)
+    monkeypatch.setattr(module, '_pdf_page_count', lambda _source: 2)
+    monkeypatch.setattr(
+        module, 'repair_standard_cid_tounicode', lambda _source, _target: (0, [])
+    )
+    inspector_markdown = (
+        'CONFIDENTIAL\n\nFirst body.\n\nFooter 1\n\n'
+        'CONFIDENTIAL\n\nSecond body.\n\nFooter 2'
+    )
+    result = module.PdfInspectorAdapter(
+        inspector=type('Inspector', (), {
+            'process_pdf': staticmethod(
+                lambda _source, pages=None: _processed_result(
+                    inspector_markdown, 2
+                )
+            )
+        })(),
+        ocr_mode='auto',
+    ).extract(str(source), document_id, 'preserve')
+
+    emitted = '\n'.join(node.get('text', '') for node in result['content'])
+    assert emitted.count('CONFIDENTIAL') == 2
+    assert 'Footer 1' in emitted
+    assert 'Footer 2' in emitted
+
+
+def test_pdf_inspector_optional_image_failure_never_blocks_document(
+    monkeypatch, tmp_path
+):
+    import pdf_inspector_adapter as module
+
+    source = tmp_path / 'image-support-failed.pdf'
+    source.write_bytes(b'%PDF fake')
+    document_id = 'sha256:' + ('5' * 64)
+    monkeypatch.setattr(module, '_pdf_page_count', lambda _source: 1)
+    monkeypatch.setattr(
+        module, 'repair_standard_cid_tounicode', lambda _source, _target: (0, [])
+    )
+    monkeypatch.setattr(
+        module,
+        '_extract_pdf_image_support',
+        lambda *_args: (_ for _ in ()).throw(RuntimeError('synthetic image failure')),
+    )
+    result = module.PdfInspectorAdapter(
+        inspector=type('Inspector', (), {
+            'process_pdf': staticmethod(
+                lambda _source, pages=None: _processed_result(
+                    '# Inspector title\n\nInspector body.', 1
+                )
+            )
+        })(),
+        ocr_mode='auto',
+    ).extract(
+        str(source), document_id, 'preserve', tmp_path / 'assets' / 'images'
+    )
+
+    assert [node['text'] for node in result['content']] == [
+        'Inspector title', 'Inspector body.'
+    ]
+    assert any(
+        warning['code'] == 'pdf_image_extraction_failed'
+        for warning in result['warnings']
+    )
+
+
+@pytest.mark.parametrize(
+    ('encoding', 'vertical'),
+    [('/Identity-H', False), ('/Identity-V', True)],
+)
+def test_pdf_inspector_repairs_standard_identity_cid_font(
+    tmp_path, encoding, vertical
+):
+    from pdfminer.cmapdb import CMapDB
+    from pypdf import PdfReader, PdfWriter
+    from pypdf.generic import (
+        ArrayObject, DictionaryObject, NameObject, NumberObject, TextStringObject,
+    )
+    from pdf_inspector_adapter import repair_standard_cid_tounicode
+
+    source = tmp_path / f'identity-{"v" if vertical else "h"}.pdf'
+    target = tmp_path / f'identity-{"v" if vertical else "h"}.repaired.pdf'
+    writer = PdfWriter()
+    page = writer.add_blank_page(width=612, height=792)
+    descendant = DictionaryObject({
+        NameObject('/Type'): NameObject('/Font'),
+        NameObject('/Subtype'): NameObject('/CIDFontType0'),
+        NameObject('/BaseFont'): NameObject('/SyntheticJapan'),
+        NameObject('/CIDSystemInfo'): DictionaryObject({
+            NameObject('/Registry'): TextStringObject('Adobe'),
+            NameObject('/Ordering'): TextStringObject('Japan1'),
+            NameObject('/Supplement'): NumberObject(0),
+        }),
+    })
+    font = DictionaryObject({
+        NameObject('/Type'): NameObject('/Font'),
+        NameObject('/Subtype'): NameObject('/Type0'),
+        NameObject('/BaseFont'): NameObject('/SyntheticJapan'),
+        NameObject('/Encoding'): NameObject(encoding),
+        NameObject('/DescendantFonts'): ArrayObject([writer._add_object(descendant)]),
+    })
+    page[NameObject('/Resources')] = DictionaryObject({
+        NameObject('/Font'): DictionaryObject({
+            NameObject('/F1'): writer._add_object(font),
+        }),
+    })
+    with source.open('wb') as handle:
+        writer.write(handle)
+
+    count, collections = repair_standard_cid_tounicode(source, target)
+    repaired_font = (
+        PdfReader(str(target)).pages[0]['/Resources']['/Font']['/F1'].get_object()
+    )
+    cmap = repaired_font['/ToUnicode'].get_object().get_data()
+    expected_map = CMapDB.get_unicode_map('Adobe-Japan1', vertical=vertical)
+    opposite_map = CMapDB.get_unicode_map('Adobe-Japan1', vertical=not vertical)
+    differing_cid = next(
+        cid
+        for cid, value in expected_map.cid2unichr.items()
+        if 0 <= cid <= 0xFFFF
+        and value
+        and opposite_map.cid2unichr.get(cid) not in {None, value}
+    )
+    expected_hex = expected_map.cid2unichr[differing_cid].encode(
+        'utf-16-be'
+    ).hex().upper()
+    opposite_hex = opposite_map.cid2unichr[differing_cid].encode(
+        'utf-16-be'
+    ).hex().upper()
+
+    assert count == 1
+    assert collections == ['Adobe-Japan1']
+    assert b'begincmap' in cmap
+    assert f'<{differing_cid:04X}> <{expected_hex}>'.encode('ascii') in cmap
+    assert f'<{differing_cid:04X}> <{opposite_hex}>'.encode('ascii') not in cmap
+
+
+def test_legacy_pdfium_native_pdf_two_columns_are_not_interleaved(tmp_path):
     pdf = tmp_path / 'columns.pdf'
 
     def draw(c):
@@ -1546,7 +2893,7 @@ def test_native_pdf_two_columns_are_not_interleaved(tmp_path):
             c.drawString(340, y, f'R{index} right column')
 
     _make_pdf(pdf, draw)
-    bundle = _run_bundle(pdf, tmp_path / 'out')[3]
+    bundle = _run_legacy_pdfium_fixture_bundle(pdf, tmp_path / 'out')[3]
     markdown = (bundle / 'columns.md').read_text(encoding='utf-8')
     positions = [markdown.index(label) for label in ('L1', 'L2', 'L3', 'R1', 'R2', 'R3')]
     assert positions == sorted(positions)
@@ -1554,7 +2901,7 @@ def test_native_pdf_two_columns_are_not_interleaved(tmp_path):
     assert any(warning['code'] == 'multi_column_order_inferred' for warning in data['quality']['warnings'])
 
 
-def test_pdf_line_joining_handles_cjk_hyphen_indent_and_list_continuation():
+def test_legacy_pdfium_pdf_line_joining_handles_cjk_hyphen_indent_and_list_continuation():
     from pdf_adapter import _classify_blocks, _join_lines
     assert _join_lines(['這是第一行', '接續內容']) == '這是第一行接續內容'
     assert _join_lines(['inter-', 'national']) == 'international'
@@ -1582,7 +2929,7 @@ def test_pdf_line_joining_handles_cjk_hyphen_indent_and_list_continuation():
         ('First sentence.\nSecond sentence.', 'First sentence. Second sentence.'),
     ],
 )
-def test_pdf_join_lines_normalizes_pdfium_physical_breaks(source, expected):
+def test_legacy_pdfium_pdf_join_lines_normalizes_pdfium_physical_breaks(source, expected):
     from pdf_adapter import _join_lines
 
     actual = _join_lines([source])
@@ -1591,7 +2938,7 @@ def test_pdf_join_lines_normalizes_pdfium_physical_breaks(source, expected):
     assert not any(marker in actual for marker in ('\x02', '\r', '\n'))
 
 
-def test_pdf_physical_break_does_not_invent_hyphen_across_fragments():
+def test_legacy_pdfium_pdf_physical_break_does_not_invent_hyphen_across_fragments():
     from pdf_adapter import _join_lines, _merge_fragments
 
     assert _join_lines(['Revenue\n', 'growth']) == 'Revenue growth'
@@ -1609,7 +2956,7 @@ def test_pdf_physical_break_does_not_invent_hyphen_across_fragments():
     assert _merge_fragments(fragments) == 'Revenue growth'
 
 
-def test_pdf_unmapped_glyph_resolution_only_treats_hyphen_shape_as_hyphen():
+def test_legacy_pdfium_pdf_unmapped_glyph_resolution_only_treats_hyphen_shape_as_hyphen():
     from pdf_adapter import _join_lines, _resolve_unmapped_glyphs
 
     fragment = {
@@ -1634,7 +2981,7 @@ def test_pdf_unmapped_glyph_resolution_only_treats_hyphen_shape_as_hyphen():
     assert unresolved == 1
 
 
-def test_pdf_dewrap_preserves_lexical_hyphen():
+def test_legacy_pdfium_pdf_dewrap_preserves_lexical_hyphen():
     from pdf_adapter import _join_lines
 
     assert _join_lines(['A state-of-', 'the-art system.']) == 'A state-of-the-art system.'
@@ -1642,7 +2989,7 @@ def test_pdf_dewrap_preserves_lexical_hyphen():
     assert _join_lines(['A cost-', 'effective design.']) == 'A cost-effective design.'
 
 
-def test_pdf_merge_fragments_removes_boundary_newline():
+def test_legacy_pdfium_pdf_merge_fragments_removes_boundary_newline():
     from pdf_adapter import _merge_fragments
 
     fragments = [
@@ -1659,7 +3006,7 @@ def test_pdf_merge_fragments_removes_boundary_newline():
     assert _merge_fragments(fragments) == 'Hello world'
 
 
-def test_native_pdf_multiline_text_object_removes_physical_break_markers(tmp_path):
+def test_legacy_pdfium_native_pdf_multiline_text_object_removes_physical_break_markers(tmp_path):
     pdf = tmp_path / 'physical-wrap.pdf'
 
     def draw(c):
@@ -1672,7 +3019,7 @@ def test_native_pdf_multiline_text_object_removes_physical_break_markers(tmp_pat
         c.drawText(text)
 
     _make_pdf(pdf, draw)
-    code, _, stderr, bundle = _run_bundle(pdf, tmp_path / 'out')
+    code, _, stderr, bundle = _run_legacy_pdfium_fixture_bundle(pdf, tmp_path / 'out')
 
     assert code == 0, stderr
     data = _load_bundle(bundle)
@@ -1681,7 +3028,7 @@ def test_native_pdf_multiline_text_object_removes_physical_break_markers(tmp_pat
     assert '\x02' not in (bundle / 'physical-wrap.md').read_text(encoding='utf-8')
 
 
-def test_pdf_dewrap_preserves_hard_paragraph_gap(tmp_path):
+def test_legacy_pdfium_pdf_dewrap_preserves_hard_paragraph_gap(tmp_path):
     source = tmp_path / 'hard-paragraph-gap.pdf'
 
     def draw(c):
@@ -1694,7 +3041,7 @@ def test_pdf_dewrap_preserves_hard_paragraph_gap(tmp_path):
         c.drawText(text)
 
     _make_pdf(source, draw)
-    code, _, stderr, bundle = _run_bundle(source, tmp_path / 'out')
+    code, _, stderr, bundle = _run_legacy_pdfium_fixture_bundle(source, tmp_path / 'out')
 
     assert code == 0, stderr
     paragraphs = [
@@ -1707,7 +3054,7 @@ def test_pdf_dewrap_preserves_hard_paragraph_gap(tmp_path):
     ]
 
 
-def test_pdf_numbered_large_label_is_heading_before_list_detection():
+def test_legacy_pdfium_pdf_numbered_large_label_is_heading_before_list_detection():
     from pdf_adapter import _classify_blocks
 
     blocks = _classify_blocks(
@@ -1733,7 +3080,7 @@ def test_pdf_numbered_large_label_is_heading_before_list_detection():
     assert ordinary_list[0]['type'] == 'list_item'
 
 
-def test_document_body_size_uses_character_weighted_typography():
+def test_legacy_pdfium_document_body_size_uses_character_weighted_typography():
     from pdf_adapter import _document_body_size
 
     cover = [[_pdf_layout_line('Large Cover Title', y=700, font_size=28)]]
@@ -1745,7 +3092,7 @@ def test_document_body_size_uses_character_weighted_typography():
     assert _document_body_size(cover + body) == pytest.approx(10.0)
 
 
-def test_document_typography_falls_back_to_line_height_when_font_size_is_degenerate():
+def test_legacy_pdfium_document_typography_falls_back_to_line_height_when_font_size_is_degenerate():
     from pdf_adapter import _classify_blocks
 
     heading = _pdf_layout_line('Executive Summary', y=730, font_size=1)
@@ -1766,7 +3113,7 @@ def test_document_typography_falls_back_to_line_height_when_font_size_is_degener
     assert blocks[1]['type'] == 'paragraph'
 
 
-def test_document_typography_height_fallback_ignores_subscripts_and_rotated_text():
+def test_legacy_pdfium_document_typography_height_fallback_ignores_subscripts_and_rotated_text():
     from pdf_adapter import _classify_blocks
 
     heading = _pdf_layout_line('Executive Summary', y=730, font_size=1)
@@ -1790,7 +3137,7 @@ def test_document_typography_height_fallback_ignores_subscripts_and_rotated_text
     assert rotated_block['type'] == 'paragraph'
 
 
-def test_pdf_cjk_indent_does_not_force_independent_paragraphs_together():
+def test_legacy_pdfium_pdf_cjk_indent_does_not_force_independent_paragraphs_together():
     from pdf_adapter import _classify_blocks
 
     blocks = _classify_blocks(
@@ -1805,7 +3152,7 @@ def test_pdf_cjk_indent_does_not_force_independent_paragraphs_together():
     assert [block['text'] for block in blocks] == ['第一段没有句号', '第二段另起缩进']
 
 
-def test_native_pdf_full_width_title_precedes_two_columns(tmp_path):
+def test_legacy_pdfium_native_pdf_full_width_title_precedes_two_columns(tmp_path):
     pdf = tmp_path / 'title-columns.pdf'
 
     def draw(c):
@@ -1819,7 +3166,7 @@ def test_native_pdf_full_width_title_precedes_two_columns(tmp_path):
             c.drawString(340, y, f'R{index} right column')
 
     _make_pdf(pdf, draw)
-    code, _, stderr, bundle = _run_bundle(pdf, tmp_path / 'out')
+    code, _, stderr, bundle = _run_legacy_pdfium_fixture_bundle(pdf, tmp_path / 'out')
 
     assert code == 0, stderr
     data = _load_bundle(bundle)
@@ -1849,18 +3196,22 @@ def test_ocr_required_page_publishes_partial_bundle(tmp_path):
         c.rect(72, 600, 200, 100, stroke=1, fill=0)
 
     _make_pdf(pdf, draw)
-    code, stdout, stderr, bundle = _run_bundle(pdf, tmp_path / 'out')
+    code, stdout, stderr, bundle = _run_pipeline_bundle(pdf, tmp_path / 'out')
     assert code == 0, stderr
     data = _load_bundle(bundle)
     assert data['quality']['status'] == 'partial'
-    assert data['source_units'][1]['status'] == 'ocr_required'
+    page_two = next(
+        unit for unit in data['source_units']
+        if unit['type'] == 'page' and unit['index'] == 2
+    )
+    assert page_two['status'] == 'ocr_required'
     assert '[PARTIAL]' in stdout
 
 
 def test_pdf_without_any_usable_content_fails_without_publication(tmp_path):
     pdf = tmp_path / 'blank.pdf'
     _make_pdf(pdf, lambda c: c.showPage())
-    code, _, stderr, bundle = _run_bundle(pdf, tmp_path / 'out')
+    code, _, stderr, bundle = _run_pipeline_bundle(pdf, tmp_path / 'out')
     assert code == 1
     assert 'no usable content' in stderr
     assert not bundle.exists()
@@ -1873,17 +3224,24 @@ def test_pdf_embedded_image_is_published_and_referenced(tmp_path):
     pdf = tmp_path / 'picture.pdf'
 
     def draw(c):
-        c.drawString(72, 720, 'Before image')
-        c.drawImage(str(image), 72, 650, width=40, height=40)
-        c.drawString(72, 620, 'After image')
+        for index in range(8):
+            c.drawString(72, 760 - index * 12, f'Before image line {index}')
+        c.drawImage(str(image), 72, 640, width=40, height=40)
+        for index in range(8):
+            c.drawString(72, 620 - index * 12, f'After image line {index}')
 
     _make_pdf(pdf, draw)
-    code, _, stderr, bundle = _run_bundle(pdf, tmp_path / 'out')
+    code, _, stderr, bundle = _run_pipeline_bundle(pdf, tmp_path / 'out')
     assert code == 0, stderr
     data = _load_bundle(bundle)
     assert len(data['assets']) == 1
     assert any(node['type'] == 'image' and node['asset_id'] == data['assets'][0]['asset_id'] for node in data['content'])
-    assert [node['type'] for node in data['content']] == ['paragraph', 'image', 'paragraph']
+    visible_text = '\n'.join(
+        node.get('text', '') for node in data['content'] if node['type'] != 'image'
+    )
+    assert all(f'Before image line {index}' in visible_text for index in range(8))
+    assert all(f'After image line {index}' in visible_text for index in range(8))
+    assert [node['type'] for node in data['content']][1] == 'image'
     asset = bundle / data['assets'][0]['path']
     assert asset.exists()
     import hashlib
@@ -2009,7 +3367,7 @@ def test_docx_bundle_exports_embedded_image_to_json_and_markdown(tmp_path):
     document.add_picture(str(picture))
     document.add_paragraph('After Office image')
     document.save(source)
-    code, stdout, stderr, bundle = _run_bundle(source, tmp_path / 'out')
+    code, stdout, stderr, bundle = _run_product_bundle(source, tmp_path / 'out')
     assert code == 0, stderr
     data, _, markdown = _assert_single_office_bundle_image(bundle)
     assert data['quality']['status'] == 'complete'
@@ -2037,7 +3395,7 @@ def test_pptx_bundle_exports_embedded_image_to_json_and_markdown(tmp_path):
     slide.shapes.add_picture(str(picture), Inches(1), Inches(2))
     presentation.save(source)
 
-    code, _, stderr, bundle = _run_bundle(source, tmp_path / 'out')
+    code, _, stderr, bundle = _run_product_bundle(source, tmp_path / 'out')
     assert code == 0, stderr
     data, _, markdown = _assert_single_office_bundle_image(bundle)
     assert 'Slide text' in markdown
@@ -2058,7 +3416,7 @@ def test_xlsx_bundle_exports_image_with_inferred_position_warning(tmp_path):
     sheet.add_image(SpreadsheetImage(str(picture)), 'A3')
     workbook.save(source)
 
-    code, _, stderr, bundle = _run_bundle(source, tmp_path / 'out')
+    code, _, stderr, bundle = _run_product_bundle(source, tmp_path / 'out')
     assert code == 0, stderr
     data, _, markdown = _assert_single_office_bundle_image(bundle)
     assert 'Sheet text' in markdown
@@ -2116,7 +3474,7 @@ def test_docx_missing_embedded_image_publishes_text_without_dangling_link(tmp_pa
                 replacement.writestr(item, original.read(item.filename))
     rewritten.replace(source)
 
-    code, _, stderr, bundle = _run_bundle(source, tmp_path / 'out')
+    code, _, stderr, bundle = _run_product_bundle(source, tmp_path / 'out')
 
     assert code == 0, stderr
     data = _load_bundle(bundle)
@@ -2130,7 +3488,7 @@ def test_docx_missing_embedded_image_publishes_text_without_dangling_link(tmp_pa
     assert 'data:image/' not in markdown
 
 
-def test_pdf_fake_ocr_provider_contract_can_supply_nodes(tmp_path):
+def test_legacy_pdfium_pdf_fake_ocr_provider_contract_can_supply_nodes(tmp_path):
     from canonical import sha256_file
     from pdf_adapter import PdfAdapter
     source = tmp_path / 'ocr.pdf'
@@ -2157,7 +3515,7 @@ def test_pdf_fake_ocr_provider_contract_can_supply_nodes(tmp_path):
     assert any(item['code'] == 'ocr_applied' for item in result['warnings'])
 
 
-def test_pdf_ocr_off_never_calls_provider(tmp_path):
+def test_legacy_pdfium_pdf_ocr_off_never_calls_provider(tmp_path):
     from canonical import sha256_file
     from pdf_adapter import PdfAdapter
 
@@ -2184,7 +3542,7 @@ def test_pdf_ocr_off_never_calls_provider(tmp_path):
     assert result['source_units'][0]['status'] == 'ocr_required'
 
 
-def test_pdf_ocr_auto_routing_ignores_small_logo_but_selects_dominant_scan():
+def test_legacy_pdfium_pdf_ocr_auto_routing_ignores_small_logo_but_selects_dominant_scan():
     from pdf_adapter import _analyze_ocr_need
 
     healthy = _analyze_ocr_need(
@@ -2213,7 +3571,7 @@ def test_pdf_ocr_auto_routing_ignores_small_logo_but_selects_dominant_scan():
     assert 'sparse_text_with_dominant_image' in scanned['reasons']
 
 
-def test_pdf_ocr_auto_skips_native_page_and_recovers_scan_page(tmp_path):
+def test_legacy_pdfium_pdf_ocr_auto_skips_native_page_and_recovers_scan_page(tmp_path):
     from canonical import sha256_file
     from pdf_adapter import PdfAdapter
 
@@ -2258,7 +3616,7 @@ def test_pdf_ocr_auto_skips_native_page_and_recovers_scan_page(tmp_path):
     assert recovered['source_locator']['ocr_confidence'] == pytest.approx(0.96)
 
 
-def test_pdf_ocr_records_reproducibility_provenance_without_changing_stable_ids(tmp_path):
+def test_legacy_pdfium_pdf_ocr_records_reproducibility_provenance_without_changing_stable_ids(tmp_path):
     from canonical import sha256_file
     from ocr_provider import OcrPageResult, OcrSettings, OcrSpan
     from pdf_adapter import PdfAdapter
@@ -2322,7 +3680,7 @@ def test_pdf_ocr_records_reproducibility_provenance_without_changing_stable_ids(
     assert first['content'][0]['id'] == second['content'][0]['id']
 
 
-def test_pdf_ocr_required_page_keeps_partial_status_for_trivial_recovery(tmp_path):
+def test_legacy_pdfium_pdf_ocr_required_page_keeps_partial_status_for_trivial_recovery(tmp_path):
     from canonical import sha256_file
     from pdf_adapter import PdfAdapter
 
@@ -2345,7 +3703,7 @@ def test_pdf_ocr_required_page_keeps_partial_status_for_trivial_recovery(tmp_pat
     assert any(item['code'] == 'ocr_required' for item in result['warnings'])
 
 
-def test_pdf_ocr_overlap_does_not_drop_semantically_different_contained_line():
+def test_legacy_pdfium_pdf_ocr_overlap_does_not_drop_semantically_different_contained_line():
     from pdf_adapter import _merge_native_ocr_fragments
 
     native = [{
@@ -2370,7 +3728,7 @@ def test_pdf_ocr_overlap_does_not_drop_semantically_different_contained_line():
     assert dropped_native == 0
 
 
-def test_pdf_ocr_force_deduplicates_native_overlap_and_keeps_spatial_order(tmp_path):
+def test_legacy_pdfium_pdf_ocr_force_deduplicates_native_overlap_and_keeps_spatial_order(tmp_path):
     from canonical import sha256_file
     from pdf_adapter import PdfAdapter
 
@@ -2411,7 +3769,7 @@ def test_pdf_ocr_force_deduplicates_native_overlap_and_keeps_spatial_order(tmp_p
     assert text.index('Native heading') < text.index('OCR-only lower line')
 
 
-def test_pdf_ocr_failure_is_normalized_and_preserves_other_pages(tmp_path):
+def test_legacy_pdfium_pdf_ocr_failure_is_normalized_and_preserves_other_pages(tmp_path):
     from canonical import sha256_file
     from ocr_provider import OcrProviderError
     from pdf_adapter import PdfAdapter
@@ -2544,7 +3902,7 @@ def test_rapidocr_provider_caches_initialization_failure():
     assert len(calls) == 1
 
 
-def test_pdf_rotation_is_normalized_while_source_orientation_is_recorded(tmp_path):
+def test_legacy_pdfium_pdf_rotation_is_normalized_while_source_orientation_is_recorded(tmp_path):
     source = tmp_path / 'rotated.pdf'
 
     def draw(c):
@@ -2555,7 +3913,7 @@ def test_pdf_rotation_is_normalized_while_source_orientation_is_recorded(tmp_pat
         c.restoreState()
 
     _make_pdf(source, draw)
-    code, _, stderr, bundle = _run_bundle(source, tmp_path / 'out')
+    code, _, stderr, bundle = _run_legacy_pdfium_fixture_bundle(source, tmp_path / 'out')
     assert code == 0, stderr
     data = _load_bundle(bundle)
     locator = data['source_units'][0]['locator']
@@ -2564,7 +3922,7 @@ def test_pdf_rotation_is_normalized_while_source_orientation_is_recorded(tmp_pat
     assert 'Rotated text' in (bundle / 'rotated.md').read_text(encoding='utf-8')
 
 
-def test_cross_page_paragraphs_merge_with_locator_span(tmp_path):
+def test_legacy_pdfium_cross_page_paragraphs_merge_with_locator_span(tmp_path):
     from canonical import stable_id
 
     source = tmp_path / 'continued.pdf'
@@ -2575,7 +3933,7 @@ def test_cross_page_paragraphs_merge_with_locator_span(tmp_path):
         c.drawString(72, 740, 'on the next page.')
 
     _make_pdf(source, draw)
-    code, _, stderr, bundle = _run_bundle(source, tmp_path / 'out')
+    code, _, stderr, bundle = _run_legacy_pdfium_fixture_bundle(source, tmp_path / 'out')
     assert code == 0, stderr
     data = _load_bundle(bundle)
     paragraphs = [node for node in data['content'] if node['type'] == 'paragraph']
@@ -2589,7 +3947,7 @@ def test_cross_page_paragraphs_merge_with_locator_span(tmp_path):
 
 
 @pytest.mark.parametrize('blocker', ['completed', 'colon', 'middle', 'other_column'])
-def test_cross_page_paragraph_merge_respects_semantic_and_geometry_blockers(tmp_path, blocker):
+def test_legacy_pdfium_cross_page_paragraph_merge_respects_semantic_and_geometry_blockers(tmp_path, blocker):
     source = tmp_path / f'blocked-{blocker}.pdf'
 
     def draw(c):
@@ -2606,7 +3964,7 @@ def test_cross_page_paragraph_merge_respects_semantic_and_geometry_blockers(tmp_
         c.drawString(current_x, 740, 'on the next page.')
 
     _make_pdf(source, draw)
-    code, _, stderr, bundle = _run_bundle(source, tmp_path / 'out')
+    code, _, stderr, bundle = _run_legacy_pdfium_fixture_bundle(source, tmp_path / 'out')
 
     assert code == 0, stderr
     paragraphs = [node for node in _load_bundle(bundle)['content'] if node['type'] == 'paragraph']
@@ -2614,7 +3972,7 @@ def test_cross_page_paragraph_merge_respects_semantic_and_geometry_blockers(tmp_
     assert all('continued_to_page' not in node['source_locator'] for node in paragraphs)
 
 
-def test_cross_page_paragraph_merge_rejects_repeated_page_header(tmp_path):
+def test_legacy_pdfium_cross_page_paragraph_merge_rejects_repeated_page_header(tmp_path):
     source = tmp_path / 'repeated-header.pdf'
 
     def draw(c):
@@ -2624,7 +3982,7 @@ def test_cross_page_paragraph_merge_rejects_repeated_page_header(tmp_path):
         c.drawString(72, 740, 'confidential report')
 
     _make_pdf(source, draw)
-    code, _, stderr, bundle = _run_bundle(source, tmp_path / 'out')
+    code, _, stderr, bundle = _run_legacy_pdfium_fixture_bundle(source, tmp_path / 'out')
 
     assert code == 0, stderr
     data = _load_bundle(bundle)
@@ -2638,7 +3996,7 @@ def test_cross_page_paragraph_merge_rejects_repeated_page_header(tmp_path):
     assert 'confidential report' not in markdown
 
 
-def test_cross_page_paragraph_merge_skips_classified_running_chrome(tmp_path):
+def test_legacy_pdfium_cross_page_paragraph_merge_skips_classified_running_chrome(tmp_path):
     source = tmp_path / 'continued-through-chrome.pdf'
 
     def draw(c):
@@ -2651,7 +4009,7 @@ def test_cross_page_paragraph_merge_skips_classified_running_chrome(tmp_path):
         c.drawString(72, 25, 'Acme Research')
 
     _make_pdf(source, draw)
-    code, _, stderr, bundle = _run_bundle(source, tmp_path / 'out')
+    code, _, stderr, bundle = _run_legacy_pdfium_fixture_bundle(source, tmp_path / 'out')
 
     assert code == 0, stderr
     data = _load_bundle(bundle)
@@ -2662,7 +4020,7 @@ def test_cross_page_paragraph_merge_skips_classified_running_chrome(tmp_path):
     assert [span['page'] for span in paragraphs[0]['source_locator']['spans']] == [1, 2]
 
 
-def test_pdf_borderless_table_keeps_text_header_and_sparse_cells(tmp_path):
+def test_legacy_pdfium_pdf_borderless_table_keeps_text_header_and_sparse_cells(tmp_path):
     source = tmp_path / 'borderless-table.pdf'
 
     def draw(c):
@@ -2680,7 +4038,7 @@ def test_pdf_borderless_table_keeps_text_header_and_sparse_cells(tmp_path):
                 c.drawRightString(500, y, row[2])
 
     _make_pdf(source, draw)
-    code, _, stderr, bundle = _run_bundle(source, tmp_path / 'out')
+    code, _, stderr, bundle = _run_legacy_pdfium_fixture_bundle(source, tmp_path / 'out')
 
     assert code == 0, stderr
     data = _load_bundle(bundle)
@@ -2693,7 +4051,7 @@ def test_pdf_borderless_table_keeps_text_header_and_sparse_cells(tmp_path):
     assert [node['type'] for node in data['content']] == ['table']
 
 
-def test_pdf_word_grid_splits_single_text_object_rows_and_keeps_sparse_cells(tmp_path):
+def test_legacy_pdfium_pdf_word_grid_splits_single_text_object_rows_and_keeps_sparse_cells(tmp_path):
     source = tmp_path / 'single-object-table.pdf'
 
     def draw(c):
@@ -2707,7 +4065,7 @@ def test_pdf_word_grid_splits_single_text_object_rows_and_keeps_sparse_cells(tmp
             c.drawString(72, y, f'{row[0]:<20}{row[1]:<15}{row[2]:>10}')
 
     _make_pdf(source, draw)
-    code, _, stderr, bundle = _run_bundle(source, tmp_path / 'out')
+    code, _, stderr, bundle = _run_legacy_pdfium_fixture_bundle(source, tmp_path / 'out')
 
     assert code == 0, stderr
     data = _load_bundle(bundle)
@@ -2720,7 +4078,7 @@ def test_pdf_word_grid_splits_single_text_object_rows_and_keeps_sparse_cells(tmp
     assert [node['type'] for node in data['content']] == ['table']
 
 
-def test_pdf_four_column_sparse_row_is_not_folded_into_previous_row(tmp_path):
+def test_legacy_pdfium_pdf_four_column_sparse_row_is_not_folded_into_previous_row(tmp_path):
     source = tmp_path / 'four-column-sparse-row.pdf'
 
     def draw(c):
@@ -2736,7 +4094,7 @@ def test_pdf_four_column_sparse_row_is_not_folded_into_previous_row(tmp_path):
                     c.drawString(x, y, value)
 
     _make_pdf(source, draw)
-    code, _, stderr, bundle = _run_bundle(source, tmp_path / 'out')
+    code, _, stderr, bundle = _run_legacy_pdfium_fixture_bundle(source, tmp_path / 'out')
 
     assert code == 0, stderr
     tables = _load_bundle(bundle)['tables']
@@ -2749,7 +4107,7 @@ def test_pdf_four_column_sparse_row_is_not_folded_into_previous_row(tmp_path):
     ]
 
 
-def test_pdf_header_only_column_does_not_disqualify_numeric_table(tmp_path):
+def test_legacy_pdfium_pdf_header_only_column_does_not_disqualify_numeric_table(tmp_path):
     source = tmp_path / 'header-only-column.pdf'
 
     def draw(c):
@@ -2763,7 +4121,7 @@ def test_pdf_header_only_column_does_not_disqualify_numeric_table(tmp_path):
                 c.drawString(x, y, value)
 
     _make_pdf(source, draw)
-    code, _, stderr, bundle = _run_bundle(source, tmp_path / 'out')
+    code, _, stderr, bundle = _run_legacy_pdfium_fixture_bundle(source, tmp_path / 'out')
 
     assert code == 0, stderr
     table = _load_bundle(bundle)['tables'][0]
@@ -2774,7 +4132,7 @@ def test_pdf_header_only_column_does_not_disqualify_numeric_table(tmp_path):
     ]
 
 
-def test_pdf_pure_text_label_value_table_is_not_split_into_columns(tmp_path):
+def test_legacy_pdfium_pdf_pure_text_label_value_table_is_not_split_into_columns(tmp_path):
     source = tmp_path / 'label-value-table.pdf'
 
     def draw(c):
@@ -2787,7 +4145,7 @@ def test_pdf_pure_text_label_value_table_is_not_split_into_columns(tmp_path):
             c.drawString(250, y, value)
 
     _make_pdf(source, draw)
-    code, _, stderr, bundle = _run_bundle(source, tmp_path / 'out')
+    code, _, stderr, bundle = _run_legacy_pdfium_fixture_bundle(source, tmp_path / 'out')
 
     assert code == 0, stderr
     data = _load_bundle(bundle)
@@ -2800,7 +4158,7 @@ def test_pdf_pure_text_label_value_table_is_not_split_into_columns(tmp_path):
     assert [node['type'] for node in data['content']] == ['table']
 
 
-def test_pdf_wrapped_table_line_can_continue_multiple_cells(tmp_path):
+def test_legacy_pdfium_pdf_wrapped_table_line_can_continue_multiple_cells(tmp_path):
     source = tmp_path / 'multi-cell-wrap.pdf'
 
     def draw(c):
@@ -2817,7 +4175,7 @@ def test_pdf_wrapped_table_line_can_continue_multiple_cells(tmp_path):
         c.drawRightString(520, 678, '$186.20')
 
     _make_pdf(source, draw)
-    code, _, stderr, bundle = _run_bundle(source, tmp_path / 'out')
+    code, _, stderr, bundle = _run_legacy_pdfium_fixture_bundle(source, tmp_path / 'out')
 
     assert code == 0, stderr
     table = _load_bundle(bundle)['tables'][0]
@@ -2826,7 +4184,7 @@ def test_pdf_wrapped_table_line_can_continue_multiple_cells(tmp_path):
     ]
 
 
-def test_pdf_patterned_tail_continuation_is_kept_but_total_row_is_separate(tmp_path):
+def test_legacy_pdfium_pdf_patterned_tail_continuation_is_kept_but_total_row_is_separate(tmp_path):
     source = tmp_path / 'tail-continuation-and-total.pdf'
 
     def draw(c):
@@ -2846,7 +4204,7 @@ def test_pdf_patterned_tail_continuation_is_kept_but_total_row_is_separate(tmp_p
         c.drawRightString(520, 640, '$128.00')
 
     _make_pdf(source, draw)
-    code, _, stderr, bundle = _run_bundle(source, tmp_path / 'out')
+    code, _, stderr, bundle = _run_legacy_pdfium_fixture_bundle(source, tmp_path / 'out')
 
     assert code == 0, stderr
     data = _load_bundle(bundle)
@@ -2863,7 +4221,7 @@ def test_pdf_patterned_tail_continuation_is_kept_but_total_row_is_separate(tmp_p
     )
 
 
-def test_pdf_wrapped_table_cell_and_multiple_tables_preserve_boundaries(tmp_path):
+def test_legacy_pdfium_pdf_wrapped_table_cell_and_multiple_tables_preserve_boundaries(tmp_path):
     source = tmp_path / 'wrapped-and-multiple.pdf'
 
     def draw(c):
@@ -2883,7 +4241,7 @@ def test_pdf_wrapped_table_cell_and_multiple_tables_preserve_boundaries(tmp_path
         c.drawRightString(500, 540, '3')
 
     _make_pdf(source, draw)
-    code, _, stderr, bundle = _run_bundle(source, tmp_path / 'out')
+    code, _, stderr, bundle = _run_legacy_pdfium_fixture_bundle(source, tmp_path / 'out')
 
     assert code == 0, stderr
     data = _load_bundle(bundle)
@@ -2902,7 +4260,7 @@ def test_pdf_wrapped_table_cell_and_multiple_tables_preserve_boundaries(tmp_path
     assert data['content'][1]['text'] == 'Narrative between tables.'
 
 
-def test_pdf_table_does_not_absorb_trailing_source_note(tmp_path):
+def test_legacy_pdfium_pdf_table_does_not_absorb_trailing_source_note(tmp_path):
     source = tmp_path / 'table-with-source-note.pdf'
 
     def draw(c):
@@ -2916,7 +4274,7 @@ def test_pdf_table_does_not_absorb_trailing_source_note(tmp_path):
         c.drawString(72, 678, 'Source: company filings')
 
     _make_pdf(source, draw)
-    code, _, stderr, bundle = _run_bundle(source, tmp_path / 'out')
+    code, _, stderr, bundle = _run_legacy_pdfium_fixture_bundle(source, tmp_path / 'out')
 
     assert code == 0, stderr
     data = _load_bundle(bundle)
@@ -2925,7 +4283,7 @@ def test_pdf_table_does_not_absorb_trailing_source_note(tmp_path):
     assert data['content'][1]['text'] == 'Source: company filings'
 
 
-def test_pdf_caption_between_compatible_rows_preserves_physical_order(tmp_path):
+def test_legacy_pdfium_pdf_caption_between_compatible_rows_preserves_physical_order(tmp_path):
     source = tmp_path / 'table-caption-order.pdf'
 
     def draw(c):
@@ -2940,7 +4298,7 @@ def test_pdf_caption_between_compatible_rows_preserves_physical_order(tmp_path):
         c.drawRightString(500, 678, '20')
 
     _make_pdf(source, draw)
-    code, _, stderr, bundle = _run_bundle(source, tmp_path / 'out')
+    code, _, stderr, bundle = _run_legacy_pdfium_fixture_bundle(source, tmp_path / 'out')
 
     assert code == 0, stderr
     data = _load_bundle(bundle)
@@ -2952,7 +4310,7 @@ def test_pdf_caption_between_compatible_rows_preserves_physical_order(tmp_path):
     assert tables[content[2]['table_id']]['raw_rows'] == [['Beta', '20']]
 
 
-def test_pdf_adjacent_same_shape_tables_with_different_headers_remain_separate(tmp_path):
+def test_legacy_pdfium_pdf_adjacent_same_shape_tables_with_different_headers_remain_separate(tmp_path):
     source = tmp_path / 'adjacent-independent-tables.pdf'
 
     def draw(c):
@@ -2964,7 +4322,7 @@ def test_pdf_adjacent_same_shape_tables_with_different_headers_remain_separate(t
             c.drawRightString(500, y, right)
 
     _make_pdf(source, draw)
-    code, _, stderr, bundle = _run_bundle(source, tmp_path / 'out')
+    code, _, stderr, bundle = _run_legacy_pdfium_fixture_bundle(source, tmp_path / 'out')
 
     assert code == 0, stderr
     tables = _load_bundle(bundle)['tables']
@@ -2973,7 +4331,7 @@ def test_pdf_adjacent_same_shape_tables_with_different_headers_remain_separate(t
     assert tables[1]['raw_rows'][0] == ['Metric', 'Value']
 
 
-def test_pdf_cross_page_table_stitches_and_deduplicates_header(tmp_path):
+def test_legacy_pdfium_pdf_cross_page_table_stitches_and_deduplicates_header(tmp_path):
     from canonical import stable_id
 
     source = tmp_path / 'continued-table.pdf'
@@ -2996,7 +4354,7 @@ def test_pdf_cross_page_table_stitches_and_deduplicates_header(tmp_path):
             c.drawRightString(500, y, right)
 
     _make_pdf(source, draw)
-    code, _, stderr, bundle = _run_bundle(source, tmp_path / 'out')
+    code, _, stderr, bundle = _run_legacy_pdfium_fixture_bundle(source, tmp_path / 'out')
 
     assert code == 0, stderr
     data = _load_bundle(bundle)
@@ -3017,7 +4375,7 @@ def test_pdf_cross_page_table_stitches_and_deduplicates_header(tmp_path):
     )
 
 
-def test_pdf_cross_page_table_stitching_skips_running_chrome_nodes():
+def test_legacy_pdfium_pdf_cross_page_table_stitching_skips_running_chrome_nodes():
     from pdf_adapter import _merge_cross_page_tables
 
     def locator(page, box):
@@ -3075,7 +4433,7 @@ def test_pdf_cross_page_table_stitching_skips_running_chrome_nodes():
     )
 
 
-def test_pdf_same_shape_tables_away_from_page_edges_remain_independent(tmp_path):
+def test_legacy_pdfium_pdf_same_shape_tables_away_from_page_edges_remain_independent(tmp_path):
     source = tmp_path / 'independent-tables.pdf'
 
     def draw(c):
@@ -3088,7 +4446,7 @@ def test_pdf_same_shape_tables_away_from_page_edges_remain_independent(tmp_path)
             c.drawRightString(500, y, right)
 
     _make_pdf(source, draw)
-    code, _, stderr, bundle = _run_bundle(source, tmp_path / 'out')
+    code, _, stderr, bundle = _run_legacy_pdfium_fixture_bundle(source, tmp_path / 'out')
 
     assert code == 0, stderr
     data = _load_bundle(bundle)
@@ -3096,7 +4454,7 @@ def test_pdf_same_shape_tables_away_from_page_edges_remain_independent(tmp_path)
     assert all(not table.get('cross_page_continuation', False) for table in data['tables'])
 
 
-def test_pdf_boundary_tables_without_repeated_header_remain_independent(tmp_path):
+def test_legacy_pdfium_pdf_boundary_tables_without_repeated_header_remain_independent(tmp_path):
     source = tmp_path / 'boundary-independent-tables.pdf'
 
     def draw(c):
@@ -3113,7 +4471,7 @@ def test_pdf_boundary_tables_without_repeated_header_remain_independent(tmp_path
             c.drawRightString(500, y, right)
 
     _make_pdf(source, draw)
-    code, _, stderr, bundle = _run_bundle(source, tmp_path / 'out')
+    code, _, stderr, bundle = _run_legacy_pdfium_fixture_bundle(source, tmp_path / 'out')
 
     assert code == 0, stderr
     tables = _load_bundle(bundle)['tables']
@@ -3124,7 +4482,7 @@ def test_pdf_boundary_tables_without_repeated_header_remain_independent(tmp_path
 # --- v6.1.1 correctness foundation -------------------------------------------
 
 
-def test_pdf_running_chrome_is_canonical_but_hidden_from_markdown(tmp_path):
+def test_legacy_pdfium_pdf_running_chrome_is_canonical_but_hidden_from_markdown(tmp_path):
     source = tmp_path / 'running-chrome.pdf'
 
     def draw(c):
@@ -3142,7 +4500,7 @@ def test_pdf_running_chrome_is_canonical_but_hidden_from_markdown(tmp_path):
                 c.showPage()
 
     _make_pdf(source, draw)
-    code, _, stderr, bundle = _run_bundle(source, tmp_path / 'out')
+    code, _, stderr, bundle = _run_legacy_pdfium_fixture_bundle(source, tmp_path / 'out')
 
     assert code == 0, stderr
     data = _load_bundle(bundle)
@@ -3182,7 +4540,7 @@ def _native_fragment(text, bbox, *, angle=0, object_index=1, container_context=(
     return fragment
 
 
-def test_pdf_native_duplicate_paint_layer_deduplicates_exact_geometry_only():
+def test_legacy_pdfium_pdf_native_duplicate_paint_layer_deduplicates_exact_geometry_only():
     from pdf_adapter import _deduplicate_native_fragments
 
     exact = _native_fragment('Duplicate paint layer', [72, 700, 190, 712], object_index=1)
@@ -3203,7 +4561,7 @@ def test_pdf_native_duplicate_paint_layer_deduplicates_exact_geometry_only():
     ],
     ids=['different-position', 'different-rotation', 'visible-shadow', 'different-text'],
 )
-def test_pdf_native_overlap_dedup_preserves_non_equivalent_layers(candidate):
+def test_legacy_pdfium_pdf_native_overlap_dedup_preserves_non_equivalent_layers(candidate):
     from pdf_adapter import _deduplicate_native_fragments
 
     original = _native_fragment('Repeated label', [72, 700, 152, 712], object_index=1)
@@ -3213,7 +4571,7 @@ def test_pdf_native_overlap_dedup_preserves_non_equivalent_layers(candidate):
     assert dropped == 0
 
 
-def test_pdf_native_overlap_dedup_preserves_distinct_container_contexts():
+def test_legacy_pdfium_pdf_native_overlap_dedup_preserves_distinct_container_contexts():
     from pdf_adapter import _deduplicate_native_fragments
 
     first = _native_fragment(
@@ -3231,7 +4589,7 @@ def test_pdf_native_overlap_dedup_preserves_distinct_container_contexts():
     assert dropped == 0
 
 
-def test_pdf_container_chain_identity_tracks_nested_form_ancestry():
+def test_legacy_pdfium_pdf_container_chain_identity_tracks_nested_form_ancestry():
     import ctypes
     from types import SimpleNamespace
 
@@ -3245,7 +4603,7 @@ def test_pdf_container_chain_identity_tracks_nested_form_ancestry():
     assert _container_chain_identity(text_object) == (303, 202, 101)
 
 
-def test_pdf_character_geometry_refinement_preserves_internal_context():
+def test_legacy_pdfium_pdf_character_geometry_refinement_preserves_internal_context():
     from pdf_adapter import _fragments_from_character_geometry
 
     fragment = _native_fragment(
@@ -3266,7 +4624,7 @@ def test_pdf_character_geometry_refinement_preserves_internal_context():
     assert all(item['_object_index'] == 7 for item in refined)
 
 
-def test_pdf_native_duplicate_paint_layer_emits_text_once(tmp_path):
+def test_legacy_pdfium_pdf_native_duplicate_paint_layer_emits_text_once(tmp_path):
     source = tmp_path / 'duplicate-paint.pdf'
 
     def draw(c):
@@ -3275,7 +4633,7 @@ def test_pdf_native_duplicate_paint_layer_emits_text_once(tmp_path):
         c.drawString(72, 680, 'Independent body text.')
 
     _make_pdf(source, draw)
-    code, _, stderr, bundle = _run_bundle(source, tmp_path / 'out')
+    code, _, stderr, bundle = _run_legacy_pdfium_fixture_bundle(source, tmp_path / 'out')
 
     assert code == 0, stderr
     data = _load_bundle(bundle)
@@ -3286,7 +4644,7 @@ def test_pdf_native_duplicate_paint_layer_emits_text_once(tmp_path):
     assert 'Independent body text.' in markdown
 
 
-def test_pdf_ocr_auto_routes_fragment_and_unicode_map_failures():
+def test_legacy_pdfium_pdf_ocr_auto_routes_fragment_and_unicode_map_failures():
     from pdf_adapter import _analyze_ocr_need
 
     fragment_failure = _analyze_ocr_need(
@@ -3320,7 +4678,7 @@ def test_pdf_ocr_auto_routes_fragment_and_unicode_map_failures():
 
 
 @pytest.mark.parametrize('provider_kind', ['failure', 'empty'])
-def test_pdf_ocr_force_only_failure_keeps_healthy_native_page(tmp_path, provider_kind):
+def test_legacy_pdfium_pdf_ocr_force_only_failure_keeps_healthy_native_page(tmp_path, provider_kind):
     from canonical import sha256_file
     from ocr_provider import OcrProviderError
     from pdf_adapter import PdfAdapter
@@ -3357,7 +4715,7 @@ def test_pdf_ocr_force_only_failure_keeps_healthy_native_page(tmp_path, provider
     assert text.count('Healthy native paragraph remains authoritative after forced OCR.') == 1
 
 
-def test_pdf_ocr_elapsed_time_is_not_published_and_output_is_deterministic(tmp_path):
+def test_legacy_pdfium_pdf_ocr_elapsed_time_is_not_published_and_output_is_deterministic(tmp_path):
     from canonical import sha256_file
     from ocr_provider import OcrPageResult, OcrSettings, OcrSpan
     from pdf_adapter import PdfAdapter
@@ -3404,7 +4762,7 @@ def test_pdf_ocr_elapsed_time_is_not_published_and_output_is_deterministic(tmp_p
     assert first == second
 
 
-def test_pdf_ocr_only_rotated_page_uses_polygon_for_display_order(tmp_path):
+def test_legacy_pdfium_pdf_ocr_only_rotated_page_uses_polygon_for_display_order(tmp_path):
     from canonical import sha256_file
     from ocr_provider import OcrPageResult, OcrSettings, OcrSpan
     from pdf_adapter import PdfAdapter
@@ -3453,7 +4811,7 @@ def test_pdf_ocr_only_rotated_page_uses_polygon_for_display_order(tmp_path):
     assert result['content'][0]['source_locator']['layout_bbox'] != result['content'][0]['source_locator']['bbox']
 
 
-def test_pdf_two_column_tail_continues_into_right_column_once_with_spans(tmp_path):
+def test_legacy_pdfium_pdf_two_column_tail_continues_into_right_column_once_with_spans(tmp_path):
     source = tmp_path / 'column-flow.pdf'
 
     def draw(c):
@@ -3475,7 +4833,7 @@ def test_pdf_two_column_tail_continues_into_right_column_once_with_spans(tmp_pat
             c.drawString(330, y, text)
 
     _make_pdf(source, draw)
-    code, _, stderr, bundle = _run_bundle(source, tmp_path / 'out')
+    code, _, stderr, bundle = _run_legacy_pdfium_fixture_bundle(source, tmp_path / 'out')
 
     assert code == 0, stderr
     data = _load_bundle(bundle)
@@ -3495,7 +4853,7 @@ def test_pdf_two_column_tail_continues_into_right_column_once_with_spans(tmp_pat
 # --- v6.2 vector-table enhancement -------------------------------------------
 
 
-def test_pdf_vector_ruled_grid_recovers_short_all_text_table(tmp_path):
+def test_legacy_pdfium_pdf_vector_ruled_grid_recovers_short_all_text_table(tmp_path):
     source = tmp_path / 'vector-ruled-table.pdf'
 
     def draw(c):
@@ -3509,7 +4867,7 @@ def test_pdf_vector_ruled_grid_recovers_short_all_text_table(tmp_path):
         c.drawString(260, 665, 'Asia Pacific')
 
     _make_pdf(source, draw)
-    code, _, stderr, bundle = _run_bundle(source, tmp_path / 'out')
+    code, _, stderr, bundle = _run_legacy_pdfium_fixture_bundle(source, tmp_path / 'out')
 
     assert code == 0, stderr
     data = _load_bundle(bundle)
@@ -3524,7 +4882,7 @@ def test_pdf_vector_ruled_grid_recovers_short_all_text_table(tmp_path):
     assert table['source_locator']['column_ranges'] == [[72.0, 250.0], [250.0, 500.0]]
 
 
-def test_pdf_vector_ruled_grid_does_not_invent_numeric_data_header(tmp_path):
+def test_legacy_pdfium_pdf_vector_ruled_grid_does_not_invent_numeric_data_header(tmp_path):
     source = tmp_path / 'vector-data-only-table.pdf'
 
     def draw(c):
@@ -3538,7 +4896,7 @@ def test_pdf_vector_ruled_grid_does_not_invent_numeric_data_header(tmp_path):
         c.drawString(260, 665, '202')
 
     _make_pdf(source, draw)
-    code, _, stderr, bundle = _run_bundle(source, tmp_path / 'out')
+    code, _, stderr, bundle = _run_legacy_pdfium_fixture_bundle(source, tmp_path / 'out')
 
     assert code == 0, stderr
     table = _load_bundle(bundle)['tables'][0]
@@ -3546,7 +4904,7 @@ def test_pdf_vector_ruled_grid_does_not_invent_numeric_data_header(tmp_path):
     assert 'headers' not in table
 
 
-def test_pdf_vector_booktabs_uses_midrule_as_header_evidence(tmp_path):
+def test_legacy_pdfium_pdf_vector_booktabs_uses_midrule_as_header_evidence(tmp_path):
     source = tmp_path / 'vector-booktabs-table.pdf'
 
     def draw(c):
@@ -3561,7 +4919,7 @@ def test_pdf_vector_booktabs_uses_midrule_as_header_evidence(tmp_path):
             c.drawString(330, y, right)
 
     _make_pdf(source, draw)
-    code, _, stderr, bundle = _run_bundle(source, tmp_path / 'out')
+    code, _, stderr, bundle = _run_legacy_pdfium_fixture_bundle(source, tmp_path / 'out')
 
     assert code == 0, stderr
     data = _load_bundle(bundle)
@@ -3576,7 +4934,7 @@ def test_pdf_vector_booktabs_uses_midrule_as_header_evidence(tmp_path):
     assert table['source_locator']['table_detection'] == 'vector_booktabs'
 
 
-def test_pdf_vector_thin_filled_rectangles_act_as_booktabs_rules(tmp_path):
+def test_legacy_pdfium_pdf_vector_thin_filled_rectangles_act_as_booktabs_rules(tmp_path):
     source = tmp_path / 'vector-filled-booktabs.pdf'
 
     def draw(c):
@@ -3591,7 +4949,7 @@ def test_pdf_vector_thin_filled_rectangles_act_as_booktabs_rules(tmp_path):
             c.drawString(330, y, right)
 
     _make_pdf(source, draw)
-    code, _, stderr, bundle = _run_bundle(source, tmp_path / 'out')
+    code, _, stderr, bundle = _run_legacy_pdfium_fixture_bundle(source, tmp_path / 'out')
 
     assert code == 0, stderr
     data = _load_bundle(bundle)
@@ -3600,7 +4958,7 @@ def test_pdf_vector_thin_filled_rectangles_act_as_booktabs_rules(tmp_path):
     assert data['tables'][0]['source_locator']['table_detection'] == 'vector_booktabs'
 
 
-def test_pdf_vector_page_frame_is_not_a_table(tmp_path):
+def test_legacy_pdfium_pdf_vector_page_frame_is_not_a_table(tmp_path):
     source = tmp_path / 'vector-page-frame.pdf'
 
     def draw(c):
@@ -3608,7 +4966,7 @@ def test_pdf_vector_page_frame_is_not_a_table(tmp_path):
         c.drawString(72, 720, 'Ordinary paragraph inside a decorative page frame.')
 
     _make_pdf(source, draw)
-    code, _, stderr, bundle = _run_bundle(source, tmp_path / 'out')
+    code, _, stderr, bundle = _run_legacy_pdfium_fixture_bundle(source, tmp_path / 'out')
 
     assert code == 0, stderr
     data = _load_bundle(bundle)
@@ -3618,7 +4976,7 @@ def test_pdf_vector_page_frame_is_not_a_table(tmp_path):
     ).read_text(encoding='utf-8')
 
 
-def test_pdf_vector_chart_grid_with_diagonal_falls_back_losslessly(tmp_path):
+def test_legacy_pdfium_pdf_vector_chart_grid_with_diagonal_falls_back_losslessly(tmp_path):
     source = tmp_path / 'vector-chart-grid.pdf'
 
     def draw(c):
@@ -3632,7 +4990,7 @@ def test_pdf_vector_chart_grid_with_diagonal_falls_back_losslessly(tmp_path):
         c.drawString(72, 720, 'Narrative remains outside the chart.')
 
     _make_pdf(source, draw)
-    code, _, stderr, bundle = _run_bundle(source, tmp_path / 'out')
+    code, _, stderr, bundle = _run_legacy_pdfium_fixture_bundle(source, tmp_path / 'out')
 
     assert code == 0, stderr
     data = _load_bundle(bundle)
@@ -3646,7 +5004,7 @@ def test_pdf_vector_chart_grid_with_diagonal_falls_back_losslessly(tmp_path):
 # --- v6.2 recursive layout ----------------------------------------------------
 
 
-def test_pdf_aligned_three_column_prose_is_not_table_and_orders_column_major(tmp_path):
+def test_legacy_pdfium_pdf_aligned_three_column_prose_is_not_table_and_orders_column_major(tmp_path):
     source = tmp_path / 'aligned-three-column-prose.pdf'
 
     def draw(c):
@@ -3656,7 +5014,7 @@ def test_pdf_aligned_three_column_prose_is_not_table_and_orders_column_major(tmp
             c.drawString(420, y, f'R{index} right narrative sentence.')
 
     _make_pdf(source, draw)
-    code, _, stderr, bundle = _run_bundle(source, tmp_path / 'out')
+    code, _, stderr, bundle = _run_legacy_pdfium_fixture_bundle(source, tmp_path / 'out')
 
     assert code == 0, stderr
     data = _load_bundle(bundle)
@@ -3667,7 +5025,7 @@ def test_pdf_aligned_three_column_prose_is_not_table_and_orders_column_major(tmp
     assert positions == sorted(positions)
 
 
-def test_pdf_recursive_layout_orders_three_staggered_columns(tmp_path):
+def test_legacy_pdfium_pdf_recursive_layout_orders_three_staggered_columns(tmp_path):
     source = tmp_path / 'staggered-three-columns.pdf'
 
     def draw(c):
@@ -3679,7 +5037,7 @@ def test_pdf_recursive_layout_orders_three_staggered_columns(tmp_path):
             c.drawString(420, y, f'R{index} right column.')
 
     _make_pdf(source, draw)
-    code, _, stderr, bundle = _run_bundle(source, tmp_path / 'out')
+    code, _, stderr, bundle = _run_legacy_pdfium_fixture_bundle(source, tmp_path / 'out')
 
     assert code == 0, stderr
     markdown = (bundle / 'staggered-three-columns.md').read_text(encoding='utf-8')
@@ -3688,7 +5046,7 @@ def test_pdf_recursive_layout_orders_three_staggered_columns(tmp_path):
     assert positions == sorted(positions)
 
 
-def test_pdf_recursive_layout_preserves_full_width_anchor_between_three_column_bands(tmp_path):
+def test_legacy_pdfium_pdf_recursive_layout_preserves_full_width_anchor_between_three_column_bands(tmp_path):
     source = tmp_path / 'three-column-bands.pdf'
 
     def draw(c):
@@ -3706,7 +5064,7 @@ def test_pdf_recursive_layout_preserves_full_width_anchor_between_three_column_b
         c.drawCentredString(306, 500, 'FULL WIDTH SECTION ANCHOR')
 
     _make_pdf(source, draw)
-    code, _, stderr, bundle = _run_bundle(source, tmp_path / 'out')
+    code, _, stderr, bundle = _run_legacy_pdfium_fixture_bundle(source, tmp_path / 'out')
 
     assert code == 0, stderr
     markdown = (bundle / 'three-column-bands.md').read_text(encoding='utf-8')
@@ -3719,7 +5077,7 @@ def test_pdf_recursive_layout_preserves_full_width_anchor_between_three_column_b
     assert positions == sorted(positions)
 
 
-def test_pdf_recursive_layout_uses_full_width_image_as_band_obstacle(tmp_path):
+def test_legacy_pdfium_pdf_recursive_layout_uses_full_width_image_as_band_obstacle(tmp_path):
     from PIL import Image
 
     image_path = tmp_path / 'wide-obstacle.png'
@@ -3735,7 +5093,7 @@ def test_pdf_recursive_layout_uses_full_width_image_as_band_obstacle(tmp_path):
         c.drawImage(str(image_path), 106, 430, width=400, height=80)
 
     _make_pdf(source, draw)
-    code, _, stderr, bundle = _run_bundle(source, tmp_path / 'out')
+    code, _, stderr, bundle = _run_legacy_pdfium_fixture_bundle(source, tmp_path / 'out')
 
     assert code == 0, stderr
     data = _load_bundle(bundle)
@@ -3750,7 +5108,7 @@ def test_pdf_recursive_layout_uses_full_width_image_as_band_obstacle(tmp_path):
     assert not any('Top ' in node.get('text', '') for node in after)
 
 
-def test_pdf_recursive_layout_keeps_currency_form_rows_in_physical_order():
+def test_legacy_pdfium_pdf_recursive_layout_keeps_currency_form_rows_in_physical_order():
     from pdf_adapter import _classify_blocks, _order_lines
 
     def cell(text, left, right, y):
@@ -3813,7 +5171,7 @@ def test_pdf_recursive_layout_keeps_currency_form_rows_in_physical_order():
 # --- v6.2 typography and sequence evidence -----------------------------------
 
 
-def test_pdf_body_size_bold_wrapped_heading_uses_context(tmp_path):
+def test_legacy_pdfium_pdf_body_size_bold_wrapped_heading_uses_context(tmp_path):
     source = tmp_path / 'body-size-bold-heading.pdf'
 
     def draw(c):
@@ -3825,7 +5183,7 @@ def test_pdf_body_size_bold_wrapped_heading_uses_context(tmp_path):
         c.drawString(72, 674, 'It contains the document body typography evidence.')
 
     _make_pdf(source, draw)
-    code, _, stderr, bundle = _run_bundle(source, tmp_path / 'out')
+    code, _, stderr, bundle = _run_legacy_pdfium_fixture_bundle(source, tmp_path / 'out')
 
     assert code == 0, stderr
     data = _load_bundle(bundle)
@@ -3846,7 +5204,7 @@ def test_pdf_body_size_bold_wrapped_heading_uses_context(tmp_path):
         'I.',
     ],
 )
-def test_pdf_heading_evidence_rejects_caption_toc_and_marker(value):
+def test_legacy_pdfium_pdf_heading_evidence_rejects_caption_toc_and_marker(value):
     from pdf_adapter import _classify_blocks
 
     candidate = _pdf_layout_line(value, y=730, font_size=10)
@@ -3866,7 +5224,7 @@ def test_pdf_heading_evidence_rejects_caption_toc_and_marker(value):
         (['(i) First roman item', '(ii) Second roman item', '(iii) Third roman item'], [1, 2, 3]),
     ],
 )
-def test_pdf_alpha_and_roman_runs_emit_true_ordinals(values, ordinals):
+def test_legacy_pdfium_pdf_alpha_and_roman_runs_emit_true_ordinals(values, ordinals):
     from pdf_adapter import _classify_blocks
 
     lines = [
@@ -3885,7 +5243,7 @@ def test_pdf_alpha_and_roman_runs_emit_true_ordinals(values, ordinals):
 
 
 @pytest.mark.parametrize('value', ['A. Smith', 'I. Introduction'])
-def test_pdf_isolated_alpha_or_roman_marker_remains_paragraph(value):
+def test_legacy_pdfium_pdf_isolated_alpha_or_roman_marker_remains_paragraph(value):
     from pdf_adapter import _classify_blocks
 
     blocks = _classify_blocks(
@@ -3899,7 +5257,7 @@ def test_pdf_isolated_alpha_or_roman_marker_remains_paragraph(value):
     assert blocks[0]['type'] == 'paragraph'
 
 
-def test_pdf_list_marker_is_not_duplicated_in_markdown(tmp_path):
+def test_legacy_pdfium_pdf_list_marker_is_not_duplicated_in_markdown(tmp_path):
     source = tmp_path / 'alpha-list.pdf'
 
     def draw(c):
@@ -3910,7 +5268,7 @@ def test_pdf_list_marker_is_not_duplicated_in_markdown(tmp_path):
             c.drawString(72, y, value)
 
     _make_pdf(source, draw)
-    code, _, stderr, bundle = _run_bundle(source, tmp_path / 'out')
+    code, _, stderr, bundle = _run_legacy_pdfium_fixture_bundle(source, tmp_path / 'out')
 
     assert code == 0, stderr
     data = _load_bundle(bundle)

@@ -12,13 +12,15 @@ Use `--overwrite` for transactional replacement or `--rename` for `_1`, `_2`, â€
 mode the same warnings are printed to stderr because no sidecar is allowed.
 
 Common codes include `ocr_applied`, `ocr_required`, `ocr_unavailable`,
-`ocr_failed`, `ocr_empty_result`, `ocr_incomplete_result`,
-`ocr_detections_filtered`, `native_duplicate_paint_layer`,
-`running_chrome_classified`,
+`ocr_failed`, `ocr_incomplete_result`,
+`pdf_inspector_cid_tounicode_repaired`,
+`pdf_inspector_cid_page_retained`,
+`pdf_inspector_document_ocr_fallback`,
+`pdf_inspector_alignment_ocr_fallback`, `pdf_inspector_cid_repair_failed`,
+`pdf_image_position_ambiguous`, `pdf_image_extraction_failed`,
 `office_image_target_missing`,
 `office_external_image_not_exported`, `office_image_media_type_unsupported`,
-`office_image_position_inferred`,
-`office_tracked_changes_not_preserved`, and `table_structure_uncertain`.
+`office_image_position_inferred`, and `office_tracked_changes_not_preserved`.
 
 ## No usable content
 
@@ -30,39 +32,72 @@ does not fabricate text or silently fall back to a cloud service.
 
 ## PDF OCR modes
 
-- `--ocr off` never imports or initializes OCR and preserves the native-only
-  behavior.
-- `--ocr auto` is the default and OCRs only pages classified as
-  no-text/scanned, garbled, Unicode-map-damaged, native-fragment-extraction
-  failed, or sparse text over a dominant page image. A small logo does not
-  trigger OCR.
-- `--ocr force` attempts every PDF page. Usable native text still wins over an
-  overlapping OCR estimate, while non-overlapping OCR text is retained. If the
-  force-only attempt fails or returns nothing on an otherwise healthy page, the
-  native result remains publishable and is not mislabeled as content loss.
+- `--ocr off` never imports or initializes OCR. A page that Inspector marks as
+  OCR-required has its proven Inspector span removed, remains unrecovered, and
+  is published `partial` when the rest of the document is usable.
+- `--ocr auto` is the default. It refines Inspector's full-result
+  `pages_needing_ocr` list with the precise per-page layout classification so
+  short readable pages remain Inspector content, then OCRs pages still marked
+  scanned, empty, or garbled. If
+  Inspector fails or a flagged page's retained text span cannot be proved, the
+  documented safety fallback OCRs the whole document in page order.
+- `--ocr force` routes every PDF page to OCR. It is an explicit replacement
+  mode, not a merge with PDFium native text.
 
 The defaults are configurable under `pdf_ocr` in `scripts/config.json`:
 `mode`, `engine`, `language`, `dpi`, `max_long_edge`, and `min_confidence`.
 CLI values override config values. OCR page rasters are in-memory only and are
-not published as bundle assets or Markdown sidecars. OCR polygon orientation is
-preserved for rotated reading order, and volatile elapsed timing is excluded
+not published as bundle assets or Markdown sidecars. OCR output keeps the
+provider-returned line order in one page-level paragraph and records a union
+bounding box; individual polygons are not published. Volatile elapsed timing is excluded
 from Canonical JSON so repeated equivalent conversions remain deterministic.
 
-## PDF structure recovery
+## PDF Inspector encoding and fallback
 
-The v6.2 PDF path uses recursive column cuts and treats full-width text and
-images as ordering obstacles. It can conservatively join a sentence from one
-column tail to the next column head and across page chrome. Exact duplicate
-native paint layers are collapsed; visible shadows and separately positioned
-copies remain. Repeated headers, footers, and page labels are retained as
-classified Canonical JSON nodes but omitted from default Markdown.
+The PDF path pins `pdf-inspector==0.2.6`. Some CJK prospectuses use Type0
+Identity fonts without embedded `ToUnicode` streams. PDF Inspector's binary
+standard-CMap fallback does not decode those fonts reliably, which can otherwise
+produce empty or garbled Markdown. This is not a missing system font. The
+pipeline detects standard Adobe-CNS1, Adobe-GB1, Adobe-Japan1, and Adobe-Korea1
+fonts and writes orientation-correct horizontal or vertical `ToUnicode` maps
+from pinned `pdfminer.six` data into a temporary
+copy. No environment variable, external CMap directory, or source-file mutation
+is required. If Inspector still reports such a repaired page only as suspected
+garbled text, a conservative selected-page readability gate may retain its
+Inspector Markdown instead of flattening a valid table through OCR; this emits
+`pdf_inspector_cid_page_retained`.
 
-High-confidence vector grids and booktabs-style horizontal rules can form
-tables. The table locator reports `table_detection` and `vector_rule_count`.
-Page frames, diagonal chart geometry, and aligned sentence-like prose are
-deliberately rejected as tables. Typography and contiguous marker sequences
-support heading/list recovery; caption, table-of-contents, and isolated
-initial-like markers stay ordinary paragraphs.
+Inspector's full-document Markdown is never replaced by PDFium native text.
+`pdf_inspector_document_ocr_fallback` means Inspector itself failed and every
+page was routed to OCR. Per-page success is reported as `ocr_applied`; missing,
+failed, empty, or insufficient OCR is reported by the corresponding `ocr_*`
+warning and produces loss-aware `partial` output. The adapter does not revive a
+flagged page from PDFium or from Inspector's separate per-page formatter.
+`pdf_inspector_alignment_ocr_fallback` means selected-page output could not
+prove every flagged page's retained text span. The adapter therefore discarded
+the Inspector body and used ordered OCR for the whole document instead of
+guessing. Only a unique complete selected-page signature is accepted. Affine anchors may
+select an occurrence only when strict character-by-character extension proves
+both page edges; partial, reordered, or gapped matches are rejected. An empty
+selected page receives a zero-width OCR insertion point only when the ordered
+per-page Markdown accounts for every visible character in the global result;
+otherwise it takes the same whole-document safety fallback.
+
+## PDF structure behavior
+
+The v6.3 PDF path parses Inspector's full-document headings, paragraphs, lists,
+tables, line wrapping, and reading order once, avoiding page-local heading
+re-rooting. It does
+not apply PDFium native-text corrections for columns, cross-page joins, table
+partitions, duplicate paint layers, or heading levels. No additional
+header/footer pass is applied; Inspector's default behavior is authoritative.
+OCR replacement provides one conservative page-level paragraph with
+provider-returned line breaks and does not invent headings or tables. Bundle images
+are exported through a lightweight PDFium image-object pass; the full PDFium
+text/layout/table parser is not run. Nearby raw text is used only to prove a
+unique insertion point. An ambiguous image is reported but not inserted at an
+arbitrary position, and optional image-export failure does not block otherwise
+usable Inspector/OCR document content.
 
 ## Bundle validation failure
 
@@ -73,5 +108,5 @@ targets are restored when replacement fails.
 ## URL input
 
 URLs remain a MarkItDown compatibility path. Use an explicit output target for
-predictable automation. Remote download security/caching and native remote-PDF
-guarantees are outside v6.
+predictable automation. Remote download security/caching and the local PDF
+Inspector guarantees are outside v6.
