@@ -1,0 +1,30 @@
+{
+  "upstream": "https://github.com/firecrawl/anydoc",
+  "commit": "6eac2b2774df8707d83a3d8b19223d7718469254",
+  "spdx_license": "MIT",
+  "license_file": "ANYDOC-LICENSE-MIT.txt",
+  "entries": [
+    {"source": "tests/fixtures/doc/text.doc", "local": "text.doc", "sha256": "0d7c077cf4b49939a05ccd5f8012164649752be0c5841fa50da6258e0517e6e5"},
+    {"source": "tests/fixtures/docx/text.docx", "local": "text.docx", "sha256": "6b674297884f9ed57809763c9f60ea3a849d5cc6fb28c9837c714e322eceddcf"},
+    {"source": "tests/fixtures/ppt/pres.ppt", "local": "pres.ppt", "sha256": "8b92d2304598dafc977ff309095aa405151ac741d3374b3d5a214377b57765b3"},
+    {"source": "tests/fixtures/pptx/pres.pptx", "local": "pres.pptx", "sha256": "c96aa52da19f273f602040490203d9319872f512707e1a6c5a3fc53251b6d050"},
+    {"source": "tests/fixtures/xls/sheet.xls", "local": "sheet.xls", "sha256": "1b3fc8f35f4c7ad6bb4dcf9b9f1fdf4ddf1f4c7f2f6748f33b7948204f940136"},
+    {"source": "tests/fixtures/xlsx/sheet.xlsx", "local": "sheet.xlsx", "sha256": "ddfec7c1e98c7b50611b1c3ac55c0aa0d9d413135aa7afc36732338e44f4d26c"},
+    {"source": "tests/fixtures/odt/text.odt", "local": "text.odt", "sha256": "614b107dcd9f48364b33fa98ad1db32b43667701adeb510b081961ced54438ee"},
+    {"source": "tests/fixtures/ods/sheet.ods", "local": "sheet.ods", "sha256": "e2c092eb2173b9c7ea8dd2c42e8dd7ef284cf37de40e206f3c8e43571de88454"},
+    {"source": "tests/fixtures/odp/pres.odp", "local": "pres.odp", "sha256": "6b5e859ad2591be8f1cbc0246d7e757fbc0ffa06e8ccd022a3e1612f67169df1"},
+    {"source": "tests/fixtures/rtf/text.rtf", "local": "text.rtf", "sha256": "8af25d8d79f898c5fd8c65782a6b73b04b4869fe621c6d39bf201ce4478ec731"},
+    {"source": "tests/fixtures/epub/book.epub", "local": "book.epub", "sha256": "292cba3ea8019684cb59cb890de6caf31bc9399d9f983b25db1506e275f83563"},
+    {"source": "tests/fixtures/csv/sheet.csv", "local": "sheet.csv", "sha256": "4a19b2cd06b8571a6f39cbb11b51c90857effe25878094b1c817ba63300005fd"},
+    {"source": "tests/any_sheets.xlsb", "local": "any_sheets.xlsb", "upstream": "https://github.com/tafia/calamine", "commit": "0a24c2a9f1e38c0932c1299e633270dc730db505", "spdx_license": "MIT", "sha256": "ad645571475f1e30875610fc51ad7726d8b7af296850135bc593e15ead0e28c6"},
+    {"source": "tests/fixtures/abuse/deepnest--errors.ppt", "local": "abuse/deepnest--errors.ppt", "sha256": "693b1560dbc0fc91371b5f4ad546d147b998a7560ce28f4c8a9addb1f0d87bcf"},
+    {"source": "tests/fixtures/abuse/deepxml--errors.docx", "local": "abuse/deepxml--errors.docx", "sha256": "86650b49a31fc5b7c684b15d75af996fabe38c915524b8670f1cc42355af1b73"},
+    {"source": "tests/fixtures/abuse/emptyrowrepeat--errors.ods", "local": "abuse/emptyrowrepeat--errors.ods", "sha256": "f1a839dbbd0e7b3d9fc7c1645aae7a44ae1595377d80ce7ca735d49790174e8c"},
+    {"source": "tests/fixtures/abuse/hugerepeat--errors.ods", "local": "abuse/hugerepeat--errors.ods", "sha256": "af3026547c709cac7fb379e94057c7f16e5aea5e7a3be68aa48536e937bb86e0"},
+    {"source": "tests/fixtures/abuse/hugespan--errors.ods", "local": "abuse/hugespan--errors.ods", "sha256": "5e348ac22afd8ec5b41ebfa527987927a1de80f608c9be8a04531f1bbe353332"},
+    {"source": "tests/fixtures/abuse/hugespan--errors.pptx", "local": "abuse/hugespan--errors.pptx", "sha256": "8e5e31a2f08763cedf95ca8676780718cad49c26eb5fdf1b37b05ca8cdf97430"},
+    {"source": "tests/fixtures/abuse/imagebomb--errors.docx", "local": "abuse/imagebomb--errors.docx", "sha256": "2331f48e333162ead5f2897ae948295b743793c85a70cd4227d9db19302fc524"},
+    {"source": "tests/fixtures/abuse/zipbomb--errors.docx", "local": "abuse/zipbomb--errors.docx", "sha256": "132715bbfe9f82b5a5e4e9ea21375dbd32d00300fc127facb73c2214dd2512c2"},
+    {"source": "tests/fixtures/pptx/handmade-links.pptx", "local": "relations/handmade-links.pptx", "sha256": "32cc7652099218a1f15190615607697583afb5a76c9fffc2d2dea23b29c66533"}
+  ]
+}

@@ -2,17 +2,55 @@
 from __future__ import annotations
 
 import importlib.metadata
+import hashlib
 import re
 import tempfile
 import zipfile
 from pathlib import Path
+from types import MappingProxyType
 from typing import Any
+
+try:
+    from packaging.version import InvalidVersion, Version
+except ImportError:  # pragma: no cover - packaging is a transitive runtime dependency
+    InvalidVersion = ValueError  # type: ignore[assignment,misc]
+    Version = None  # type: ignore[assignment,misc]
 
 from canonical import make_text_fields, normalize_canonical_text, stable_id, title_from_markdown
 from ooxml_images import OOXML_SUFFIXES, create_sanitized_ooxml_copy, extract_ooxml_images
 
 
 _MARKITDOWN = None
+_ANYDOC = None
+_ANYDOC_CAPABILITY: MappingProxyType | None = None
+_ANYDOC_CAPABILITY_MODULE_ID: int | None = None
+_ANYDOC_CAPABILITY_METADATA_SIGNATURE: tuple[int, int, int] | None = None
+
+# Keep this set deliberately aligned with AnyDoc's public format enum.  The
+# pipeline's wider SUPPORTED_EXTENSIONS set remains unchanged; only these
+# local formats are eligible for the opt-in/default AnyDoc route.
+ANYDOC_FORMAT_BY_EXTENSION = MappingProxyType({
+    ".doc": "doc",
+    ".docx": "docx", ".docm": "docx",
+    ".ppt": "ppt", ".pps": "ppt", ".pot": "ppt",
+    ".pptx": "pptx", ".pptm": "pptx", ".ppsx": "pptx", ".ppsm": "pptx",
+    ".xls": "xlsx", ".xlsx": "xlsx", ".xlsm": "xlsx", ".xlsb": "xlsx",
+    ".odt": "odt", ".ods": "ods", ".odp": "odp", ".rtf": "rtf",
+    ".epub": "epub", ".csv": "csv",
+})
+ANYDOC_CANONICAL_FORMATS = frozenset(ANYDOC_FORMAT_BY_EXTENSION.values())
+ANYDOC_SUFFIXES = frozenset(ANYDOC_FORMAT_BY_EXTENSION)
+ANYDOC_ALLOWED_DETECTED_FORMATS = frozenset(ANYDOC_CANONICAL_FORMATS | {"pdf"})
+ANYDOC_DISTRIBUTION = "firecrawl-anydoc"
+ANYDOC_IMPORT = "anydoc"
+ANYDOC_MIN_VERSION = "0.1.3"
+ANYDOC_TESTED_VERSION = "0.1.3"
+_ASSET_MEDIA_TYPES = {
+    "image/png": ".png", "image/jpeg": ".jpg", "image/gif": ".gif",
+    "image/webp": ".webp", "image/bmp": ".bmp", "image/tiff": ".tiff",
+}
+_ASSET_MAX_BYTES = 100 * 1024 * 1024
+_ASSET_TOTAL_MAX_BYTES = 512 * 1024 * 1024
 
 
 def get_markitdown():
@@ -29,6 +67,145 @@ def markitdown_version() -> str:
         return importlib.metadata.version("markitdown")
     except importlib.metadata.PackageNotFoundError:  # pragma: no cover
         return "unknown"
+
+
+def anydoc_version() -> str:
+    """Return the installed distribution version without importing native code."""
+    try:
+        return importlib.metadata.version("firecrawl-anydoc")
+    except importlib.metadata.PackageNotFoundError:
+        return "NOT INSTALLED"
+
+
+def _load_anydoc():
+    global _ANYDOC
+    if _ANYDOC is None:
+        try:
+            import anydoc
+        except ImportError as exc:
+            raise RuntimeError(
+                "AnyDoc is unavailable in the active Python interpreter. "
+                f"Install with: {__import__('sys').executable} -m pip install \"{ANYDOC_DISTRIBUTION}>={ANYDOC_MIN_VERSION}\""
+            ) from exc
+        _ANYDOC = anydoc
+    return _ANYDOC
+
+
+def anydoc_capability_check() -> dict[str, Any]:
+    """Validate the public AnyDoc package/API used by this adapter.
+
+    This is intentionally a no-install check.  A newer package may be used if
+    its public symbols and model shape remain compatible.
+    """
+    global _ANYDOC_CAPABILITY, _ANYDOC_CAPABILITY_MODULE_ID, _ANYDOC_CAPABILITY_METADATA_SIGNATURE
+    # Capability validation is process-static.  Cache the fully validated
+    # result after the first successful check; repeated conversions should not
+    # rescan distribution metadata or package files.  Tests and callers that
+    # replace the imported module reset `_ANYDOC`, which intentionally invalidates
+    # this cache and re-runs the complete gate.
+    metadata_signature = (
+        id(importlib.metadata.distribution),
+        id(importlib.metadata.packages_distributions),
+        id(importlib.metadata.version),
+    )
+    if (
+        _ANYDOC_CAPABILITY is not None
+        and _ANYDOC is not None
+        and _ANYDOC_CAPABILITY_MODULE_ID == id(_ANYDOC)
+        and _ANYDOC_CAPABILITY_METADATA_SIGNATURE == metadata_signature
+    ):
+        # A lightweight version read keeps the cache correct if an operator
+        # replaces the wheel while this interpreter remains alive, and lets
+        # tests exercise newer-version warning behavior deterministically.
+        if anydoc_version() == _ANYDOC_CAPABILITY.get("version"):
+            return dict(_ANYDOC_CAPABILITY)
+    try:
+        distribution = importlib.metadata.distribution(ANYDOC_DISTRIBUTION)
+    except importlib.metadata.PackageNotFoundError as exc:
+        raise RuntimeError(
+            f"{ANYDOC_DISTRIBUTION} is unavailable in the active Python interpreter. "
+            f"Install with: {__import__('sys').executable} -m pip install \"{ANYDOC_DISTRIBUTION}>={ANYDOC_MIN_VERSION}\""
+        ) from exc
+    package = _load_anydoc()
+    required = (
+        "to_document", "format_from_bytes", "format_from_extension", "ConvertError",
+        "Document", "Block", "Inline", "List", "ListItem", "Table", "CellSlot",
+        "Cell", "Note", "Asset", "ImageSource", "LinkTarget", "Style",
+    )
+    missing = [
+        name for name in required
+        if (not callable(getattr(package, name, None)) if name in {"to_document", "format_from_bytes", "format_from_extension"}
+            else not isinstance(getattr(package, name, None), type))
+    ]
+    if missing:
+        raise RuntimeError(
+            "Installed firecrawl-anydoc is incompatible; missing public API: "
+            + ", ".join(missing)
+            + f". Reinstall with: {__import__('sys').executable} -m pip install --upgrade {ANYDOC_DISTRIBUTION}"
+        )
+    providers = importlib.metadata.packages_distributions().get("anydoc", [])
+    normalized_providers = {str(name).replace("_", "-").lower() for name in providers}
+    if normalized_providers != {ANYDOC_DISTRIBUTION}:
+        raise RuntimeError(
+            "The active interpreter provides `anydoc` from an unexpected distribution "
+            + ", ".join(sorted(providers))
+            + "; install firecrawl-anydoc with: "
+            + f"{__import__('sys').executable} -m pip install --upgrade {ANYDOC_DISTRIBUTION}"
+        )
+    module_file = getattr(package, "__file__", None)
+    package_root = Path(distribution.locate_file("")).resolve()
+    if not module_file:
+        raise RuntimeError("Installed firecrawl-anydoc has no import location")
+    module_path = Path(module_file).resolve()
+    try:
+        module_path.relative_to(package_root)
+    except ValueError as exc:
+        raise RuntimeError(
+            "The imported anydoc module is shadowed outside the firecrawl-anydoc distribution; "
+            f"active module: {module_path}"
+        ) from exc
+    files = distribution.files or ()
+    declared_files = {Path(distribution.locate_file(item)).resolve() for item in files}
+    if declared_files and module_path not in declared_files:
+        raise RuntimeError(
+            "The imported anydoc module is not declared by the firecrawl-anydoc distribution files; "
+            f"active module: {module_path}"
+        )
+    version = anydoc_version()
+    if version == "NOT INSTALLED":
+        raise RuntimeError(
+            f"{ANYDOC_DISTRIBUTION} is unavailable in the active Python interpreter. "
+            f"Install with: {__import__('sys').executable} -m pip install \"{ANYDOC_DISTRIBUTION}>={ANYDOC_MIN_VERSION}\""
+        )
+    try:
+        parsed = Version(version) if Version is not None else None
+        minimum = Version(ANYDOC_MIN_VERSION) if Version is not None else None
+        if parsed is None or minimum is None:
+            raise RuntimeError("packaging is required to validate firecrawl-anydoc versions")
+        if parsed.is_prerelease or parsed.is_devrelease or parsed < minimum:
+            raise RuntimeError(
+                f"firecrawl-anydoc>={ANYDOC_MIN_VERSION} stable is required; found {version}. "
+                f"Use {__import__('sys').executable} -m pip install --upgrade {ANYDOC_DISTRIBUTION}"
+            )
+    except importlib.metadata.PackageNotFoundError as exc:  # pragma: no cover - import succeeded oddly
+        raise RuntimeError("AnyDoc module has no firecrawl-anydoc distribution metadata") from exc
+    except (InvalidVersion, ValueError) as exc:
+        raise RuntimeError(f"Invalid firecrawl-anydoc version metadata: {version}") from exc
+    result = {
+        "version": version,
+        "tested_version": ANYDOC_TESTED_VERSION,
+        "module": str(module_path),
+        "untested": str(parsed) != ANYDOC_TESTED_VERSION,
+    }
+    _ANYDOC_CAPABILITY = MappingProxyType(dict(result))
+    _ANYDOC_CAPABILITY_MODULE_ID = id(_ANYDOC)
+    _ANYDOC_CAPABILITY_METADATA_SIGNATURE = metadata_signature
+    return dict(_ANYDOC_CAPABILITY)
+
+
+def anydoc_format_for_path(path: str | Path) -> str | None:
+    suffix = Path(path).suffix.lower()
+    return ANYDOC_FORMAT_BY_EXTENSION.get(suffix)
 
 
 def convert_basic(source: str) -> str:
@@ -365,6 +542,1044 @@ def markdown_to_canonical(
         "warnings": warnings,
         "title": title_source or title_from_markdown(markdown, "untitled"),
     }
+
+
+def _ad_attr(value: Any, name: str, default: Any = None) -> Any:
+    """Read an AnyDoc model field while keeping mocked model objects simple."""
+    if isinstance(value, dict):
+        return value.get(name, default)
+    return getattr(value, name, default)
+
+
+def _ad_kind(value: Any) -> str:
+    return str(_ad_attr(value, "kind", "") or "").lower()
+
+
+def _ad_text_blocks(blocks: list[Any] | None, include_lists: bool = True) -> str:
+    """Render block content to visible text for table cells/notes."""
+    output: list[str] = []
+    for block in blocks or []:
+        kind = _ad_kind(block)
+        if kind in {"heading", "paragraph"}:
+            for inline in _ad_attr(block, "content", []) or []:
+                inline_kind = _ad_kind(inline)
+                if inline_kind in {"text", "link"}:
+                    text = _ad_attr(inline, "text", None)
+                    if text is not None:
+                        output.append(str(text))
+                    else:
+                        output.append(_ad_text_inlines(_ad_attr(inline, "content", []) or [], None)[0])
+                elif inline_kind == "line_break":
+                    output.append("\n")
+                elif inline_kind == "image":
+                    output.append(str(_ad_attr(inline, "alt", "") or ""))
+            output.append("\n")
+        elif kind == "code_block":
+            output.append(str(_ad_attr(block, "text", "") or ""))
+            output.append("\n")
+        elif kind == "list" and include_lists:
+            listing = _ad_attr(block, "list", block)
+            for item in _ad_attr(listing, "items", []) or []:
+                output.append(_ad_text_blocks(_ad_attr(item, "blocks", []) or []))
+        elif kind == "block_quote":
+            output.append(_ad_text_blocks(_ad_attr(block, "blocks", []) or []))
+        elif kind == "table":
+            # Canonical v1 cannot nest table records inside a cell.  Preserve
+            # the nested table's visible values in deterministic row-major
+            # order instead of silently dropping the nested block.
+            table = _ad_attr(block, "table", block)
+            grid = _ad_attr(table, "grid", []) or []
+            for row in grid:
+                for slot in row or []:
+                    if _ad_kind(slot) != "origin":
+                        continue
+                    cell = _ad_attr(slot, "cell", None)
+                    if cell is not None:
+                        value = _ad_text_blocks(_ad_attr(cell, "blocks", []) or [], include_lists=include_lists)
+                        if value:
+                            output.append(value)
+                            output.append("\n")
+        elif kind == "rule":
+            output.append("---\n")
+    return "".join(output).strip()
+
+
+def _ad_blocks_contain_inline_kind(blocks: list[Any] | None, target_kind: str) -> bool:
+    """Return whether nested blocks contain an inline of ``target_kind``."""
+    for block in blocks or []:
+        if any(_ad_kind(inline) == target_kind for inline in _ad_attr(block, "content", []) or []):
+            return True
+        if _ad_blocks_contain_inline_kind(_ad_attr(block, "content", []) or [], target_kind):
+            return True
+        if _ad_blocks_contain_inline_kind(_ad_attr(block, "blocks", []) or [], target_kind):
+            return True
+        listing = _ad_attr(block, "list", None)
+        for item in _ad_attr(listing, "items", []) or []:
+            if _ad_blocks_contain_inline_kind(_ad_attr(item, "blocks", []) or [], target_kind):
+                return True
+        table = _ad_attr(block, "table", None)
+        for row in _ad_attr(table, "grid", []) or []:
+            for slot in row or []:
+                cell = _ad_attr(slot, "cell", None)
+                if cell is not None and _ad_blocks_contain_inline_kind(_ad_attr(cell, "blocks", []) or [], target_kind):
+                    return True
+    return False
+
+
+def _ad_text_inlines(inlines: list[Any], asset_lookup: dict[int, dict[str, Any]] | None) -> tuple[str, list[tuple[int, str]]]:
+    """Return visible text and embedded-image references in inline order."""
+    visible: list[str] = []
+    images: list[tuple[int, str]] = []
+    for inline in inlines:
+        kind = _ad_kind(inline)
+        if kind == "text":
+            visible.append(str(_ad_attr(inline, "text", "") or ""))
+        elif kind == "link":
+            nested_text, nested_images = _ad_text_inlines(_ad_attr(inline, "content", []) or [], asset_lookup)
+            visible.append(nested_text)
+            images.extend(nested_images)
+        elif kind == "line_break":
+            visible.append("\n")
+        elif kind == "anchor":
+            continue
+        elif kind == "note_ref":
+            # Canonical v1 has no note-reference field; never invent Markdown
+            # footnote syntax that could collide with source content.
+            continue
+        elif kind == "image":
+            alt = str(_ad_attr(inline, "alt", "") or "")
+            source = _ad_attr(inline, "source", None)
+            if _ad_kind(source) == "asset":
+                index = _ad_attr(source, "asset_id", None)
+                if isinstance(index, int):
+                    images.append((index, alt))
+            elif alt:
+                visible.append(alt)
+        else:
+            text = _ad_attr(inline, "text", None)
+            if text:
+                visible.append(str(text))
+    return "".join(visible), images
+
+
+def _ad_inline_segments(inlines: list[Any]) -> list[tuple[str, Any]]:
+    """Flatten inline containers while retaining visible image/text order."""
+    segments: list[tuple[str, Any]] = []
+    for inline in inlines or []:
+        kind = _ad_kind(inline)
+        if kind == "text":
+            segments.append(("text", str(_ad_attr(inline, "text", "") or "")))
+        elif kind == "link":
+            target = _ad_attr(inline, "target", None)
+            target_kind = _ad_kind(target)
+            if target_kind:
+                segments.append(("link_target", target_kind))
+            segments.extend(_ad_inline_segments(_ad_attr(inline, "content", []) or []))
+        elif kind == "line_break":
+            segments.append(("text", "\n"))
+        elif kind == "image":
+            alt = str(_ad_attr(inline, "alt", "") or "")
+            source = _ad_attr(inline, "source", None)
+            if _ad_kind(source) == "asset" and isinstance(_ad_attr(source, "asset_id", None), int):
+                segments.append(("image", (_ad_attr(source, "asset_id", None), alt)))
+            else:
+                segments.append(("external_image", alt))
+        elif kind in {"anchor", "note_ref"}:
+            segments.append((kind, None))
+        else:
+            text = _ad_attr(inline, "text", None)
+            if text:
+                segments.append(("text", str(text)))
+    return segments
+
+
+def _ad_has_rich_style(inlines: list[Any]) -> bool:
+    for inline in inlines or []:
+        style = _ad_attr(inline, "style", None)
+        if style is not None and any(bool(_ad_attr(style, field, False)) for field in ("bold", "italic", "strike", "code")):
+            return True
+        if _ad_kind(inline) == "link" and _ad_has_rich_style(_ad_attr(inline, "content", []) or []):
+            return True
+    return False
+
+
+def _ad_has_rich_loss(inlines: list[Any]) -> bool:
+    """Whether inline semantics cannot be represented by Canonical v1."""
+    for inline in inlines or []:
+        kind = _ad_kind(inline)
+        if kind in {"anchor", "note_ref"}:
+            return True
+        if kind == "link":
+            target = _ad_attr(inline, "target", None)
+            if _ad_kind(target) in {"external", "relative", "anchor"}:
+                return True
+            if _ad_has_rich_loss(_ad_attr(inline, "content", []) or []):
+                return True
+        style = _ad_attr(inline, "style", None)
+        if style is not None and any(bool(_ad_attr(style, field, False)) for field in ("bold", "italic", "strike", "code")):
+            return True
+    return False
+
+
+_ANYDOC_MAX_DEPTH = 64
+_ANYDOC_MAX_VISITED = 100_000
+_ANYDOC_MAX_TABLE_ROWS = 10_000
+_ANYDOC_MAX_TABLE_COLUMNS = 1_000
+_ANYDOC_MAX_TABLE_CELLS = 1_000_000
+_ANYDOC_MAX_CHARS_PER_FIELD = 10_000_000
+_ANYDOC_MAX_TOTAL_TEXT = 100_000_000
+_ANYDOC_BLOCK_KINDS = {"heading", "paragraph", "list", "table", "block_quote", "code_block", "rule"}
+_ANYDOC_INLINE_KINDS = {"text", "link", "image", "anchor", "note_ref", "line_break"}
+
+
+def _validate_anydoc_document(document: Any) -> None:
+    """Fail closed on malformed/native model graphs before canonical allocation."""
+    if document is None:
+        raise RuntimeError("AnyDoc returned no Document model")
+    blocks = _ad_attr(document, "blocks", None)
+    notes = _ad_attr(document, "notes", None)
+    assets = _ad_attr(document, "assets", None)
+    if not isinstance(blocks, (list, tuple)) or not isinstance(notes, (list, tuple)) or not isinstance(assets, (list, tuple)):
+        raise RuntimeError("AnyDoc Document has invalid blocks/notes/assets collections")
+    visited: set[int] = set()
+    active: set[int] = set()
+    total_text = 0
+
+    def integer(value: Any, field: str, minimum: int | None = None) -> None:
+        if value is None:
+            return
+        if isinstance(value, bool) or not isinstance(value, int):
+            raise RuntimeError(f"AnyDoc {field} must be an integer")
+        if minimum is not None and value < minimum:
+            raise RuntimeError(f"AnyDoc {field} must be >= {minimum}")
+
+    def walk(value: Any, path: str, depth: int) -> None:
+        nonlocal total_text
+        if depth > _ANYDOC_MAX_DEPTH:
+            raise RuntimeError(f"AnyDoc model exceeds max depth {_ANYDOC_MAX_DEPTH} at {path}")
+        if value is None or isinstance(value, (bool, int, float, bytes, bytearray)):
+            return
+        if isinstance(value, str):
+            if len(value) > _ANYDOC_MAX_CHARS_PER_FIELD:
+                raise RuntimeError(f"AnyDoc text field exceeds {_ANYDOC_MAX_CHARS_PER_FIELD} characters at {path}")
+            total_text += len(value)
+            if total_text > _ANYDOC_MAX_TOTAL_TEXT:
+                raise RuntimeError(f"AnyDoc text exceeds {_ANYDOC_MAX_TOTAL_TEXT} characters")
+            return
+        identity = id(value)
+        if identity in active:
+            raise RuntimeError(f"AnyDoc model cycle detected at {path}")
+        if identity in visited:
+            return
+        visited.add(identity)
+        if len(visited) > _ANYDOC_MAX_VISITED:
+            raise RuntimeError(f"AnyDoc model exceeds {_ANYDOC_MAX_VISITED} visited objects")
+        active.add(identity)
+        try:
+            if isinstance(value, dict):
+                for key, child in value.items():
+                    walk(key, f"{path}.key", depth + 1)
+                    walk(child, f"{path}[{key!r}]", depth + 1)
+                return
+            if isinstance(value, (list, tuple)):
+                for index, child in enumerate(value):
+                    walk(child, f"{path}[{index}]", depth + 1)
+                return
+            kind = _ad_kind(value)
+            if kind and kind not in _ANYDOC_BLOCK_KINDS | _ANYDOC_INLINE_KINDS | {
+                "origin", "covered", "asset", "external", "relative", "anchor", "unavailable", "data", "layout",
+                "footnote", "endnote", "bullet", "decimal", "lower_alpha", "upper_alpha", "lower_roman", "upper_roman",
+            }:
+                raise RuntimeError(f"AnyDoc returned unknown model kind {kind!r} at {path}")
+            for field in (
+                "kind", "level", "anchor", "content", "list", "table", "blocks", "lang", "text",
+                "target", "alt", "source", "note_id", "marker", "start", "items", "checked", "marker_label",
+                "grid", "header_rows", "cell", "origin_row", "origin_col", "col_span", "row_span", "id",
+                "media_type", "origin_part", "data", "url", "asset_id", "style",
+            ):
+                child = _ad_attr(value, field, None)
+                if child is None:
+                    continue
+                if field in {"level", "start", "header_rows", "origin_row", "origin_col", "col_span", "row_span", "id", "asset_id"}:
+                    integer(child, f"{path}.{field}", 0 if field not in {"level", "col_span", "row_span"} else 1)
+                if field == "marker" and str(child) not in {"bullet", "decimal", "lower_alpha", "upper_alpha", "lower_roman", "upper_roman"}:
+                    raise RuntimeError(f"AnyDoc list marker {child!r} is invalid at {path}")
+                walk(child, f"{path}.{field}", depth + 1)
+        finally:
+            active.remove(identity)
+
+    # Guard the native graph with an explicit stack before the compatibility
+    # field walk below.  This keeps adversarial depth/cycle/visited failures
+    # deterministic without relying on Python recursion behavior.
+    graph_fields = (
+        "blocks", "notes", "assets", "content", "list", "table", "items", "grid", "cell",
+        "source", "target", "style", "data", "value",
+    )
+    graph_stack: list[tuple[Any, str, int, bool, int | None]] = [(document, "document", 0, False, None)]
+    graph_active: set[int] = set()
+    graph_seen: set[int] = set()
+    while graph_stack:
+        value, path, depth, exiting, identity = graph_stack.pop()
+        if exiting:
+            if identity is not None:
+                graph_active.discard(identity)
+            continue
+        if depth > _ANYDOC_MAX_DEPTH:
+            raise RuntimeError(f"AnyDoc model exceeds max depth {_ANYDOC_MAX_DEPTH} at {path}")
+        if value is None or isinstance(value, (str, bool, int, float, bytes, bytearray)):
+            continue
+        object_id = id(value)
+        if object_id in graph_active:
+            raise RuntimeError(f"AnyDoc model cycle detected at {path}")
+        if object_id in graph_seen:
+            continue
+        graph_seen.add(object_id)
+        if len(graph_seen) > _ANYDOC_MAX_VISITED:
+            raise RuntimeError(f"AnyDoc model exceeds {_ANYDOC_MAX_VISITED} visited objects")
+        graph_active.add(object_id)
+        graph_stack.append((value, path, depth, True, object_id))
+        if isinstance(value, dict):
+            children = list(value.items())
+            for index, (key, child) in reversed(list(enumerate(children))):
+                graph_stack.append((child, f"{path}[{key!r}]", depth + 1, False, None))
+            continue
+        if isinstance(value, (list, tuple)):
+            for index, child in reversed(list(enumerate(value))):
+                graph_stack.append((child, f"{path}[{index}]", depth + 1, False, None))
+            continue
+        for field in reversed(graph_fields):
+            child = _ad_attr(value, field, None)
+            if child is not None:
+                graph_stack.append((child, f"{path}.{field}", depth + 1, False, None))
+
+    walk(document, "document", 0)
+    asset_ids: set[int] = set()
+    total_asset_bytes = 0
+    for index, asset in enumerate(assets):
+        raw_id = _ad_attr(asset, "id", index)
+        integer(raw_id, f"assets[{index}].id", 0)
+        if raw_id in asset_ids:
+            raise RuntimeError(f"AnyDoc duplicate Asset.id {raw_id}")
+        asset_ids.add(raw_id)
+        data = _ad_attr(asset, "data", None)
+        if not isinstance(data, (bytes, bytearray)):
+            raise RuntimeError(f"AnyDoc assets[{index}].data must be in-memory bytes")
+        if len(data) > _ASSET_MAX_BYTES:
+            raise RuntimeError(f"AnyDoc asset {raw_id} exceeds 100 MiB limit")
+        total_asset_bytes += len(data)
+        if total_asset_bytes > _ASSET_TOTAL_MAX_BYTES:
+            raise RuntimeError("AnyDoc assets exceed the 512 MiB total limit")
+        if _ad_attr(asset, "origin_part", None) is None or not isinstance(_ad_attr(asset, "origin_part", ""), str):
+            raise RuntimeError(f"AnyDoc assets[{index}].origin_part must be text")
+
+    def validate_table(table: Any, path: str) -> None:
+        grid = _ad_attr(table, "grid", None)
+        if not isinstance(grid, (list, tuple)):
+            raise RuntimeError(f"AnyDoc table grid is invalid at {path}")
+        rows = len(grid)
+        if rows > _ANYDOC_MAX_TABLE_ROWS:
+            raise RuntimeError(f"AnyDoc table exceeds {_ANYDOC_MAX_TABLE_ROWS} rows")
+        widths = [len(row) for row in grid if isinstance(row, (list, tuple))]
+        width = max(widths, default=0)
+        if width > _ANYDOC_MAX_TABLE_COLUMNS:
+            raise RuntimeError(f"AnyDoc table exceeds {_ANYDOC_MAX_TABLE_COLUMNS} columns")
+        if widths and any(row_width != width for row_width in widths):
+            raise RuntimeError(f"AnyDoc table grid is ragged at {path}; every row must have {width} slots")
+        cells = 0
+        origins: dict[tuple[int, int], tuple[int, int]] = {}
+        slots: dict[tuple[int, int], Any] = {}
+        for row_index, row in enumerate(grid):
+            if not isinstance(row, (list, tuple)):
+                raise RuntimeError(f"AnyDoc table row is invalid at {path}[{row_index}]")
+            for col_index, slot in enumerate(row):
+                cells += 1
+                if cells > _ANYDOC_MAX_TABLE_CELLS:
+                    raise RuntimeError(f"AnyDoc table exceeds {_ANYDOC_MAX_TABLE_CELLS} cells")
+                slot_kind = _ad_kind(slot)
+                slots[(row_index, col_index)] = slot
+                if slot_kind == "origin":
+                    if (row_index, col_index) in origins:
+                        raise RuntimeError(f"AnyDoc table repeats origin slot at {path}[{row_index}][{col_index}]")
+                    origins[(row_index, col_index)] = (row_index, col_index)
+                    cell = _ad_attr(slot, "cell", None)
+                    if cell is None:
+                        raise RuntimeError(f"AnyDoc origin slot has no cell at {path}[{row_index}][{col_index}]")
+                    row_span = _ad_attr(cell, "row_span", None)
+                    col_span = _ad_attr(cell, "col_span", None)
+                    if row_span is None or col_span is None:
+                        raise RuntimeError(f"AnyDoc origin slot has missing span at {path}[{row_index}][{col_index}]")
+                    integer(row_span, f"{path}.row_span", 1)
+                    integer(col_span, f"{path}.col_span", 1)
+                    if row_index + row_span > rows or col_index + col_span > width:
+                        raise RuntimeError(f"AnyDoc table span exceeds grid bounds at {path}[{row_index}][{col_index}]")
+                elif slot_kind == "covered":
+                    origin_row = _ad_attr(slot, "origin_row", None)
+                    origin_col = _ad_attr(slot, "origin_col", None)
+                    if origin_row is None or origin_col is None:
+                        raise RuntimeError(f"AnyDoc covered slot has missing origin at {path}[{row_index}][{col_index}]")
+                    integer(origin_row, f"{path}.origin_row", 0)
+                    integer(origin_col, f"{path}.origin_col", 0)
+                    origins.setdefault((origin_row, origin_col), (origin_row, origin_col))
+                else:
+                    raise RuntimeError(f"AnyDoc table slot kind {slot_kind!r} is invalid at {path}[{row_index}][{col_index}]")
+        # Validate coverage after collecting all origins so a covered slot may
+        # legally precede its origin in row-major order while still matching
+        # the declared positive span exactly.
+        for (origin_row, origin_col), _ in list(origins.items()):
+            origin = slots.get((origin_row, origin_col))
+            if origin is None or _ad_kind(origin) != "origin":
+                raise RuntimeError(f"AnyDoc covered slot points to missing origin at {path}[{origin_row}][{origin_col}]")
+            cell = _ad_attr(origin, "cell", None)
+            row_span = int(_ad_attr(cell, "row_span", 1) or 1)
+            col_span = int(_ad_attr(cell, "col_span", 1) or 1)
+            for covered_row in range(origin_row, origin_row + row_span):
+                for covered_col in range(origin_col, origin_col + col_span):
+                    if (covered_row, covered_col) == (origin_row, origin_col):
+                        continue
+                    covered = slots.get((covered_row, covered_col))
+                    if covered is None or _ad_kind(covered) != "covered":
+                        raise RuntimeError(
+                            f"AnyDoc origin span lacks covered slot at {path}[{covered_row}][{covered_col}]"
+                        )
+                    if (
+                        _ad_attr(covered, "origin_row", None) != origin_row
+                        or _ad_attr(covered, "origin_col", None) != origin_col
+                    ):
+                        raise RuntimeError(
+                            f"AnyDoc covered slot points to the wrong origin at {path}[{covered_row}][{covered_col}]"
+                        )
+        for coordinate, slot in slots.items():
+            if _ad_kind(slot) == "covered":
+                origin_coordinate = (
+                    _ad_attr(slot, "origin_row", None),
+                    _ad_attr(slot, "origin_col", None),
+                )
+                if origin_coordinate not in origins:
+                    raise RuntimeError(f"AnyDoc covered slot points to missing origin at {path}{coordinate}")
+
+    def scan_tables(value: Any, path: str, seen: set[int]) -> None:
+        if value is None or isinstance(value, (str, bytes, bytearray, int, float, bool)):
+            return
+        identity = id(value)
+        if identity in seen:
+            return
+        seen.add(identity)
+        if _ad_kind(value) == "table":
+            validate_table(_ad_attr(value, "table", value), path)
+        if isinstance(value, dict):
+            children = value.values()
+        elif isinstance(value, (list, tuple)):
+            children = value
+        else:
+            children = [_ad_attr(value, field, None) for field in ("blocks", "content", "list", "table", "items", "grid", "cell")]
+        for index, child in enumerate(children):
+            scan_tables(child, f"{path}[{index}]", seen)
+
+    scan_tables(document, "document", set())
+
+
+def _ad_warning(code: str, message: str, source_unit: str, content_loss: bool) -> dict[str, Any]:
+    return _warning(code, message, source_unit, content_loss)
+
+
+def _safe_asset_extension(media_type: str) -> str | None:
+    return _ASSET_MEDIA_TYPES.get(media_type.lower())
+
+
+def _asset_magic_matches(media_type: str, data: bytes) -> bool:
+    if media_type.lower() == "image/webp":
+        return data.startswith(b"RIFF") and len(data) >= 12 and data[8:12] == b"WEBP"
+    signatures = {
+        "image/png": (b"\x89PNG\r\n\x1a\n",),
+        "image/jpeg": (b"\xff\xd8\xff",),
+        "image/gif": (b"GIF87a", b"GIF89a"),
+        "image/bmp": (b"BM",),
+        "image/tiff": (b"II*\x00", b"MM\x00*"),
+    }
+    return any(data.startswith(signature) for signature in signatures.get(media_type.lower(), ()))
+
+
+def _write_anydoc_assets(
+    raw_assets: list[Any],
+    document_id: str,
+    unit_id: str,
+    asset_dir: Path | None,
+    warnings: list[dict[str, Any]],
+) -> tuple[dict[int, dict[str, Any]], list[dict[str, Any]]]:
+    """Validate and optionally publish AnyDoc image assets.
+
+    AnyDoc retains non-image assets in its model.  Canonical v1 only has image
+    assets, so those are reported and skipped without exposing package paths.
+    """
+    lookup: dict[int, dict[str, Any]] = {}
+    assets: list[dict[str, Any]] = []
+    total = 0
+    for position, raw in enumerate(raw_assets or []):
+        media_type = str(_ad_attr(raw, "media_type", "application/octet-stream") or "").lower()
+        data = _ad_attr(raw, "data", b"") or b""
+        if not isinstance(data, (bytes, bytearray)):
+            raise RuntimeError(f"AnyDoc asset {position} has non-byte data")
+        data = bytes(data)
+        source_part = str(_ad_attr(raw, "origin_part", "") or "")
+        raw_id = _ad_attr(raw, "id", position)
+        try:
+            asset_index = int(raw_id)
+        except (TypeError, ValueError):
+            asset_index = position
+        if not media_type.startswith("image/"):
+            warnings.append(_ad_warning(
+                "anydoc_non_image_asset_not_preserved",
+                f"Embedded AnyDoc asset {asset_index} ({media_type}) is not representable by Canonical v1",
+                unit_id,
+                True,
+            ))
+            continue
+        extension = _safe_asset_extension(media_type)
+        if extension is None:
+            warnings.append(_ad_warning(
+                "anydoc_image_media_type_not_supported",
+                f"Embedded AnyDoc image asset {asset_index} has unsupported media type {media_type}",
+                unit_id,
+                True,
+            ))
+            continue
+        if len(data) > _ASSET_MAX_BYTES:
+            raise RuntimeError(f"AnyDoc image asset {asset_index} exceeds 100 MiB limit")
+        total += len(data)
+        if total > _ASSET_TOTAL_MAX_BYTES:
+            raise RuntimeError("AnyDoc image assets exceed the 512 MiB total limit")
+        if not _asset_magic_matches(media_type, data):
+            warnings.append(_ad_warning(
+                "anydoc_image_magic_mismatch",
+                f"Embedded AnyDoc image asset {asset_index} does not match declared MIME {media_type}",
+                unit_id,
+                True,
+            ))
+            continue
+        digest = hashlib.sha256(data).hexdigest()
+        locator = {
+            "source_unit_id": unit_id,
+            "origin_part": source_part,
+            "asset_index": asset_index,
+            "model_path": ["assets", asset_index],
+        }
+        asset_id = stable_id("asset", document_id, locator, "image", position + 1)
+        path = f"assets/images/{asset_id}{extension}"
+        item = {
+            "asset_id": asset_id,
+            "type": "image",
+            "path": path,
+            "sha256": digest,
+            "media_type": media_type,
+            "source_locator": locator,
+            "alt": "",
+            "caption": "",
+        }
+        if asset_dir is not None:
+            asset_dir.mkdir(parents=True, exist_ok=True)
+            destination = asset_dir / f"{asset_id}{extension}"
+            destination.write_bytes(data)
+        lookup[asset_index] = item
+        assets.append(item)
+    return lookup, assets if asset_dir is not None else []
+
+
+class AnyDocAdapter:
+    name = "anydoc"
+    limitations = [
+        "page_slide_sheet_provenance_not_exposed",
+        "rich_text_styles_flattened",
+        "external_images_not_exported",
+        "canonical_v1_non_image_assets_not_preserved",
+    ]
+
+    def extract(self, source: str, document_id: str, mode: str, asset_dir: Path | None = None) -> dict[str, Any]:
+        path = Path(source)
+        fmt = anydoc_format_for_path(path)
+        if fmt is None:
+            raise RuntimeError(f"AnyDoc does not support local extension {path.suffix.lower()}")
+        capability = anydoc_capability_check()
+        package = _load_anydoc()
+        raw_bytes = path.read_bytes()
+        try:
+            extension_format = package.format_from_extension(path.suffix.lower())
+        except Exception as exc:
+            raise RuntimeError(f"AnyDoc extension format detection failed for {path.name}: {exc}") from exc
+        if str(extension_format).lower() != fmt:
+            raise RuntimeError(f"AnyDoc format_from_extension returned {extension_format!s} for {path.suffix}; expected {fmt}")
+        try:
+            detected = package.format_from_bytes(raw_bytes)
+        except Exception as exc:
+            raise RuntimeError(f"AnyDoc format detection failed for {path.name}: {exc}") from exc
+        # CSV has no signature.  For all other container formats, reject a
+        # signature/extension mismatch before writing any output.
+        normalized_detected = str(detected).lower() if detected is not None else None
+        if normalized_detected not in ANYDOC_ALLOWED_DETECTED_FORMATS and normalized_detected is not None:
+            raise RuntimeError(f"AnyDoc returned unsupported detected format {detected!s}")
+        if normalized_detected == "pdf":
+            raise RuntimeError("AnyDoc detected PDF; use the PDF Inspector route for .pdf inputs")
+        if normalized_detected is None and fmt != "csv":
+            raise RuntimeError(f"AnyDoc could not identify {path.name}; only CSV permits extension fallback")
+        if normalized_detected is not None and normalized_detected != fmt:
+            raise RuntimeError(f"AnyDoc detected {detected!s} but extension requires {fmt}")
+        try:
+            document = package.to_document(raw_bytes, fmt)
+        except TypeError:
+            document = package.to_document(raw_bytes, format=fmt)
+        except Exception as exc:
+            raise RuntimeError(f"AnyDoc could not convert {path.name}: {exc}") from exc
+        _validate_anydoc_document(document)
+
+        unit_locator = {"kind": "document", "index": 1}
+        unit_id = stable_id("unit", document_id, unit_locator, "document", 1)
+        source_unit = {
+            "id": unit_id,
+            "type": "document",
+            "index": 1,
+            "locator": unit_locator,
+            "status": "complete",
+            "warnings": [],
+        }
+        warnings: list[dict[str, Any]] = []
+
+        def add_warning(item: dict[str, Any], dedupe: bool = False) -> None:
+            if dedupe and any(existing.get("code") == item.get("code") for existing in warnings):
+                return
+            warnings.append(item)
+
+        def mark_rich_loss() -> None:
+            add_warning(_ad_warning(
+                "anydoc_rich_inline_flattened",
+                "AnyDoc inline styling, anchors, note linkage, or link targets were flattened to visible text",
+                unit_id,
+                True,
+            ), dedupe=True)
+
+        if capability.get("untested"):
+            add_warning(_ad_warning(
+                "anydoc_untested_version",
+                f"firecrawl-anydoc {capability['version']} is newer than tested version {ANYDOC_TESTED_VERSION}; compatibility checks passed",
+                unit_id,
+                False,
+            ))
+        raw_assets = list(_ad_attr(document, "assets", []) or [])
+        asset_lookup, assets = _write_anydoc_assets(raw_assets, document_id, unit_id, asset_dir, warnings)
+        # AnyDoc remains the sole source of canonical Office assets.  A small
+        # OOXML image preflight is used only to surface loss when a package
+        # references an unavailable image that AnyDoc necessarily omits from
+        # its model; its temporary exports are never published or used as
+        # canonical assets.  This keeps the adapter fail-closed while making
+        # missing-image output explicitly loss-aware.
+        if path.suffix.lower() in OOXML_SUFFIXES and path.exists():
+            with tempfile.TemporaryDirectory(prefix=".anydoc-image-preflight-") as preflight_dir:
+                try:
+                    _, _, image_warnings = extract_ooxml_images(
+                        path,
+                        document_id,
+                        unit_id,
+                        Path(preflight_dir),
+                    )
+                except (OSError, zipfile.BadZipFile) as exc:
+                    image_warnings = [_ad_warning(
+                        "office_image_preflight_failed",
+                        f"Could not inspect Office image relationships: {type(exc).__name__}: {exc}",
+                        unit_id,
+                        True,
+                    )]
+                warnings.extend(image_warnings)
+        content: list[dict[str, Any]] = []
+        tables: list[dict[str, Any]] = []
+        occurrence = 0
+        image_occurrence = 0
+
+        def locator(
+            block_index: int,
+            kind: str,
+            extra: dict[str, Any] | None = None,
+            model_path: list[Any] | None = None,
+        ) -> dict[str, Any]:
+            value: dict[str, Any] = {
+                "source_unit_id": unit_id,
+                "block_index": block_index,
+                "block_kind": kind,
+                "model_path": list(model_path or ["blocks", block_index]),
+            }
+            if extra:
+                value.update(extra)
+            return value
+
+        def add_text(kind: str, raw: str, source_locator: dict[str, Any], **extra: Any) -> None:
+            nonlocal occurrence
+            if not raw.strip() and kind != "code":
+                return
+            occurrence += 1
+            content.append({
+                "id": stable_id("node", document_id, source_locator, kind, occurrence),
+                "type": kind,
+                "source_locator": source_locator,
+                **make_text_fields(raw, raw if kind == "code" else raw.strip(), mode, defer=True),
+                **extra,
+            })
+
+        def add_image(
+            asset_index: int,
+            alt: str,
+            source_locator: dict[str, Any],
+            fallback_kind: str = "paragraph",
+            fallback_extra: dict[str, Any] | None = None,
+        ) -> None:
+            nonlocal occurrence, image_occurrence
+            image_occurrence += 1
+            asset = asset_lookup.get(asset_index)
+            if asset is None:
+                warnings.append(_ad_warning(
+                    "anydoc_image_asset_unavailable",
+                    f"AnyDoc image asset {asset_index} was referenced but not exported",
+                    unit_id,
+                    True,
+                ))
+                if alt:
+                    add_text(fallback_kind, alt, source_locator, **(fallback_extra or {}))
+                return
+            if asset_dir is None:
+                if alt:
+                    add_text(fallback_kind, alt, source_locator, **(fallback_extra or {}))
+                warnings.append(_ad_warning(
+                    "anydoc_markdown_asset_omitted",
+                    "Embedded AnyDoc image bytes were omitted in markdown-only mode; alt text was retained",
+                    unit_id,
+                    False,
+                ))
+                return
+            if alt and not asset["alt"]:
+                asset["alt"] = alt
+            node_locator = {
+                **source_locator,
+                "image_occurrence": image_occurrence,
+                "model_path": source_locator.get("model_path", []) + ["inline", image_occurrence],
+            }
+            occurrence += 1
+            content.append({
+                "id": stable_id("node", document_id, node_locator, "image", occurrence),
+                "type": "image",
+                "source_locator": node_locator,
+                "asset_id": asset["asset_id"],
+            })
+
+        def emit_inlines(
+            inlines: list[Any],
+            source_locator: dict[str, Any],
+            first_kind: str = "paragraph",
+            first_extra: dict[str, Any] | None = None,
+        ) -> None:
+            pending: list[str] = []
+            emitted_text = False
+            saw_text = False
+            saw_image = False
+
+            def flush() -> None:
+                nonlocal emitted_text, saw_text
+                text = "".join(pending)
+                pending.clear()
+                if not text.strip():
+                    return
+                kind = first_kind if not emitted_text else "paragraph"
+                extra = dict(first_extra or {}) if not emitted_text else {}
+                add_text(kind, text, source_locator, **extra)
+                emitted_text = True
+                saw_text = True
+
+            if _ad_has_rich_loss(inlines):
+                mark_rich_loss()
+            for segment_kind, value in _ad_inline_segments(inlines):
+                if segment_kind == "image":
+                    flush()
+                    saw_image = True
+                    index, alt = value
+                    add_image(
+                        index,
+                        alt,
+                        source_locator,
+                        fallback_kind=first_kind if not emitted_text else "paragraph",
+                        fallback_extra=first_extra if not emitted_text else None,
+                    )
+                elif segment_kind == "external_image":
+                    flush()
+                    saw_image = True
+                    if value:
+                        pending.append(value)
+                    warnings.append(_ad_warning(
+                        "anydoc_external_image_not_exported",
+                        "External or unavailable image was reduced to its text alternative",
+                        unit_id,
+                        True,
+                    ))
+                elif segment_kind == "link_target":
+                    if value in {"external", "relative", "anchor"}:
+                        add_warning(_ad_warning(
+                            "anydoc_link_target_flattened",
+                            "Link target was flattened to visible text in Canonical v1",
+                            unit_id,
+                            True,
+                        ), dedupe=True)
+                elif segment_kind == "note_ref":
+                    add_warning(_ad_warning(
+                        "anydoc_note_reference_omitted",
+                        "AnyDoc note reference was omitted because Canonical v1 has no linkage field",
+                        unit_id,
+                        True,
+                    ), dedupe=True)
+                elif segment_kind == "anchor":
+                    mark_rich_loss()
+                else:
+                    pending.append(str(value or ""))
+            flush()
+            if saw_image and saw_text:
+                add_warning(_ad_warning(
+                    "anydoc_inline_structure_flattened",
+                    "Inline text/image structure was split into ordered Canonical v1 nodes",
+                    unit_id,
+                    True,
+                ), dedupe=True)
+
+        def emit_table(table: Any, block_index: int, source_locator: dict[str, Any]) -> None:
+            nonlocal occurrence
+            grid = _ad_attr(table, "grid", []) or []
+            raw_rows: list[list[str]] = []
+            rows: list[list[dict[str, Any]]] = []
+            seen_origins: set[tuple[int, int]] = set()
+            for row_index, row in enumerate(grid):
+                raw_row: list[str] = []
+                canonical_row: list[dict[str, Any]] = []
+                for col_index, slot in enumerate(row or []):
+                    if _ad_kind(slot) == "covered":
+                        raw_row.append("")
+                        canonical_row.append({
+                            **make_text_fields("", "", mode, defer=True),
+                            "value": None,
+                            "rowspan": 1,
+                            "colspan": 1,
+                        })
+                        continue
+                    if _ad_kind(slot) != "origin":
+                        continue
+                    cell = _ad_attr(slot, "cell", None)
+                    if cell is None or (row_index, col_index) in seen_origins:
+                        continue
+                    seen_origins.add((row_index, col_index))
+                    cell_blocks = _ad_attr(cell, "blocks", []) or []
+                    value = _ad_text_blocks(cell_blocks)
+                    if _ad_blocks_contain_inline_kind(cell_blocks, "image"):
+                        add_warning(_ad_warning(
+                            "anydoc_inline_structure_flattened",
+                            "Inline image structure in a table cell was flattened to cell text",
+                            unit_id,
+                            True,
+                        ), dedupe=True)
+                    if any(_ad_kind(child) == "table" for child in cell_blocks):
+                        warnings.append(_ad_warning(
+                            "anydoc_nested_table_flattened",
+                            "A nested AnyDoc table in a cell was flattened to row-major text",
+                            unit_id,
+                            True,
+                        ))
+                    raw_row.append(value)
+                    canonical_row.append({
+                        **make_text_fields(value, value, mode, defer=True),
+                        "value": _numeric_value(value),
+                        "rowspan": max(1, int(_ad_attr(cell, "row_span", 1) or 1)),
+                        "colspan": max(1, int(_ad_attr(cell, "col_span", 1) or 1)),
+                    })
+                if raw_row:
+                    raw_rows.append(raw_row)
+                    rows.append(canonical_row)
+            if not rows:
+                warnings.append(_ad_warning("anydoc_empty_table", "An AnyDoc table contained no origin cells", unit_id, True))
+                return
+            occurrence += 1
+            table_id = stable_id("table", document_id, source_locator, "table", occurrence)
+            header_rows = int(_ad_attr(table, "header_rows", 0) or 0)
+            table_record: dict[str, Any] = {
+                "table_id": table_id,
+                "source_locator": source_locator,
+                "raw_rows": raw_rows,
+                "rows": rows,
+                "confidence": 1.0,
+                "warnings": [],
+            }
+            if header_rows > 0 and rows:
+                table_record["headers"] = [cell["text"] for cell in rows[0]]
+                if header_rows > 1:
+                    header_warning = _ad_warning(
+                        "anydoc_multirow_header_flattened",
+                        "Only the first AnyDoc table header row is represented in Canonical v1",
+                        unit_id,
+                        True,
+                    )
+                    table_record["warnings"].append(header_warning)
+                    warnings.append(header_warning)
+            if str(_ad_attr(table, "kind", "data") or "data") == "layout":
+                layout_warning = _ad_warning(
+                    "anydoc_layout_table_preserved",
+                    "AnyDoc classified this table as layout scaffolding; values were preserved as a table",
+                    unit_id,
+                    False,
+                )
+                table_record["warnings"].append(layout_warning)
+                warnings.append(layout_warning)
+            tables.append(table_record)
+            content.append({
+                "id": stable_id("node", document_id, source_locator, "table", occurrence),
+                "type": "table",
+                "source_locator": source_locator,
+                "table_id": table_id,
+            })
+
+        def emit_block(
+            block: Any,
+            block_index: int,
+            nesting: int = 0,
+            model_path: list[Any] | None = None,
+        ) -> None:
+            kind = _ad_kind(block)
+            source_locator = locator(block_index, kind, model_path=model_path)
+            if kind == "heading":
+                heading_inlines = _ad_attr(block, "content", []) or []
+                level = max(1, min(6, int(_ad_attr(block, "level", 1) or 1)))
+                emit_inlines(heading_inlines, source_locator, first_kind="heading", first_extra={"level": level})
+            elif kind == "paragraph":
+                emit_inlines(_ad_attr(block, "content", []) or [], source_locator)
+            elif kind == "code_block":
+                add_text("code", str(_ad_attr(block, "text", "") or ""), source_locator, language=str(_ad_attr(block, "lang", "") or ""))
+            elif kind == "table":
+                emit_table(_ad_attr(block, "table", None), block_index, source_locator)
+            elif kind == "list":
+                listing = _ad_attr(block, "list", block)
+                marker = str(_ad_attr(listing, "marker", "bullet") or "bullet")
+                ordered = marker != "bullet"
+                raw_start = _ad_attr(listing, "start", 1)
+                ordinal = int(raw_start) if raw_start is not None else 1
+                if ordinal == 0:
+                    ordinal = 1
+                    warnings.append(_ad_warning(
+                        "anydoc_list_start_clamped",
+                        "AnyDoc list start 0 was clamped to ordinal 1",
+                        unit_id,
+                        True,
+                    ))
+                for item_index, item in enumerate(_ad_attr(listing, "items", []) or [], start=1):
+                    item_blocks = _ad_attr(item, "blocks", []) or []
+                    nested_lists = [child for child in item_blocks if _ad_kind(child) == "list"]
+                    checked = _ad_attr(item, "checked", None)
+                    marker_label = _ad_attr(item, "marker_label", None)
+                    item_locator = {
+                        **source_locator,
+                        "list_ordinal": ordinal,
+                        "marker": marker,
+                        "nesting": nesting,
+                        "task": checked is not None,
+                        "checked": checked,
+                        "marker_label": str(marker_label) if marker_label is not None else "",
+                        "model_path": source_locator["model_path"] + ["list", "items", item_index],
+                    }
+                    emitted_item = False
+                    item_extra = {"ordered": ordered, "ordinal": ordinal}
+                    for child_index, child in enumerate(item_blocks, start=1):
+                        child_kind = _ad_kind(child)
+                        if child_kind == "list":
+                            continue
+                        before = len(content)
+                        if child_kind == "paragraph":
+                            emit_inlines(
+                                _ad_attr(child, "content", []) or [],
+                                item_locator,
+                                first_kind="list_item" if not emitted_item else "paragraph",
+                                first_extra=item_extra if not emitted_item else None,
+                            )
+                        else:
+                            value = _ad_text_blocks([child], include_lists=False)
+                            if value:
+                                add_text(
+                                    "list_item" if not emitted_item else "paragraph",
+                                    value,
+                                    item_locator,
+                                    **(item_extra if not emitted_item else {}),
+                                )
+                        if len(content) > before:
+                            emitted_item = True
+                    if nested_lists:
+                        add_warning(_ad_warning(
+                            "anydoc_nested_block_structure_flattened",
+                            "Nested AnyDoc list containment was flattened to canonical list items",
+                            unit_id,
+                            True,
+                        ), dedupe=True)
+                    for child_index, child in enumerate(item_blocks, start=1):
+                        if _ad_kind(child) == "list":
+                            emit_block(child, block_index, nesting=nesting + 1, model_path=item_locator["model_path"] + ["blocks", child_index])
+                    ordinal += 1
+            elif kind == "block_quote":
+                add_warning(_ad_warning(
+                    "anydoc_nested_block_structure_flattened",
+                    "AnyDoc block-quote containment was flattened to canonical blocks",
+                    unit_id,
+                    True,
+                ), dedupe=True)
+                for child_index, child in enumerate(_ad_attr(block, "blocks", []) or [], start=1):
+                    emit_block(
+                        child,
+                        block_index,
+                        nesting=nesting + 1,
+                        model_path=source_locator["model_path"] + ["quote", child_index],
+                    )
+            elif kind == "rule":
+                warnings.append(_ad_warning("anydoc_rule_omitted", "A horizontal rule is not representable by Canonical v1 and was omitted", unit_id, False))
+            else:
+                text = _ad_text_blocks([block])
+                if text:
+                    add_text("paragraph", text, source_locator)
+
+        for block_index, block in enumerate(_ad_attr(document, "blocks", []) or [], start=1):
+            emit_block(block, block_index)
+        notes = _ad_attr(document, "notes", []) or []
+        for note_index, note in enumerate(notes, start=1):
+            note_text = _ad_text_blocks(_ad_attr(note, "blocks", []) or [])
+            if note_text:
+                note_locator = {
+                    "source_unit_id": unit_id,
+                    "note_index": note_index,
+                    "note_id": str(_ad_attr(note, "id", "") or ""),
+                    "note_kind": str(_ad_attr(note, "kind", "note") or "note"),
+                    "model_path": ["notes", note_index],
+                }
+                add_text("paragraph", note_text, note_locator)
+                add_warning(_ad_warning(
+                    "anydoc_notes_flattened",
+                    f"AnyDoc {_ad_attr(note, 'kind', 'note')} {str(_ad_attr(note, 'id', ''))} was appended as a flattened note block",
+                    unit_id,
+                    True,
+                ), dedupe=True)
+        if not content:
+            raise RuntimeError(f"AnyDoc produced no usable content for {path.name}")
+        normalize_canonical_text(content, tables, mode)
+        source_unit["warnings"].extend(warnings)
+        if warnings:
+            source_unit["status"] = "warning"
+        title_source = next((node["normalized_text"] for node in content if node["type"] == "heading" and node.get("level") == 1), None)
+        return {
+            "source_units": [source_unit],
+            "content": content,
+            "tables": tables,
+            "assets": assets,
+            "relationships": [],
+            "warnings": warnings,
+            "title": title_source or path.stem,
+            "adapter": {
+                "name": self.name,
+                "version": capability["version"],
+                "limitations": list(self.limitations),
+            },
+        }
 
 
 class MarkItDownAdapter:

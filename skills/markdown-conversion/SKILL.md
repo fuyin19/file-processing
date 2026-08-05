@@ -1,9 +1,9 @@
 ---
 name: markdown-conversion
 description: |
-  Convert local PDF and Office documents, supported files, URLs, or directories into a canonical JSON plus Markdown bundle, or one clean Markdown file. Use for PDF Inspector-backed PDF extraction, MarkItDown-backed Office conversion, deterministic five-field frontmatter, Chinese language normalization, batch conversion, and transactional output handling.
+  Convert local PDF and AnyDoc/MarkItDown-supported documents, supported files, URLs, or directories into a canonical JSON plus Markdown bundle, or one clean Markdown file. Use for PDF Inspector-backed PDF extraction, AnyDoc-backed local non-PDF extraction, explicit MarkItDown rollback, deterministic five-field frontmatter, Chinese language normalization, batch conversion, and transactional output handling.
 metadata:
-  version: 6.3.0
+  version: 6.4.0
 ---
 
 # Convert files to canonical JSON and Markdown
@@ -18,10 +18,13 @@ selected-page output proves one unique complete selected-page signature.
 Inspector failure or an unprovable flagged-page span routes the whole document to
 ordered OCR. PDFium native text is never a content or structure fallback;
 PDFium is limited to OCR rasterization and lightweight bundle image-object
-export, without running its document text/layout/table pipeline. Office and other supported formats use a reused
-MarkItDown adapter. In bundle mode, referenced images in DOCX, PPTX, and XLSX
-packages are exported alongside the MarkItDown text. Both adapters produce the
-same Canonical JSON v1 asset model and shared Markdown rendering.
+export, without running its document text/layout/table pipeline. Local formats
+supported by AnyDoc use its `to_document` model by default; URLs and formats
+outside AnyDoc continue through a reused MarkItDown adapter. Pass
+`--local-document-adapter markitdown` (alias `--local-adapter`) to explicitly use MarkItDown for an eligible local
+file. In bundle mode, embedded AnyDoc image assets are exported from memory.
+Both adapters produce the same Canonical JSON v1 asset model and shared
+Markdown rendering.
 
 ## Interface
 
@@ -34,6 +37,7 @@ same Canonical JSON v1 asset model and shared Markdown rendering.
   [--no-frontmatter]
   [--overwrite | --rename]
   [--types pdf,docx] [--no-recursive]
+  [--local-document-adapter anydoc|markitdown]
   [--ocr off|auto|force] [--ocr-engine rapidocr]
   [--ocr-language ch] [--ocr-dpi 300]
   [--ocr-max-long-edge 4096] [--ocr-min-confidence 0.5]
@@ -88,8 +92,9 @@ and no broken image links are emitted.
    all-document OCR over a guessed replacement. If OCR fails after a span is proven, remove the unusable
    Inspector span, mark the page `ocr_required`, and never substitute PDFium
    native text. Add no custom header/footer cleanup; inherit Inspector's default
-   behavior. Use MarkItDown for Office text and
-   export referenced OOXML Office images when publishing a bundle.
+   behavior. Use AnyDoc for eligible local non-PDF formats and MarkItDown for
+   URLs/other formats. AnyDoc failures are explicit and never silently fall
+   back; rerun with `--local-document-adapter markitdown` when required.
 3. Build Canonical JSON v1 with source units, one ordered content stream,
    referenced tables/assets, stable IDs, and quality warnings.
 4. Preserve adapter `raw_text` and cleaned `text`; derive `normalized_text` with
@@ -153,15 +158,24 @@ stem/slug fallback.
   and a failed or empty required
   OCR page remains loss-aware `partial` output. Runtime elapsed time is intentionally not serialized so
   equivalent conversions remain deterministic.
-- Office keeps MarkItDown for text. DOCX, PPTX, and XLSX bundle output exports
-  referenced embedded images to `assets/images/`; Canonical JSON stores their
-  relative paths, hashes, media types, locators, and ordered content references,
-  and Markdown uses those same relative paths. Missing, external, or unreadable
-  image targets become non-blocking quality warnings without dangling links.
-- Legacy binary Office formats may still omit embedded images; Markdown-only
-  intentionally publishes no image binaries or links.
-- v6.3 does not emit RAG chunks, bind an ingestion library, implement a native
-  Office adapter, or claim semantic formula recognition.
+- AnyDoc handles `.doc`, `.docx`, `.docm`, `.ppt`, `.pps`, `.pot`, `.pptx`,
+  `.pptm`, `.ppsx`, `.ppsm`, `.xls`, `.xlsx`, `.xlsm`, `.xlsb`, `.odt`, `.ods`,
+  `.odp`, `.rtf`, `.epub`, and `.csv`. Its document model provides ordered
+  blocks and embedded image bytes; page/slide/sheet provenance and rich styles
+  are flattened with deterministic warnings because Canonical v1 has no fields
+  for them. Canonical asset paths are generated and never derived from package
+  paths; Markdown-only intentionally emits no binary assets or links.
+- The runtime distribution is `firecrawl-anydoc`; the adapter performs a
+  no-install compatibility check in the active Python interpreter. Install a
+  compatible minimum explicitly with `python -m pip install "firecrawl-anydoc>=0.1.3"`,
+  or upgrade an existing install with `python -m pip install --upgrade firecrawl-anydoc`.
+  Newer versions are accepted only when the public API/model check passes;
+  rerun the full tests and benchmark after upgrades.
+- The authoritative AnyDoc upstream is `firecrawl/anydoc`; `fuyin19/anydoc` is
+  a mirror. Referencing GitHub does not update an installed wheel.
+- v6.4 does not emit RAG chunks, change Canonical schema 1.0, or claim page,
+  slide, sheet, rich-style, formula, or external-image fidelity beyond the
+  AnyDoc model and documented warnings.
 - Existing URL input remains a compatibility path through MarkItDown; its source
   identity hashes extracted adapter text and is outside the local PDF Inspector
   guarantees above.

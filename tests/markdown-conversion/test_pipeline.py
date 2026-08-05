@@ -705,7 +705,7 @@ def test_version_flag():
     assert 'Dependencies:' in stdout
     # Should show pip install names (not import names)
     assert 'opencc-python-reimplemented' in stdout
-    assert 'markdown-conversion v6.3.0' in stdout
+    assert 'markdown-conversion v6.4.0' in stdout
     assert 'rapidocr:' in stdout
     assert 'onnxruntime:' in stdout
     assert 'ruamel.yaml:' not in stdout
@@ -3416,7 +3416,14 @@ def test_xlsx_bundle_exports_image_with_inferred_position_warning(tmp_path):
     sheet.add_image(SpreadsheetImage(str(picture)), 'A3')
     workbook.save(source)
 
-    code, _, stderr, bundle = _run_product_bundle(source, tmp_path / 'out')
+    # AnyDoc 0.1.3 does not expose XLSX drawing images in its Document model;
+    # retain the historical image-preservation assertion as an explicit
+    # MarkItDown rollback regression instead of bypassing the AnyDoc contract.
+    code, _, stderr, bundle = _run_product_bundle(
+        source,
+        tmp_path / 'out',
+        ['--local-document-adapter', 'markitdown'],
+    )
     assert code == 0, stderr
     data, _, markdown = _assert_single_office_bundle_image(bundle)
     assert 'Sheet text' in markdown

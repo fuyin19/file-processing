@@ -18,7 +18,16 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, NoReturn
 
-from adapters import MarkItDownAdapter, convert_basic, markdown_to_canonical, markitdown_version
+from adapters import (
+    ANYDOC_FORMAT_BY_EXTENSION,
+    ANYDOC_SUFFIXES,
+    AnyDocAdapter,
+    MarkItDownAdapter,
+    anydoc_version,
+    convert_basic,
+    markdown_to_canonical,
+    markitdown_version,
+)
 from canonical import (
     CanonicalValidationError,
     convert_chinese,
@@ -38,7 +47,7 @@ from ocr_provider import NullOcrProvider, OcrSettings, RapidOcrProvider
 from pdf_inspector_adapter import PdfInspectorAdapter
 
 
-VERSION = "6.3.0"
+VERSION = "6.4.0"
 DEFAULT_CONFIG: dict[str, Any] = {
     "pdf_ocr": {
         "mode": "auto",
@@ -50,11 +59,11 @@ DEFAULT_CONFIG: dict[str, Any] = {
     }
 }
 CONFIG_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "config.json")
-SUPPORTED_EXTENSIONS = {
-    ".pdf", ".docx", ".doc", ".pptx", ".ppt", ".xlsx", ".xls",
+SUPPORTED_EXTENSIONS = set(ANYDOC_FORMAT_BY_EXTENSION) | {
+    ".pdf",
     ".html", ".csv", ".json", ".jsonl", ".xml", ".epub", ".md",
     ".jpg", ".jpeg", ".png", ".gif", ".mp3", ".wav", ".mp4",
-    ".zip", ".txt", ".rtf", ".odt", ".ods", ".odp",
+    ".zip", ".txt",
 }
 DEPS = [
     ("markitdown", "markitdown", True),
@@ -379,6 +388,7 @@ def _extract(
     identity_source: str | None = None,
     ocr_provider=None,
     ocr_mode: str = "off",
+    local_adapter: str = "anydoc",
 ) -> tuple[dict[str, Any], dict[str, Any], str]:
     identity_source = identity_source or source
     if is_url(source):
@@ -404,7 +414,13 @@ def _extract(
             source, document_id, mode, asset_dir
         )
     else:
-        result = MarkItDownAdapter().extract(source, document_id, mode, asset_dir)
+        suffix = Path(source).suffix.lower()
+        if local_adapter == "anydoc" and suffix in ANYDOC_SUFFIXES:
+            result = AnyDocAdapter().extract(source, document_id, mode, asset_dir)
+        elif local_adapter == "markitdown" or suffix not in ANYDOC_SUFFIXES:
+            result = MarkItDownAdapter().extract(source, document_id, mode, asset_dir)
+        else:
+            raise PipelineError(f"Unsupported local document adapter: {local_adapter}")
     return result, source_record, document_id
 
 
@@ -417,6 +433,7 @@ def _build_document(
     identity_source: str | None = None,
     ocr_provider=None,
     ocr_mode: str = "off",
+    local_adapter: str = "anydoc",
 ) -> dict[str, Any]:
     identity_source = identity_source or source
     extracted, source_record, document_id = _extract(
@@ -426,6 +443,7 @@ def _build_document(
         identity_source,
         ocr_provider,
         ocr_mode,
+        local_adapter,
     )
     if is_url(identity_source):
         title = extracted.get("title") or _source_stem(identity_source)
@@ -515,7 +533,10 @@ def convert_one(args, source: str, relative_path: Path | None = None) -> tuple[P
     ocr_provider = getattr(args, "ocr_provider", None)
     temporary_docx: str | None = None
     actual_source = source
-    if not is_url(source) and Path(source).suffix.lower() == ".doc":
+    local_adapter = getattr(args, "local_adapter", getattr(args, "document_adapter", "anydoc"))
+    if local_adapter not in {"anydoc", "markitdown"}:
+        raise PipelineError(f"Unsupported local document adapter: {local_adapter}")
+    if not is_url(source) and Path(source).suffix.lower() == ".doc" and local_adapter == "markitdown":
         temporary_docx = convert_doc_to_docx(source)
         actual_source = temporary_docx
     try:
@@ -529,6 +550,7 @@ def convert_one(args, source: str, relative_path: Path | None = None) -> tuple[P
                     identity_source=source,
                     ocr_provider=ocr_provider,
                     ocr_mode=ocr_settings.mode,
+                    local_adapter=local_adapter,
                 )
                 markdown_name = f"{target.stem}.md"
                 json_name = f"{target.stem}.json"
@@ -558,6 +580,7 @@ def convert_one(args, source: str, relative_path: Path | None = None) -> tuple[P
                 identity_source=source,
                 ocr_provider=ocr_provider,
                 ocr_mode=ocr_settings.mode,
+                local_adapter=local_adapter,
             )
             markdown = render_markdown(document, not args.no_frontmatter, "markdown")
             document["outputs"] = {
@@ -633,6 +656,7 @@ def show_version() -> None:
         except ImportError:
             version = "NOT INSTALLED" if required else "not installed (optional)"
         print(f"  {install_name}: {version}")
+    print(f"  firecrawl-anydoc installed={anydoc_version()} tested=0.1.3")
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -651,6 +675,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--timestamp", default="")
     parser.add_argument("--no-recursive", action="store_true")
     parser.add_argument("--types", default="")
+    parser.add_argument(
+        "--local-adapter", "--document-adapter", "--local-document-adapter", dest="local_adapter",
+        choices=["anydoc", "markitdown"], default="anydoc",
+        help="Adapter for AnyDoc-eligible local formats (default: anydoc); URLs/PDFs keep their existing routes",
+    )
     parser.add_argument(
         "--ocr",
         choices=["off", "auto", "force"],

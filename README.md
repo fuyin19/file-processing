@@ -11,7 +11,7 @@ claude skill add /path/to/file-processing
 
 ## Skills
 
-### markdown-conversion (v6.3.0)
+### markdown-conversion (v6.4.0)
 
 Convert local PDFs, Office documents, supported files, URLs, or directories
 through one canonical pipeline. Local PDFs use PDF Inspector as the
@@ -25,8 +25,11 @@ the whole document to ordered OCR rather than risking healthy content. Empty
 selected pages are placed only when Inspector's ordered per-page Markdown fully
 accounts for the global visible text. PDFium is limited to
 OCR rasterization plus lightweight bundle image-object export; it does not run
-the PDF text/layout/table pipeline. Office text continues through MarkItDown,
-while DOCX, PPTX, and XLSX images are exported by default in bundle mode. The
+the PDF text/layout/table pipeline. AnyDoc handles supported local non-PDF
+formats by default through its ordered document model; URLs and other formats
+continue through MarkItDown. Use `--local-document-adapter markitdown` for an explicit
+rollback. Embedded AnyDoc image bytes are exported by default in bundle mode.
+The
 default output is a movable bundle:
 
 ```text
@@ -40,6 +43,8 @@ report/
 /file-processing:markdown-conversion ~/Downloads/report.pdf
 /file-processing:markdown-conversion ~/Downloads/report.docx --output-mode markdown
 /file-processing:markdown-conversion ~/Downloads/papers --types pdf,docx
+# explicit MarkItDown rollback for an AnyDoc-eligible local file
+/file-processing:markdown-conversion ~/Downloads/report.docx --local-document-adapter markitdown
 ```
 
 Use `--output-mode markdown` or single-file `--output-path` for exactly one clean
@@ -52,13 +57,13 @@ defaults to simplified Chinese. Change this with
 `type/title/description/tags/timestamp` frontmatter fields unless
 `--no-frontmatter` is supplied.
 
-PDF and OOXML Office bundle images use the same canonical asset contract:
+PDF and AnyDoc bundle images use the same canonical asset contract:
 binary files live under `assets/images/`, Markdown references their
 bundle-relative paths, and JSON records paths, hashes, media types, source
 locators, and ordered image nodes. Markdown-only intentionally omits binaries
 and image links.
 
-PDF OCR is an optional local path in v6.3. Install the tested
+PDF OCR is an optional local path in v6.4. Install the tested
 `rapidocr==3.9.2` plus `onnxruntime>=1.20,<2`. The default `auto` mode refines
 Inspector's full-result signal with its per-page layout classification, then
 OCRs only pages still reported as missing, empty, scanned, or garbled;
@@ -77,7 +82,14 @@ authoritative. PDFium native text never replaces or restructures Inspector
 content. Unrecovered OCR pages
 and detected unsupported Office features produce publishable `partial` output
 when other usable content exists. The converter does not emit RAG chunks or
-bind an ingestion library.
+bind an ingestion library. The runtime AnyDoc distribution is
+`firecrawl-anydoc`; the adapter never installs packages automatically. Install
+the compatible minimum with `python -m pip install "firecrawl-anydoc>=0.1.3"`, or
+upgrade with `python -m pip install --upgrade firecrawl-anydoc`, then rerun the full
+test suite and benchmark. Future versions are used only after the public API
+and model compatibility check passes. The authoritative upstream is
+`firecrawl/anydoc`; `fuyin19/anydoc` is a mirror, and GitHub changes do not
+update an already-installed wheel.
 
 See [the skill contract](skills/markdown-conversion/SKILL.md) and
 [Canonical JSON v1 reference](skills/markdown-conversion/references/canonical-schema-v1.md).
