@@ -3,7 +3,7 @@ name: markdown-conversion
 description: |
   Convert local PDF and AnyDoc/MarkItDown-supported documents, supported files, URLs, or directories into a canonical JSON plus Markdown bundle, or one clean Markdown file. Use for PDF Inspector-backed PDF extraction, AnyDoc-backed local non-PDF extraction, explicit MarkItDown rollback, deterministic five-field frontmatter, Chinese language normalization, batch conversion, and transactional output handling.
 metadata:
-  version: 6.4.0
+  version: 6.5.0
 ---
 
 # Convert files to canonical JSON and Markdown
@@ -41,6 +41,7 @@ Markdown rendering.
   [--ocr off|auto|force] [--ocr-engine rapidocr]
   [--ocr-language ch] [--ocr-dpi 300]
   [--ocr-max-long-edge 4096] [--ocr-min-confidence 0.5]
+  [--enrich-images]
 ```
 
 `bundle` is the default. `--output-path` is the compatibility interface for one
@@ -93,8 +94,11 @@ and no broken image links are emitted.
    Inspector span, mark the page `ocr_required`, and never substitute PDFium
    native text. Add no custom header/footer cleanup; inherit Inspector's default
    behavior. Use AnyDoc for eligible local non-PDF formats and MarkItDown for
-   URLs/other formats. AnyDoc failures are explicit and never silently fall
-   back; rerun with `--local-document-adapter markitdown` when required.
+   URLs/other formats. All local Office/AnyDoc inputs first pass the same bounded,
+   read-only container/XML/image preflight. Native AnyDoc, PDF Inspector, and OCR
+   work runs in a deadline-bounded worker. Only a provider-typed DOCX
+   `max_xml_nodes` capacity error may trigger ordered structural DOCX sharding;
+   other limits, parse errors, crashes, and timeouts fail without fallback.
 3. Build Canonical JSON v1 with source units, one ordered content stream,
    referenced tables/assets, stable IDs, and quality warnings.
 4. Preserve adapter `raw_text` and cleaned `text`; derive `normalized_text` with
@@ -133,7 +137,7 @@ stem/slug fallback.
 
 ## Scope and limitations
 
-- PDF v6.3 uses PDF Inspector 0.2.6 for headings, paragraphs, line wrapping,
+- PDF conversion uses a behaviorally compatible PDF Inspector for headings, paragraphs, line wrapping,
   reading order, and Markdown tables. Its full-document Markdown is parsed
   without PDFium-driven heading, table, list, dewrapping, duplicate-layer,
   column-order, cross-page, or chrome rewrites. Healthy content therefore keeps
@@ -146,7 +150,7 @@ stem/slug fallback.
   arbitrarily.
 - OCR is optional and local. `auto` is the default, but its engine remains lazy:
   healthy born-digital pages do not import or initialize an OCR model. Install
-  the tested `rapidocr==3.9.2` and `onnxruntime>=1.20,<2`; auto mode follows
+  compatible `rapidocr` and `onnxruntime` packages; auto mode follows
   Inspector's full-result `pages_needing_ocr` signal after confirming it with
   Inspector's per-page layout classification. A proven flagged-page
   Inspector span is removed even if OCR is disabled, unavailable, or empty;
@@ -158,6 +162,11 @@ stem/slug fallback.
   and a failed or empty required
   OCR page remains loss-aware `partial` output. Runtime elapsed time is intentionally not serialized so
   equivalent conversions remain deterministic.
+- Embedded Office images remain assets by default and are not OCRed on the fast
+  path. `--enrich-images` (bundle mode only) OCRs resolved image occurrences in
+  the isolated worker and inserts provenance-linked paragraphs immediately after
+  their image nodes. Unresolved image positions are never guessed. OCR failure
+  leaves the extracted assets and document intact and reports a warning.
 - AnyDoc handles `.doc`, `.docx`, `.docm`, `.ppt`, `.pps`, `.pot`, `.pptx`,
   `.pptm`, `.ppsx`, `.ppsm`, `.xls`, `.xlsx`, `.xlsm`, `.xlsb`, `.odt`, `.ods`,
   `.odp`, `.rtf`, `.epub`, and `.csv`. Its document model provides ordered
@@ -167,18 +176,18 @@ stem/slug fallback.
   paths; Markdown-only intentionally emits no binary assets or links.
 - The runtime distribution is `firecrawl-anydoc`; the adapter performs a
   no-install compatibility check in the active Python interpreter. Install a
-  compatible minimum explicitly with `python -m pip install "firecrawl-anydoc>=0.1.3"`,
-  or upgrade an existing install with `python -m pip install --upgrade firecrawl-anydoc`.
-  Newer versions are accepted only when the public API/model check passes;
+  provider explicitly with `python -m pip install firecrawl-anydoc`.
+  Versions are accepted only when the public API/model capability check passes;
   rerun the full tests and benchmark after upgrades.
 - The authoritative AnyDoc upstream is `firecrawl/anydoc`; `fuyin19/anydoc` is
   a mirror. Referencing GitHub does not update an installed wheel.
-- v6.4 does not emit RAG chunks, change Canonical schema 1.0, or claim page,
+- v6.5 does not emit RAG chunks, change Canonical schema 1.0, or claim page,
   slide, sheet, rich-style, formula, or external-image fidelity beyond the
   AnyDoc model and documented warnings.
-- Existing URL input remains a compatibility path through MarkItDown; its source
-  identity hashes extracted adapter text and is outside the local PDF Inspector
-  guarantees above.
+- URL input is downloaded through a public-network-only, redirect-revalidated,
+  DNS/IP-pinned byte/time-bounded client before local MarkItDown conversion.
+  Source identity hashes response bytes, and persisted locators omit credentials,
+  query strings, and fragments.
 
 See `references/canonical-schema-v1.md` for the public JSON contract,
 `references/frontmatter-template.md` for frontmatter, and

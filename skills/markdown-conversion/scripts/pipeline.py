@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+from collections import Counter
 import datetime
 import importlib.metadata
 import json
@@ -10,11 +11,13 @@ import mimetypes
 import os
 import re
 import shutil
+import subprocess
 import sys
 import tempfile
 import urllib.parse
 import uuid
 from dataclasses import dataclass
+from dataclasses import asdict
 from pathlib import Path
 from typing import Any, NoReturn
 
@@ -38,6 +41,7 @@ from canonical import (
     render_markdown,
     sha256_bytes,
     sha256_file,
+    stable_id,
     strip_images,
     title_from_markdown,
     validate_canonical,
@@ -45,9 +49,10 @@ from canonical import (
 from canonical import MOJIBAKE_PATTERNS
 from ocr_provider import NullOcrProvider, OcrSettings, RapidOcrProvider
 from pdf_inspector_adapter import PdfInspectorAdapter
+from safe_url import redact_url
 
 
-VERSION = "6.4.0"
+VERSION = "6.5.0"
 DEFAULT_CONFIG: dict[str, Any] = {
     "pdf_ocr": {
         "mode": "auto",
@@ -71,9 +76,9 @@ DEPS = [
     ("markdown_it", "markdown-it-py", True),
     ("jsonschema", "jsonschema", True),
     ("pypdfium2", "pypdfium2", True),
-    ("pdf_inspector", "pdf-inspector==0.2.6", True),
-    ("pypdf", "pypdf==6.14.2", True),
-    ("pdfminer", "pdfminer.six==20251230", True),
+    ("pdf_inspector", "pdf-inspector", True),
+    ("pypdf", "pypdf", True),
+    ("pdfminer", "pdfminer.six", True),
     ("chardet", "chardet", True),
     ("doc2docx", "doc2docx", False),
     ("rapidocr", "rapidocr", False),
@@ -82,6 +87,8 @@ DEPS = [
 _rfc3339_datetime_re = re.compile(
     r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$"
 )
+PROVIDER_TIMEOUT_SECONDS = 180.0
+PROVIDER_WORKER = Path(__file__).with_name("provider_worker.py")
 
 
 class PipelineError(RuntimeError):
@@ -90,6 +97,42 @@ class PipelineError(RuntimeError):
 
 class OutputCollision(PipelineError):
     pass
+
+
+def _run_provider_worker(request: dict[str, Any], timeout: float = PROVIDER_TIMEOUT_SECONDS) -> dict[str, Any]:
+    """Run native parsing/OCR outside the publishing process with a hard deadline."""
+    with tempfile.TemporaryDirectory(prefix=".conversion-worker-") as directory:
+        root = Path(directory)
+        request_path = root / "request.json"
+        result_path = root / "result.json"
+        request_path.write_text(json.dumps(request, ensure_ascii=False), encoding="utf-8")
+        environment = dict(os.environ)
+        environment.update({"OMP_NUM_THREADS": "1", "OPENBLAS_NUM_THREADS": "1", "MKL_NUM_THREADS": "1"})
+        try:
+            completed = subprocess.run(
+                [sys.executable, str(PROVIDER_WORKER), "--request", str(request_path), "--result", str(result_path)],
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                timeout=timeout,
+                env=environment,
+            )
+        except subprocess.TimeoutExpired as exc:
+            raise PipelineError(f"Native conversion worker exceeded {timeout:g} seconds") from exc
+        if not result_path.is_file():
+            raise PipelineError(f"Native conversion worker exited {completed.returncode} without a result")
+        try:
+            envelope = json.loads(result_path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+            raise PipelineError("Native conversion worker returned an invalid result") from exc
+        if completed.returncode != 0 or envelope.get("ok") is not True:
+            error_type = str(envelope.get("error_type") or "WorkerError")
+            message = str(envelope.get("message") or "native provider failed")
+            raise PipelineError(f"Native conversion worker failed ({error_type}): {message}")
+        result = envelope.get("result")
+        if not isinstance(result, dict):
+            raise PipelineError("Native conversion worker result is not an object")
+        return result
 
 
 @dataclass(frozen=True)
@@ -126,31 +169,13 @@ def _source_stem(source: str) -> str:
 
 
 def _ensure_package(package: str, install_name: str | None = None):
+    """Import a declared dependency without mutating the active environment."""
     install_name = install_name or package
-    distribution_name = re.split(r"[<>=!~]", install_name, maxsplit=1)[0]
-    exact_match = re.fullmatch(r"[^=<>!~]+==([^=<>!~]+)", install_name)
-    install_required = False
-    if exact_match is not None:
-        try:
-            installed = importlib.metadata.version(distribution_name)
-        except importlib.metadata.PackageNotFoundError:
-            installed = ""
-        install_required = installed != exact_match.group(1)
-    if not install_required:
-        try:
-            return __import__(package)
-        except ImportError:
-            install_required = True
-    if install_required:
-        import subprocess
-
-        print(f"Installing {install_name}...", file=sys.stderr)
-        subprocess.check_call([sys.executable, "-m", "pip", "install", install_name])
     try:
         return __import__(package)
     except ImportError as exc:
         raise PipelineError(
-            f"Installed {install_name}, but Python still cannot import {package}"
+            f"Required dependency {install_name} is unavailable; install a compatible provider in the active interpreter"
         ) from exc
 
 
@@ -162,12 +187,10 @@ def ensure_pdf_dependencies() -> None:
 
 
 def convert_doc_to_docx(doc_path: str) -> str:
-    _ensure_package("doc2docx")
-    from doc2docx import convert
-
-    target = Path(tempfile.gettempdir()) / f"{Path(doc_path).stem}_temp_{uuid.uuid4().hex}.docx"
-    convert(doc_path, str(target))
-    return str(target)
+    raise PipelineError(
+        "Legacy .doc COM conversion is disabled because it cannot be safely isolated; "
+        "use the AnyDoc route or convert the file to .docx in a trusted desktop workflow"
+    )
 
 
 def resolve_timestamp(value: str) -> str:
@@ -258,6 +281,8 @@ def precheck(args) -> None:
     if args.overwrite and args.rename:
         die("--overwrite and --rename are mutually exclusive")
     _normalize_mode(args)
+    if getattr(args, "enrich_images", False) and args.output_mode != "bundle":
+        die("--enrich-images requires bundle output so extracted image assets remain available")
     if args.input and not is_url(args.input) and not Path(args.input).is_file():
         die(f"File not found: {args.input}")
     if args.input_dir and not Path(args.input_dir).is_dir():
@@ -348,20 +373,36 @@ def collect_files(
     return sorted(files)
 
 
-def _source_record(source: str, adapter_text: str | None = None) -> tuple[dict[str, Any], str]:
+def _source_record(
+    source: str,
+    adapter_text: str | None = None,
+    remote_bytes: bytes | None = None,
+    remote_locator: str | None = None,
+    remote_media_type: str | None = None,
+    remote_sha256: str | None = None,
+    remote_size_bytes: int | None = None,
+) -> tuple[dict[str, Any], str]:
     if is_url(source):
-        if adapter_text is None:
-            raise PipelineError("URL source identity requires adapter text")
-        digest = sha256_bytes(adapter_text.encode("utf-8"))
+        if remote_sha256 is not None:
+            if not re.fullmatch(r"[0-9a-f]{64}", remote_sha256):
+                raise PipelineError("URL worker returned an invalid response digest")
+            digest = remote_sha256
+        elif remote_bytes is not None:
+            digest = sha256_bytes(remote_bytes)
+        elif adapter_text is not None:
+            digest = sha256_bytes(adapter_text.encode("utf-8"))
+        else:
+            raise PipelineError("URL source identity requires response bytes or adapter text")
+        byte_identity = remote_bytes is not None or remote_sha256 is not None
         return (
             {
                 "kind": "url",
                 "file_name": _source_stem(source),
-                "locator": source,
+                "locator": remote_locator or redact_url(source),
                 "sha256": digest,
-                "hash_basis": "adapter_text",
-                "size_bytes": None,
-                "media_type": None,
+                "hash_basis": "remote_response_bytes" if byte_identity else "adapter_text",
+                "size_bytes": len(remote_bytes) if remote_bytes is not None else remote_size_bytes,
+                "media_type": remote_media_type,
             },
             f"sha256:{digest}",
         )
@@ -392,8 +433,16 @@ def _extract(
 ) -> tuple[dict[str, Any], dict[str, Any], str]:
     identity_source = identity_source or source
     if is_url(source):
-        markdown = convert_basic(source)
-        source_record, document_id = _source_record(source, markdown)
+        remote = _run_provider_worker({"adapter": "url_markitdown", "source": source}, timeout=45.0)
+        markdown = str(remote.get("markdown") or "")
+        source_record, document_id = _source_record(
+            source,
+            markdown,
+            remote_locator=str(remote.get("locator") or redact_url(source)),
+            remote_media_type=remote.get("media_type"),
+            remote_sha256=str(remote.get("sha256") or ""),
+            remote_size_bytes=remote.get("size_bytes"),
+        )
         result = markdown_to_canonical(
             markdown,
             document_id,
@@ -404,24 +453,145 @@ def _extract(
         result["adapter"] = {
             "name": "markitdown",
             "version": markitdown_version(),
-            "limitations": ["remote_source_hash_uses_adapter_text", "embedded_images_may_not_be_exported"],
+            "limitations": ["embedded_images_may_not_be_exported"],
         }
         return result, source_record, document_id
     source_record, document_id = _source_record(identity_source)
     if Path(source).suffix.lower() == ".pdf":
         ensure_pdf_dependencies()
-        result = PdfInspectorAdapter(ocr_provider, ocr_mode=ocr_mode).extract(
-            source, document_id, mode, asset_dir
-        )
+        if type(ocr_provider) in {RapidOcrProvider, NullOcrProvider}:
+            settings = getattr(ocr_provider, "settings", OcrSettings(mode=ocr_mode, engine="none"))
+            result = _run_provider_worker({
+                "adapter": "pdf_inspector",
+                "source": source,
+                "document_id": document_id,
+                "mode": mode,
+                "asset_dir": str(asset_dir) if asset_dir is not None else "",
+                "ocr_mode": ocr_mode,
+                "ocr_settings": asdict(settings),
+            })
+        else:
+            result = PdfInspectorAdapter(ocr_provider, ocr_mode=ocr_mode).extract(
+                source, document_id, mode, asset_dir
+            )
     else:
         suffix = Path(source).suffix.lower()
         if local_adapter == "anydoc" and suffix in ANYDOC_SUFFIXES:
-            result = AnyDocAdapter().extract(source, document_id, mode, asset_dir)
+            result = _run_provider_worker({
+                "adapter": "anydoc",
+                "source": source,
+                "document_id": document_id,
+                "mode": mode,
+                "asset_dir": str(asset_dir) if asset_dir is not None else "",
+            })
         elif local_adapter == "markitdown" or suffix not in ANYDOC_SUFFIXES:
-            result = MarkItDownAdapter().extract(source, document_id, mode, asset_dir)
+            result = _run_provider_worker({
+                "adapter": "markitdown",
+                "source": source,
+                "document_id": document_id,
+                "mode": mode,
+                "asset_dir": str(asset_dir) if asset_dir is not None else "",
+            })
         else:
             raise PipelineError(f"Unsupported local document adapter: {local_adapter}")
     return result, source_record, document_id
+
+
+def _enrich_office_images(
+    extracted: dict[str, Any],
+    document_id: str,
+    normalization: str,
+    asset_dir: Path | None,
+    settings: OcrSettings,
+) -> None:
+    """Add opt-in, provenance-linked OCR paragraphs after resolved Office images."""
+    if asset_dir is None or extracted.get("adapter", {}).get("name") not in {"anydoc", "markitdown"}:
+        return
+    assets = extracted.get("assets", [])
+    resolved_asset_ids = {
+        item.get("asset_id") for item in extracted.get("content", []) if item.get("type") == "image"
+    }
+    candidates = [item for item in assets if item.get("asset_id") in resolved_asset_ids][:100]
+    if not candidates:
+        return
+    ocr_settings = asdict(settings)
+    ocr_settings.update({"mode": "auto", "engine": "rapidocr"})
+    request_assets = [
+        {"asset_id": item["asset_id"], "path": str(asset_dir / Path(item["path"]).name)}
+        for item in candidates
+    ]
+    unit_id = extracted["source_units"][0]["id"]
+    try:
+        response = _run_provider_worker({
+            "adapter": "image_ocr",
+            "ocr_settings": ocr_settings,
+            "assets": request_assets,
+        })
+    except PipelineError as exc:
+        warning = {
+            "code": "office_image_ocr_unavailable",
+            "message": f"Office image OCR enrichment was unavailable ({type(exc).__name__})",
+            "content_loss": False,
+            "source_unit": unit_id,
+        }
+        extracted.setdefault("warnings", []).append(warning)
+        extracted["source_units"][0].setdefault("warnings", []).append(warning)
+        extracted["source_units"][0]["status"] = "warning"
+        return
+    by_asset = {
+        item["asset_id"]: item for item in response.get("items", [])
+        if isinstance(item, dict) and item.get("asset_id")
+    }
+    enriched_content: list[dict[str, Any]] = []
+    new_relationships: list[dict[str, Any]] = []
+    ocr_occurrence = 0
+    for node in extracted.get("content", []):
+        enriched_content.append(node)
+        if node.get("type") != "image":
+            continue
+        item = by_asset.get(node.get("asset_id"))
+        text = str((item or {}).get("text") or "").strip()
+        if not text:
+            continue
+        ocr_occurrence += 1
+        locator = {
+            "source_unit_id": unit_id,
+            "asset_id": node["asset_id"],
+            "content_node_id": node["id"],
+            "enrichment": "image_ocr",
+            "occurrence": ocr_occurrence,
+            "engine": item.get("engine"),
+            "engine_version": item.get("engine_version"),
+            "confidence": item.get("confidence"),
+        }
+        node_id = stable_id("node", document_id, locator, "paragraph", len(enriched_content) + 1)
+        enriched_content.append({
+            "id": node_id,
+            "type": "paragraph",
+            "source_locator": locator,
+            "raw_text": text,
+            "text": text,
+            "normalized_text": convert_chinese(text, normalization),
+        })
+        new_relationships.append({
+            "type": "image_ocr_text",
+            "source_unit_id": unit_id,
+            "asset_id": node["asset_id"],
+            "image_content_node_id": node["id"],
+            "content_node_id": node_id,
+        })
+    extracted["content"] = enriched_content
+    extracted.setdefault("relationships", []).extend(new_relationships)
+    if len(assets) > len(candidates):
+        warning = {
+            "code": "office_image_ocr_budget_reached",
+            "message": f"Office image OCR enrichment was limited to {len(candidates)} resolved assets",
+            "content_loss": False,
+            "source_unit": unit_id,
+        }
+        extracted.setdefault("warnings", []).append(warning)
+        extracted["source_units"][0].setdefault("warnings", []).append(warning)
+        extracted["source_units"][0]["status"] = "warning"
 
 
 def _build_document(
@@ -434,6 +604,8 @@ def _build_document(
     ocr_provider=None,
     ocr_mode: str = "off",
     local_adapter: str = "anydoc",
+    enrich_images: bool = False,
+    ocr_settings: OcrSettings | None = None,
 ) -> dict[str, Any]:
     identity_source = identity_source or source
     extracted, source_record, document_id = _extract(
@@ -445,6 +617,14 @@ def _build_document(
         ocr_mode,
         local_adapter,
     )
+    if enrich_images:
+        _enrich_office_images(
+            extracted,
+            document_id,
+            normalization,
+            asset_dir,
+            ocr_settings or OcrSettings(),
+        )
     if is_url(identity_source):
         title = extracted.get("title") or _source_stem(identity_source)
         if title == "untitled":
@@ -551,6 +731,8 @@ def convert_one(args, source: str, relative_path: Path | None = None) -> tuple[P
                     ocr_provider=ocr_provider,
                     ocr_mode=ocr_settings.mode,
                     local_adapter=local_adapter,
+                    enrich_images=getattr(args, "enrich_images", False),
+                    ocr_settings=ocr_settings,
                 )
                 markdown_name = f"{target.stem}.md"
                 json_name = f"{target.stem}.json"
@@ -581,6 +763,8 @@ def convert_one(args, source: str, relative_path: Path | None = None) -> tuple[P
                 ocr_provider=ocr_provider,
                 ocr_mode=ocr_settings.mode,
                 local_adapter=local_adapter,
+                enrich_images=getattr(args, "enrich_images", False),
+                ocr_settings=ocr_settings,
             )
             markdown = render_markdown(document, not args.no_frontmatter, "markdown")
             document["outputs"] = {
@@ -627,7 +811,10 @@ def run_batch(args) -> int:
         try:
             path, status, warnings = convert_one(args, source, relative)
             label = "PARTIAL" if status == "partial" else "WARN" if status == "complete_with_warnings" else "OK"
-            print(f"[{label}] {relative.as_posix()} -> {path} ({len(warnings)} warnings)")
+            counts = Counter(str(item.get("code") or "unknown_warning") for item in warnings)
+            warning_summary = ", ".join(f"{code}x{counts[code]}" for code in sorted(counts))
+            suffix = f" ({warning_summary})" if warning_summary else ""
+            print(f"[{label}] {relative.as_posix()} -> {path}{suffix}")
             converted += 1
         except OutputCollision as exc:
             print(f"[SKIP] {relative.as_posix()} — {exc}", file=sys.stderr)
@@ -656,7 +843,7 @@ def show_version() -> None:
         except ImportError:
             version = "NOT INSTALLED" if required else "not installed (optional)"
         print(f"  {install_name}: {version}")
-    print(f"  firecrawl-anydoc installed={anydoc_version()} tested=0.1.3")
+    print(f"  firecrawl-anydoc: {anydoc_version()} (behavioral capability check)")
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -670,6 +857,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--output-path", default="")
     parser.add_argument("--language-normalization", choices=["simplified", "preserve", "traditional"], default="simplified")
     parser.add_argument("--no-frontmatter", action="store_true")
+    parser.add_argument(
+        "--enrich-images",
+        action="store_true",
+        help="OCR resolved embedded Office images and insert provenance-linked text (bundle mode only)",
+    )
     parser.add_argument("--overwrite", action="store_true")
     parser.add_argument("--rename", action="store_true")
     parser.add_argument("--timestamp", default="")

@@ -3,21 +3,19 @@ from __future__ import annotations
 
 import importlib.metadata
 import hashlib
+import io
 import re
 import tempfile
 import zipfile
 from pathlib import Path
 from types import MappingProxyType
 from typing import Any
-
-try:
-    from packaging.version import InvalidVersion, Version
-except ImportError:  # pragma: no cover - packaging is a transitive runtime dependency
-    InvalidVersion = ValueError  # type: ignore[assignment,misc]
-    Version = None  # type: ignore[assignment,misc]
+from xml.etree import ElementTree
 
 from canonical import make_text_fields, normalize_canonical_text, stable_id, title_from_markdown
+from docx_sharding import shard_docx_bytes
 from ooxml_images import OOXML_SUFFIXES, create_sanitized_ooxml_copy, extract_ooxml_images
+from office_preflight import preflight_office
 
 
 _MARKITDOWN = None
@@ -43,8 +41,6 @@ ANYDOC_SUFFIXES = frozenset(ANYDOC_FORMAT_BY_EXTENSION)
 ANYDOC_ALLOWED_DETECTED_FORMATS = frozenset(ANYDOC_CANONICAL_FORMATS | {"pdf"})
 ANYDOC_DISTRIBUTION = "firecrawl-anydoc"
 ANYDOC_IMPORT = "anydoc"
-ANYDOC_MIN_VERSION = "0.1.3"
-ANYDOC_TESTED_VERSION = "0.1.3"
 _ASSET_MEDIA_TYPES = {
     "image/png": ".png", "image/jpeg": ".jpg", "image/gif": ".gif",
     "image/webp": ".webp", "image/bmp": ".bmp", "image/tiff": ".tiff",
@@ -85,7 +81,7 @@ def _load_anydoc():
         except ImportError as exc:
             raise RuntimeError(
                 "AnyDoc is unavailable in the active Python interpreter. "
-                f"Install with: {__import__('sys').executable} -m pip install \"{ANYDOC_DISTRIBUTION}>={ANYDOC_MIN_VERSION}\""
+                f"Install a compatible provider with: {__import__('sys').executable} -m pip install {ANYDOC_DISTRIBUTION}"
             ) from exc
         _ANYDOC = anydoc
     return _ANYDOC
@@ -124,7 +120,7 @@ def anydoc_capability_check() -> dict[str, Any]:
     except importlib.metadata.PackageNotFoundError as exc:
         raise RuntimeError(
             f"{ANYDOC_DISTRIBUTION} is unavailable in the active Python interpreter. "
-            f"Install with: {__import__('sys').executable} -m pip install \"{ANYDOC_DISTRIBUTION}>={ANYDOC_MIN_VERSION}\""
+            f"Install a compatible provider with: {__import__('sys').executable} -m pip install {ANYDOC_DISTRIBUTION}"
         ) from exc
     package = _load_anydoc()
     required = (
@@ -175,27 +171,11 @@ def anydoc_capability_check() -> dict[str, Any]:
     if version == "NOT INSTALLED":
         raise RuntimeError(
             f"{ANYDOC_DISTRIBUTION} is unavailable in the active Python interpreter. "
-            f"Install with: {__import__('sys').executable} -m pip install \"{ANYDOC_DISTRIBUTION}>={ANYDOC_MIN_VERSION}\""
+            f"Install a compatible provider with: {__import__('sys').executable} -m pip install {ANYDOC_DISTRIBUTION}"
         )
-    try:
-        parsed = Version(version) if Version is not None else None
-        minimum = Version(ANYDOC_MIN_VERSION) if Version is not None else None
-        if parsed is None or minimum is None:
-            raise RuntimeError("packaging is required to validate firecrawl-anydoc versions")
-        if parsed.is_prerelease or parsed.is_devrelease or parsed < minimum:
-            raise RuntimeError(
-                f"firecrawl-anydoc>={ANYDOC_MIN_VERSION} stable is required; found {version}. "
-                f"Use {__import__('sys').executable} -m pip install --upgrade {ANYDOC_DISTRIBUTION}"
-            )
-    except importlib.metadata.PackageNotFoundError as exc:  # pragma: no cover - import succeeded oddly
-        raise RuntimeError("AnyDoc module has no firecrawl-anydoc distribution metadata") from exc
-    except (InvalidVersion, ValueError) as exc:
-        raise RuntimeError(f"Invalid firecrawl-anydoc version metadata: {version}") from exc
     result = {
         "version": version,
-        "tested_version": ANYDOC_TESTED_VERSION,
         "module": str(module_path),
-        "untested": str(parsed) != ANYDOC_TESTED_VERSION,
     }
     _ANYDOC_CAPABILITY = MappingProxyType(dict(result))
     _ANYDOC_CAPABILITY_MODULE_ID = id(_ANYDOC)
@@ -221,9 +201,113 @@ def _warning(code: str, message: str, source_unit: str, content_loss: bool) -> d
     }
 
 
+_WORD_NS = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
+_WORD_REVISION_TAGS = {
+    f"{{{_WORD_NS}}}{name}"
+    for name in (
+        "ins", "del", "moveFrom", "moveTo", "rPrChange", "pPrChange",
+        "tblPrChange", "trPrChange", "tcPrChange", "sectPrChange",
+        "tblGridChange", "tblPrExChange", "numberingChange",
+        "moveFromRangeStart", "moveFromRangeEnd", "moveToRangeStart", "moveToRangeEnd",
+        "customXmlInsRangeStart", "customXmlInsRangeEnd",
+        "customXmlDelRangeStart", "customXmlDelRangeEnd",
+        "customXmlMoveFromRangeStart", "customXmlMoveFromRangeEnd",
+        "customXmlMoveToRangeStart", "customXmlMoveToRangeEnd",
+    )
+}
+_WORD_ACCEPT_KEEP = {f"{{{_WORD_NS}}}ins", f"{{{_WORD_NS}}}moveTo"}
+_WORD_ACCEPT_DROP_CONTENT = {f"{{{_WORD_NS}}}del", f"{{{_WORD_NS}}}moveFrom"}
+_WORD_ACCEPT_DROP_MARKERS = _WORD_REVISION_TAGS - _WORD_ACCEPT_KEEP - _WORD_ACCEPT_DROP_CONTENT
+_WORD_UNSUPPORTED_REVISION_TAGS = {
+    f"{{{_WORD_NS}}}{name}"
+    for name in ("cellIns", "cellDel", "cellMerge", "conflictIns", "conflictDel")
+}
+
+
+def _word_story_parts(names: set[str]) -> list[str]:
+    return sorted(
+        name for name in names
+        if name == "word/document.xml"
+        or re.fullmatch(r"word/(?:header|footer)\d+\.xml", name)
+        or name in {"word/footnotes.xml", "word/endnotes.xml"}
+    )
+
+
+def _word_revision_counts(package: zipfile.ZipFile, names: set[str]) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for part in _word_story_parts(names):
+        try:
+            for _, element in ElementTree.iterparse(io.BytesIO(package.read(part)), events=("start",)):
+                if element.tag in _WORD_UNSUPPORTED_REVISION_TAGS:
+                    name = element.tag.rsplit("}", 1)[-1]
+                    raise RuntimeError(
+                        f"Word revision class {name} in {part} has no proved accepted-view transform"
+                    )
+                if element.tag in _WORD_REVISION_TAGS:
+                    name = element.tag.rsplit("}", 1)[-1]
+                    counts[name] = counts.get(name, 0) + 1
+        except (ElementTree.ParseError, KeyError, OSError) as exc:
+            raise RuntimeError(f"Could not inspect Word revisions in {part}: {type(exc).__name__}: {exc}") from exc
+    return counts
+
+
+def _accepted_word_tree(root: ElementTree.Element) -> None:
+    """Apply the supported accepted/final-view semantics to one Word story."""
+    def visit(parent: ElementTree.Element) -> None:
+        for child in list(parent):
+            if child.tag in _WORD_ACCEPT_DROP_CONTENT or child.tag in _WORD_ACCEPT_DROP_MARKERS:
+                parent.remove(child)
+                continue
+            if child.tag in _WORD_ACCEPT_KEEP:
+                visit(child)
+                position = list(parent).index(child)
+                descendants = list(child)
+                tail = child.tail
+                parent.remove(child)
+                for offset, descendant in enumerate(descendants):
+                    parent.insert(position + offset, descendant)
+                if tail:
+                    if descendants:
+                        descendants[-1].tail = (descendants[-1].tail or "") + tail
+                    elif position:
+                        previous = list(parent)[position - 1]
+                        previous.tail = (previous.tail or "") + tail
+                    else:
+                        parent.text = (parent.text or "") + tail
+                continue
+            visit(child)
+
+    visit(root)
+
+
+def accepted_word_snapshot(path: Path) -> tuple[bytes, dict[str, int]]:
+    """Return immutable source bytes or a temporary accepted-view OOXML snapshot."""
+    raw = path.read_bytes()
+    if path.suffix.lower() not in {".docx", ".docm"} or not zipfile.is_zipfile(path):
+        return raw, {}
+    with zipfile.ZipFile(io.BytesIO(raw)) as package:
+        names = set(package.namelist())
+        counts = _word_revision_counts(package, names)
+        if not counts:
+            return raw, {}
+        replacements: dict[str, bytes] = {}
+        for part in _word_story_parts(names):
+            try:
+                root = ElementTree.fromstring(package.read(part))
+                _accepted_word_tree(root)
+                replacements[part] = ElementTree.tostring(root, encoding="utf-8", xml_declaration=True)
+            except (ElementTree.ParseError, KeyError, OSError) as exc:
+                raise RuntimeError(f"Could not build accepted Word view for {part}: {type(exc).__name__}: {exc}") from exc
+        output = io.BytesIO()
+        with zipfile.ZipFile(output, "w") as accepted:
+            for item in package.infolist():
+                accepted.writestr(item, replacements.get(item.filename, package.read(item.filename)))
+        return output.getvalue(), counts
+
+
 def inspect_ooxml_features(path: Path, source_unit: str) -> list[dict[str, Any]]:
-    """Cheaply detect OOXML parts known not to be preserved by MarkItDown."""
-    if path.suffix.lower() not in {".docx", ".xlsx", ".pptx"} or not zipfile.is_zipfile(path):
+    """Detect unsupported OOXML semantics without prefix or substring guesses."""
+    if path.suffix.lower() not in OOXML_SUFFIXES | {".docm", ".pptm", ".xlsm"} or not zipfile.is_zipfile(path):
         return []
     warnings: list[dict[str, Any]] = []
     with zipfile.ZipFile(path) as package:
@@ -238,17 +322,17 @@ def inspect_ooxml_features(path: Path, source_unit: str) -> list[dict[str, Any]]
                     True,
                 )
             )
-        if "word/document.xml" in names:
-            xml = package.read("word/document.xml")
-            if b"<w:ins" in xml or b"<w:del" in xml:
-                warnings.append(
-                    _warning(
-                        "office_tracked_changes_not_preserved",
-                        "Tracked changes were detected and cannot be represented faithfully",
-                        source_unit,
-                        True,
-                    )
+        revisions = _word_revision_counts(package, names)
+        if revisions:
+            summary = ", ".join(f"{name}={revisions[name]}" for name in sorted(revisions))
+            warnings.append(
+                _warning(
+                    "office_revisions_flattened_to_accepted_view",
+                    f"Word revisions were flattened to the final accepted view ({summary})",
+                    source_unit,
+                    True,
                 )
+            )
     return warnings
 
 
@@ -320,6 +404,7 @@ def markdown_to_canonical(
     tokens = MarkdownIt("commonmark").enable("table").parse(markdown)
     content: list[dict[str, Any]] = []
     tables: list[dict[str, Any]] = []
+    relationships: list[dict[str, Any]] = []
     warnings: list[dict[str, Any]] = []
     assets = list(image_assets or [])
     assets_by_id = {item["asset_id"]: item for item in assets}
@@ -370,12 +455,23 @@ def markdown_to_canonical(
         )
         if inferred:
             source_locator["position_inferred"] = True
+        node_id = stable_id("node", document_id, source_locator, "image", occurrence)
         content.append(
             {
-                "id": stable_id("node", document_id, source_locator, "image", occurrence),
+                "id": node_id,
                 "type": "image",
                 "source_locator": source_locator,
                 "asset_id": asset_id,
+            }
+        )
+        relationships.append(
+            {
+                "type": "image_occurrence",
+                "source_unit_id": unit_id,
+                "asset_id": asset_id,
+                "occurrence_index": image_cursor,
+                "placement": "resolved",
+                "content_node_id": node_id,
             }
         )
         return True
@@ -511,17 +607,15 @@ def markdown_to_canonical(
         index += 1
 
     if image_cursor < len(asset_occurrences):
-        inferred_count = len(asset_occurrences) - image_cursor
+        unresolved_ids = asset_occurrences[image_cursor:]
         warnings.append(
             _warning(
-                "office_image_position_inferred",
-                f"The reading position of {inferred_count} Office image occurrence(s) was inferred from OOXML package order",
+                "office_image_position_unresolved",
+                f"The reading position of {len(unresolved_ids)} Office image occurrence(s) could not be proved; assets were retained without guessed content nodes",
                 unit_id,
-                False,
+                True,
             )
         )
-        while image_cursor < len(asset_occurrences):
-            add_image("", inferred=True)
 
     if not content and markdown.strip():
         add_text("paragraph", markdown.strip(), tokens[0] if tokens else type("Token", (), {"map": None})())
@@ -538,7 +632,16 @@ def markdown_to_canonical(
         "content": content,
         "tables": tables,
         "assets": assets,
-        "relationships": [],
+        "relationships": relationships + ([
+            {
+                "type": "image_occurrence",
+                "source_unit_id": unit_id,
+                "asset_id": asset_id,
+                "occurrence_index": image_cursor + index,
+                "placement": "unresolved",
+            }
+            for index, asset_id in enumerate(unresolved_ids, 1)
+        ] if image_cursor < len(asset_occurrences) else []),
         "warnings": warnings,
         "title": title_source or title_from_markdown(markdown, "untitled"),
     }
@@ -707,22 +810,15 @@ def _ad_has_rich_loss(inlines: list[Any]) -> bool:
     """Whether inline semantics cannot be represented by Canonical v1."""
     for inline in inlines or []:
         kind = _ad_kind(inline)
-        if kind in {"anchor", "note_ref"}:
+        if kind == "anchor":
             return True
         if kind == "link":
-            target = _ad_attr(inline, "target", None)
-            if _ad_kind(target) in {"external", "relative", "anchor"}:
-                return True
             if _ad_has_rich_loss(_ad_attr(inline, "content", []) or []):
                 return True
-        style = _ad_attr(inline, "style", None)
-        if style is not None and any(bool(_ad_attr(style, field, False)) for field in ("bold", "italic", "strike", "code")):
-            return True
     return False
 
 
 _ANYDOC_MAX_DEPTH = 64
-_ANYDOC_MAX_VISITED = 100_000
 _ANYDOC_MAX_TABLE_ROWS = 10_000
 _ANYDOC_MAX_TABLE_COLUMNS = 1_000
 _ANYDOC_MAX_TABLE_CELLS = 1_000_000
@@ -772,8 +868,6 @@ def _validate_anydoc_document(document: Any) -> None:
         if identity in visited:
             return
         visited.add(identity)
-        if len(visited) > _ANYDOC_MAX_VISITED:
-            raise RuntimeError(f"AnyDoc model exceeds {_ANYDOC_MAX_VISITED} visited objects")
         active.add(identity)
         try:
             if isinstance(value, dict):
@@ -834,8 +928,6 @@ def _validate_anydoc_document(document: Any) -> None:
         if object_id in graph_seen:
             continue
         graph_seen.add(object_id)
-        if len(graph_seen) > _ANYDOC_MAX_VISITED:
-            raise RuntimeError(f"AnyDoc model exceeds {_ANYDOC_MAX_VISITED} visited objects")
         graph_active.add(object_id)
         graph_stack.append((value, path, depth, True, object_id))
         if isinstance(value, dict):
@@ -982,6 +1074,265 @@ def _ad_warning(code: str, message: str, source_unit: str, content_loss: bool) -
     return _warning(code, message, source_unit, content_loss)
 
 
+def _is_anydoc_max_xml_nodes(package: Any, error: BaseException) -> bool:
+    """Recognize only the provider's typed/legacy capacity error, never lookalikes."""
+    if str(getattr(error, "limit", "")) == "max_xml_nodes":
+        resource_error = getattr(package, "ResourceLimitError", None)
+        return isinstance(resource_error, type) and type(error) is resource_error
+    convert_error = getattr(package, "ConvertError", None)
+    if not isinstance(convert_error, type) or type(error) is not convert_error:
+        return False
+    return re.fullmatch(r"(?:.*:\s*)?max_xml_nodes exceeded(?:\s*\([^\r\n]*\))?", str(error).strip()) is not None
+
+
+def _merge_sharded_anydoc_results(
+    results: list[tuple[int, int, dict[str, Any]]],
+    document_id: str,
+    original_feature_warnings: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    if not results:
+        raise RuntimeError("DOCX capacity recovery produced no shard results")
+    merged = dict(results[0][2])
+    unit = merged["source_units"][0]
+    unit_id = unit["id"]
+    content: list[dict[str, Any]] = []
+    tables: list[dict[str, Any]] = []
+    assets: list[dict[str, Any]] = []
+    relationships: list[dict[str, Any]] = []
+    warnings: list[dict[str, Any]] = []
+    asset_by_key: dict[tuple[str, str], dict[str, Any]] = {}
+    node_counter = 0
+    table_counter = 0
+    image_counter = 0
+
+    for shard_index, (first_block, last_block, result) in enumerate(results, 1):
+        old_assets = {item["asset_id"]: item for item in result.get("assets", [])}
+        asset_map: dict[str, str] = {}
+        for old_id, item in old_assets.items():
+            key = (str(item.get("source_locator", {}).get("origin_part", "")), item["sha256"])
+            canonical_asset = asset_by_key.get(key)
+            if canonical_asset is None:
+                canonical_asset = dict(item)
+                asset_by_key[key] = canonical_asset
+                assets.append(canonical_asset)
+            asset_map[old_id] = canonical_asset["asset_id"]
+
+        table_map: dict[str, str] = {}
+        for item in result.get("tables", []):
+            table_counter += 1
+            table = dict(item)
+            locator = dict(table.get("source_locator", {}))
+            locator.update({"shard_index": shard_index, "original_block_first": first_block, "original_block_last": last_block})
+            table["source_locator"] = locator
+            old_id = table["table_id"]
+            table["table_id"] = stable_id("table", document_id, locator, "table", table_counter)
+            table_map[old_id] = table["table_id"]
+            tables.append(table)
+
+        node_map: dict[str, str] = {}
+        for item in result.get("content", []):
+            node_counter += 1
+            node = dict(item)
+            locator = dict(node.get("source_locator", {}))
+            locator.update({"shard_index": shard_index, "original_block_first": first_block, "original_block_last": last_block})
+            node["source_locator"] = locator
+            old_id = node["id"]
+            node["id"] = stable_id("node", document_id, locator, node["type"], node_counter)
+            node_map[old_id] = node["id"]
+            if node.get("table_id") in table_map:
+                node["table_id"] = table_map[node["table_id"]]
+            if node.get("asset_id") in asset_map:
+                node["asset_id"] = asset_map[node["asset_id"]]
+            content.append(node)
+
+        for item in result.get("relationships", []):
+            relationship = dict(item)
+            if relationship.get("type") == "image_occurrence":
+                image_counter += 1
+                relationship["occurrence_index"] = image_counter
+                relationship["asset_id"] = asset_map.get(relationship.get("asset_id"), relationship.get("asset_id"))
+                if relationship.get("content_node_id") in node_map:
+                    relationship["content_node_id"] = node_map[relationship["content_node_id"]]
+            relationships.append(relationship)
+        for warning in result.get("warnings", []):
+            if not any(
+                existing.get("code") == warning.get("code") and existing.get("message") == warning.get("message")
+                for existing in warnings
+            ):
+                warnings.append(warning)
+
+    warnings.append(_ad_warning(
+        "adapter_fallback_used",
+        f"adapter=anydoc phase=capacity_recovery limit=max_xml_nodes shards={len(results)}",
+        unit_id,
+        False,
+    ))
+    for warning in original_feature_warnings or []:
+        if not any(
+            existing.get("code") == warning.get("code")
+            and existing.get("message") == warning.get("message")
+            for existing in warnings
+        ):
+            warnings.append(warning)
+    unit = dict(unit)
+    unit["warnings"] = warnings
+    unit["status"] = "warning"
+    merged.update({
+        "source_units": [unit],
+        "content": content,
+        "tables": tables,
+        "assets": assets,
+        "relationships": relationships,
+        "warnings": warnings,
+        "title": next((item.get("normalized_text") for item in content if item.get("type") == "heading" and item.get("level") == 1), merged.get("title")),
+    })
+    return merged
+
+
+def _reconcile_anydoc_ooxml_images(
+    assets: list[dict[str, Any]],
+    content: list[dict[str, Any]],
+    relationships: list[dict[str, Any]],
+    inventory_assets: list[dict[str, Any]],
+    inventory_occurrence_ids: list[str],
+    asset_dir: Path,
+    unit_id: str,
+    warnings: list[dict[str, Any]],
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]]]:
+    """Publish only relationship-proved OOXML images and account for every occurrence."""
+    inventory_by_id = {item["asset_id"]: item for item in inventory_assets}
+    provider_by_key: dict[tuple[str, str], dict[str, Any]] = {}
+    provider_by_digest: dict[str, list[dict[str, Any]]] = {}
+    for asset in assets:
+        locator = asset.get("source_locator", {})
+        part = str(locator.get("origin_part") or "").replace("\\", "/").lstrip("/")
+        digest = str(asset.get("sha256") or "")
+        provider_by_key[(part, digest)] = asset
+        provider_by_digest.setdefault(digest, []).append(asset)
+
+    inventory_to_provider: dict[str, str] = {}
+    inventory_part_by_provider: dict[str, str] = {}
+    for inventory in inventory_assets:
+        locator = inventory.get("source_locator", {})
+        part = str(locator.get("package_part") or "").replace("\\", "/").lstrip("/")
+        digest = str(inventory.get("sha256") or "")
+        provider = provider_by_key.get((part, digest))
+        if provider is None and len(provider_by_digest.get(digest, [])) == 1:
+            provider = provider_by_digest[digest][0]
+        if provider is not None:
+            inventory_to_provider[inventory["asset_id"]] = provider["asset_id"]
+            inventory_part_by_provider[provider["asset_id"]] = part
+
+    proved_asset_ids = set(inventory_to_provider.values())
+    removed_asset_ids = {item["asset_id"] for item in assets} - proved_asset_ids
+    if removed_asset_ids:
+        for asset in assets:
+            if asset["asset_id"] not in removed_asset_ids:
+                continue
+            published = asset_dir / Path(asset["path"]).name
+            published.unlink(missing_ok=True)
+        warnings.append(_ad_warning(
+            "office_image_relationship_unproved",
+            f"Discarded {len(removed_asset_ids)} provider image asset(s) without an OOXML relationship",
+            unit_id,
+            True,
+        ))
+    assets = [item for item in assets if item["asset_id"] in proved_asset_ids]
+
+    removed_node_ids = {
+        item["id"] for item in content
+        if item.get("type") == "image" and item.get("asset_id") not in proved_asset_ids
+    }
+    content = [item for item in content if item.get("id") not in removed_node_ids]
+    relationships = [
+        item for item in relationships
+        if item.get("content_node_id") not in removed_node_ids
+        and item.get("asset_id") not in removed_asset_ids
+    ]
+
+    for relationship in relationships:
+        if relationship.get("type") == "image_occurrence":
+            part = inventory_part_by_provider.get(str(relationship.get("asset_id")))
+            if part:
+                relationship["package_part"] = part
+
+    inventory_counts: dict[str, int] = {}
+    for inventory_id in inventory_occurrence_ids:
+        asset_id = inventory_to_provider.get(inventory_id)
+        if asset_id is not None:
+            inventory_counts[asset_id] = inventory_counts.get(asset_id, 0) + 1
+
+    kept_resolved: dict[str, int] = {}
+    surplus_node_ids: set[str] = set()
+    reconciled_relationships: list[dict[str, Any]] = []
+    surplus = 0
+    for relationship in relationships:
+        if relationship.get("type") != "image_occurrence" or relationship.get("placement") != "resolved":
+            reconciled_relationships.append(relationship)
+            continue
+        asset_id = str(relationship.get("asset_id"))
+        if kept_resolved.get(asset_id, 0) < inventory_counts.get(asset_id, 0):
+            kept_resolved[asset_id] = kept_resolved.get(asset_id, 0) + 1
+            reconciled_relationships.append(relationship)
+            continue
+        surplus += 1
+        content_node_id = relationship.get("content_node_id")
+        if isinstance(content_node_id, str):
+            surplus_node_ids.add(content_node_id)
+    if surplus_node_ids:
+        content = [item for item in content if item.get("id") not in surplus_node_ids]
+    relationships = reconciled_relationships
+    if surplus:
+        warnings.append(_ad_warning(
+            "office_image_occurrence_unproved",
+            f"Discarded {surplus} provider image occurrence(s) beyond the OOXML relationship inventory",
+            unit_id,
+            True,
+        ))
+
+    resolved_remaining = dict(kept_resolved)
+    next_occurrence = max(
+        (int(item.get("occurrence_index", 0)) for item in relationships if item.get("type") == "image_occurrence"),
+        default=0,
+    )
+    unresolved = 0
+    unavailable = 0
+    for inventory_id in inventory_occurrence_ids:
+        asset_id = inventory_to_provider.get(inventory_id)
+        if asset_id is None:
+            unavailable += 1
+            continue
+        if resolved_remaining.get(asset_id, 0):
+            resolved_remaining[asset_id] -= 1
+            continue
+        next_occurrence += 1
+        unresolved += 1
+        inventory = inventory_by_id[inventory_id]
+        relationships.append({
+            "type": "image_occurrence",
+            "source_unit_id": unit_id,
+            "asset_id": asset_id,
+            "occurrence_index": next_occurrence,
+            "package_part": str(inventory.get("source_locator", {}).get("package_part") or ""),
+            "placement": "unresolved",
+        })
+    if unresolved:
+        warnings.append(_ad_warning(
+            "office_image_position_unresolved",
+            f"Could not prove canonical positions for {unresolved} of {len(inventory_occurrence_ids)} OOXML image occurrence(s)",
+            unit_id,
+            True,
+        ))
+    if unavailable:
+        warnings.append(_ad_warning(
+            "anydoc_image_asset_unavailable",
+            f"AnyDoc did not export assets for {unavailable} relationship-proved OOXML image occurrence(s)",
+            unit_id,
+            True,
+        ))
+    return assets, content, relationships
+
+
 def _safe_asset_extension(media_type: str) -> str | None:
     return _ASSET_MEDIA_TYPES.get(media_type.lower())
 
@@ -1093,14 +1444,22 @@ class AnyDocAdapter:
         "canonical_v1_non_image_assets_not_preserved",
     ]
 
-    def extract(self, source: str, document_id: str, mode: str, asset_dir: Path | None = None) -> dict[str, Any]:
+    def extract(
+        self,
+        source: str,
+        document_id: str,
+        mode: str,
+        asset_dir: Path | None = None,
+        _allow_capacity_recovery: bool = True,
+    ) -> dict[str, Any]:
         path = Path(source)
         fmt = anydoc_format_for_path(path)
         if fmt is None:
             raise RuntimeError(f"AnyDoc does not support local extension {path.suffix.lower()}")
+        preflight = preflight_office(path)
         capability = anydoc_capability_check()
         package = _load_anydoc()
-        raw_bytes = path.read_bytes()
+        raw_bytes, revision_counts = accepted_word_snapshot(path)
         try:
             extension_format = package.format_from_extension(path.suffix.lower())
         except Exception as exc:
@@ -1123,10 +1482,41 @@ class AnyDocAdapter:
         if normalized_detected is not None and normalized_detected != fmt:
             raise RuntimeError(f"AnyDoc detected {detected!s} but extension requires {fmt}")
         try:
-            document = package.to_document(raw_bytes, fmt)
-        except TypeError:
-            document = package.to_document(raw_bytes, format=fmt)
+            try:
+                document = package.to_document(raw_bytes, fmt)
+            except TypeError:
+                document = package.to_document(raw_bytes, format=fmt)
         except Exception as exc:
+            if _allow_capacity_recovery and fmt == "docx" and _is_anydoc_max_xml_nodes(package, exc):
+                oversized_non_body = [
+                    part for part, count in preflight.xml_nodes_by_part.items()
+                    if part != "word/document.xml" and count >= 2_000_000
+                ]
+                if oversized_non_body:
+                    raise RuntimeError(
+                        "AnyDoc max_xml_nodes occurred in a non-shardable Word part: "
+                        + ", ".join(sorted(oversized_non_body))
+                    ) from exc
+                shard_results: list[tuple[int, int, dict[str, Any]]] = []
+                shards = shard_docx_bytes(raw_bytes)
+                with tempfile.TemporaryDirectory(prefix=".anydoc-docx-shards-") as shard_dir:
+                    shard_root = Path(shard_dir)
+                    for shard_index, (first_block, last_block, shard_bytes) in enumerate(shards, 1):
+                        shard_path = shard_root / f"shard-{shard_index:04d}.docx"
+                        shard_path.write_bytes(shard_bytes)
+                        shard_result = self.extract(
+                            str(shard_path), document_id, mode, asset_dir,
+                            _allow_capacity_recovery=False,
+                        )
+                        shard_results.append((first_block, last_block, shard_result))
+                original_unit_id = stable_id(
+                    "unit", document_id, {"kind": "document", "index": 1}, "document", 1
+                )
+                return _merge_sharded_anydoc_results(
+                    shard_results,
+                    document_id,
+                    inspect_ooxml_features(path, original_unit_id),
+                )
             raise RuntimeError(f"AnyDoc could not convert {path.name}: {exc}") from exc
         _validate_anydoc_document(document)
 
@@ -1149,19 +1539,22 @@ class AnyDocAdapter:
 
         def mark_rich_loss() -> None:
             add_warning(_ad_warning(
-                "anydoc_rich_inline_flattened",
-                "AnyDoc inline styling, anchors, note linkage, or link targets were flattened to visible text",
+                "anydoc_anchor_omitted",
+                "An AnyDoc anchor was omitted because Canonical v1 has no inline anchor field",
                 unit_id,
                 True,
             ), dedupe=True)
 
-        if capability.get("untested"):
+        def mark_style_flattened() -> None:
             add_warning(_ad_warning(
-                "anydoc_untested_version",
-                f"firecrawl-anydoc {capability['version']} is newer than tested version {ANYDOC_TESTED_VERSION}; compatibility checks passed",
+                "anydoc_inline_style_flattened",
+                "AnyDoc inline emphasis was flattened to visible text in Canonical v1",
                 unit_id,
                 False,
-            ))
+            ), dedupe=True)
+
+        feature_warnings = inspect_ooxml_features(path, unit_id)
+        warnings.extend(feature_warnings)
         raw_assets = list(_ad_attr(document, "assets", []) or [])
         asset_lookup, assets = _write_anydoc_assets(raw_assets, document_id, unit_id, asset_dir, warnings)
         # AnyDoc remains the sole source of canonical Office assets.  A small
@@ -1170,11 +1563,17 @@ class AnyDocAdapter:
         # its model; its temporary exports are never published or used as
         # canonical assets.  This keeps the adapter fail-closed while making
         # missing-image output explicitly loss-aware.
+        inventory_assets: list[dict[str, Any]] = []
+        inventory_occurrence_ids: list[str] = []
         if path.suffix.lower() in OOXML_SUFFIXES and path.exists():
             with tempfile.TemporaryDirectory(prefix=".anydoc-image-preflight-") as preflight_dir:
                 try:
-                    _, _, image_warnings = extract_ooxml_images(
-                        path,
+                    preflight_source = path
+                    if revision_counts:
+                        preflight_source = Path(preflight_dir) / path.name
+                        preflight_source.write_bytes(raw_bytes)
+                    inventory_assets, inventory_occurrence_ids, image_warnings = extract_ooxml_images(
+                        preflight_source,
                         document_id,
                         unit_id,
                         Path(preflight_dir),
@@ -1189,6 +1588,7 @@ class AnyDocAdapter:
                 warnings.extend(image_warnings)
         content: list[dict[str, Any]] = []
         tables: list[dict[str, Any]] = []
+        relationships: list[dict[str, Any]] = []
         occurrence = 0
         image_occurrence = 0
 
@@ -1244,12 +1644,12 @@ class AnyDocAdapter:
             if asset_dir is None:
                 if alt:
                     add_text(fallback_kind, alt, source_locator, **(fallback_extra or {}))
-                warnings.append(_ad_warning(
+                add_warning(_ad_warning(
                     "anydoc_markdown_asset_omitted",
-                    "Embedded AnyDoc image bytes were omitted in markdown-only mode; alt text was retained",
+                    "Embedded AnyDoc image bytes were omitted in markdown-only mode; available alt text was retained",
                     unit_id,
                     False,
-                ))
+                ), dedupe=True)
                 return
             if alt and not asset["alt"]:
                 asset["alt"] = alt
@@ -1259,11 +1659,20 @@ class AnyDocAdapter:
                 "model_path": source_locator.get("model_path", []) + ["inline", image_occurrence],
             }
             occurrence += 1
+            node_id = stable_id("node", document_id, node_locator, "image", occurrence)
             content.append({
-                "id": stable_id("node", document_id, node_locator, "image", occurrence),
+                "id": node_id,
                 "type": "image",
                 "source_locator": node_locator,
                 "asset_id": asset["asset_id"],
+            })
+            relationships.append({
+                "type": "image_occurrence",
+                "source_unit_id": unit_id,
+                "asset_id": asset["asset_id"],
+                "occurrence_index": image_occurrence,
+                "placement": "resolved",
+                "content_node_id": node_id,
             })
 
         def emit_inlines(
@@ -1291,6 +1700,8 @@ class AnyDocAdapter:
 
             if _ad_has_rich_loss(inlines):
                 mark_rich_loss()
+            if _ad_has_rich_style(inlines):
+                mark_style_flattened()
             for segment_kind, value in _ad_inline_segments(inlines):
                 if segment_kind == "image":
                     flush()
@@ -1339,7 +1750,7 @@ class AnyDocAdapter:
                     "anydoc_inline_structure_flattened",
                     "Inline text/image structure was split into ordered Canonical v1 nodes",
                     unit_id,
-                    True,
+                    False,
                 ), dedupe=True)
 
         def emit_table(table: Any, block_index: int, source_locator: dict[str, Any]) -> None:
@@ -1559,6 +1970,21 @@ class AnyDocAdapter:
                     unit_id,
                     True,
                 ), dedupe=True)
+        if (
+            asset_dir is not None
+            and path.suffix.lower() in OOXML_SUFFIXES
+            and zipfile.is_zipfile(path)
+        ):
+            assets, content, relationships = _reconcile_anydoc_ooxml_images(
+                assets,
+                content,
+                relationships,
+                inventory_assets,
+                inventory_occurrence_ids,
+                asset_dir,
+                unit_id,
+                warnings,
+            )
         if not content:
             raise RuntimeError(f"AnyDoc produced no usable content for {path.name}")
         normalize_canonical_text(content, tables, mode)
@@ -1571,7 +1997,7 @@ class AnyDocAdapter:
             "content": content,
             "tables": tables,
             "assets": assets,
-            "relationships": [],
+            "relationships": relationships,
             "warnings": warnings,
             "title": title_source or path.stem,
             "adapter": {
@@ -1585,7 +2011,7 @@ class AnyDocAdapter:
 class MarkItDownAdapter:
     name = "markitdown"
     limitations = [
-        "tracked_changes_not_preserved",
+        "tracked_changes_flattened_to_accepted_view",
         "comments_not_preserved",
         "legacy_office_embedded_images_may_not_be_exported",
     ]
@@ -1597,33 +2023,50 @@ class MarkItDownAdapter:
         assets: list[dict[str, Any]] | None = None
         image_occurrences: list[str] | None = None
         image_warnings: list[dict[str, Any]] = []
-        if path.exists() and asset_dir is not None and path.suffix.lower() in OOXML_SUFFIXES:
-            assets, image_occurrences, image_warnings = extract_ooxml_images(
-                path,
-                document_id,
-                unit_id,
-                asset_dir,
-            )
+        if path.exists() and anydoc_format_for_path(path) is not None:
+            preflight_office(path)
+        conversion_source = source
+        accepted_temp: Path | None = None
+        if path.exists() and path.suffix.lower() in {".docx", ".docm"}:
+            accepted_bytes, revisions = accepted_word_snapshot(path)
+            if revisions:
+                temporary = tempfile.NamedTemporaryFile(suffix=path.suffix, delete=False)
+                temporary.write(accepted_bytes)
+                temporary.close()
+                accepted_temp = Path(temporary.name)
+                conversion_source = str(accepted_temp)
         try:
-            markdown = convert_basic(source)
-        except Exception:
-            recoverable_codes = {
-                "office_external_image_not_exported",
-                "office_image_relationship_missing",
-                "office_image_target_missing",
-                "office_image_target_unsafe",
-            }
-            if not any(item["code"] in recoverable_codes for item in image_warnings):
-                raise
-            temporary = tempfile.NamedTemporaryFile(suffix=path.suffix, delete=False)
-            temporary.close()
-            sanitized = Path(temporary.name)
+            conversion_path = Path(conversion_source)
+            if conversion_path.exists() and asset_dir is not None and conversion_path.suffix.lower() in OOXML_SUFFIXES:
+                assets, image_occurrences, image_warnings = extract_ooxml_images(
+                    conversion_path,
+                    document_id,
+                    unit_id,
+                    asset_dir,
+                )
             try:
-                if not create_sanitized_ooxml_copy(path, sanitized):
+                markdown = convert_basic(conversion_source)
+            except Exception:
+                recoverable_codes = {
+                    "office_external_image_not_exported",
+                    "office_image_relationship_missing",
+                    "office_image_target_missing",
+                    "office_image_target_unsafe",
+                }
+                if not any(item["code"] in recoverable_codes for item in image_warnings):
                     raise
-                markdown = convert_basic(str(sanitized))
-            finally:
-                sanitized.unlink(missing_ok=True)
+                temporary = tempfile.NamedTemporaryFile(suffix=path.suffix, delete=False)
+                temporary.close()
+                sanitized = Path(temporary.name)
+                try:
+                    if not create_sanitized_ooxml_copy(conversion_path, sanitized):
+                        raise
+                    markdown = convert_basic(str(sanitized))
+                finally:
+                    sanitized.unlink(missing_ok=True)
+        finally:
+            if accepted_temp is not None:
+                accepted_temp.unlink(missing_ok=True)
         result = markdown_to_canonical(
             markdown,
             document_id,

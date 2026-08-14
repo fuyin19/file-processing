@@ -64,6 +64,31 @@ class _Document:
         self.assets = [_Asset()]
 
 
+def _write_ooxml_image_fixture(path: Path, *, referenced: bool = True) -> None:
+    drawing = (
+        '<w:r><w:drawing><wp:inline><a:graphic><a:graphicData><a:blip r:embed="rId1"/>'
+        '</a:graphicData></a:graphic></wp:inline></w:drawing></w:r>'
+        if referenced else ''
+    )
+    document = (
+        '<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" '
+        'xmlns:wp="http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing" '
+        'xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" '
+        'xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">'
+        f'<w:body><w:p>{drawing}</w:p></w:body></w:document>'
+    )
+    relationships = (
+        '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
+        '<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" '
+        'Target="media/image1.png"/></Relationships>'
+    )
+    with zipfile.ZipFile(path, 'w') as package:
+        package.writestr('word/document.xml', document)
+        if referenced:
+            package.writestr('word/_rels/document.xml.rels', relationships)
+        package.writestr('word/media/image1.png', b'\x89PNG\r\n\x1a\nPNG')
+
+
 class _FakeAnyDoc:
     Document = Block = Inline = List = ListItem = Table = CellSlot = Cell = Note = Asset = ImageSource = LinkTarget = Style = type
     ConvertError = RuntimeError
@@ -129,6 +154,173 @@ def test_anydoc_adapter_rejects_signature_mismatch(tmp_path, fake_anydoc, monkey
     monkeypatch.setattr(fake_anydoc._ANYDOC, "format_from_bytes", lambda data: "xlsx")
     with pytest.raises(RuntimeError, match="detected xlsx"):
         fake_anydoc.AnyDocAdapter().extract(str(source), "sha256:" + "a" * 64, "preserve")
+
+
+def test_anydoc_word_revisions_use_accepted_snapshot_without_mutating_source(tmp_path, fake_anydoc):
+    import io
+
+    source = tmp_path / "reviewed.docx"
+    document_xml = (
+        '<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">'
+        '<w:body><w:p><w:r><w:t>Before</w:t></w:r>'
+        '<w:del><w:r><w:delText>Deleted</w:delText></w:r></w:del>'
+        '<w:ins><w:r><w:t>Inserted</w:t></w:r></w:ins>'
+        '<w:r><w:instrText>TOC \\o "1-3"</w:instrText></w:r>'
+        '</w:p></w:body></w:document>'
+    )
+    with zipfile.ZipFile(source, "w") as package:
+        package.writestr("word/document.xml", document_xml)
+    original = source.read_bytes()
+
+    def convert(data, format=None):
+        with zipfile.ZipFile(io.BytesIO(data)) as package:
+            transformed = package.read("word/document.xml").decode("utf-8")
+        assert "Deleted" not in transformed
+        assert "Inserted" in transformed
+        assert "}ins" not in transformed and "<w:ins" not in transformed
+        return SimpleNamespace(
+            blocks=[_Block("paragraph", [_Inline("text", text="Before Inserted")])],
+            notes=[],
+            assets=[],
+        )
+
+    fake_anydoc._ANYDOC.to_document = convert
+    result = fake_anydoc.AnyDocAdapter().extract(
+        str(source), "sha256:" + hashlib.sha256(original).hexdigest(), "preserve", tmp_path / "assets"
+    )
+    assert source.read_bytes() == original
+    assert any(node.get("text") == "Before Inserted" for node in result["content"])
+    warnings = [item for item in result["warnings"] if item["code"] == "office_revisions_flattened_to_accepted_view"]
+    assert len(warnings) == 1 and warnings[0]["content_loss"] is True
+
+
+def test_only_typed_max_xml_nodes_uses_ordered_docx_capacity_recovery(tmp_path, fake_anydoc, monkeypatch):
+    import io
+    from xml.etree import ElementTree
+    import docx_sharding
+
+    class ConvertError(Exception):
+        pass
+
+    fake_anydoc._ANYDOC.ConvertError = ConvertError
+    monkeypatch.setattr(docx_sharding, "TARGET_NODES", 8)
+    source = tmp_path / "capacity.docx"
+    paragraphs = (
+        '<w:p><w:ins><w:r><w:t>Paragraph 1</w:t></w:r></w:ins></w:p>'
+        + ''.join(
+            f'<w:p><w:r><w:t>Paragraph {index}</w:t></w:r></w:p>' for index in range(2, 7)
+        )
+    )
+    with zipfile.ZipFile(source, "w") as package:
+        package.writestr(
+            "word/document.xml",
+            '<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">'
+            f'<w:body>{paragraphs}</w:body></w:document>',
+        )
+
+    calls = []
+
+    def convert(data, format=None):
+        with zipfile.ZipFile(io.BytesIO(data)) as package:
+            root = ElementTree.fromstring(package.read("word/document.xml"))
+        values = [item.text for item in root.iter() if item.tag.endswith('}t')]
+        calls.append(values)
+        if len(values) == 6:
+            raise ConvertError("max_xml_nodes exceeded")
+        return SimpleNamespace(
+            blocks=[_Block("paragraph", [_Inline("text", text=value)]) for value in values],
+            notes=[],
+            assets=[],
+        )
+
+    fake_anydoc._ANYDOC.to_document = convert
+    result = fake_anydoc.AnyDocAdapter().extract(
+        str(source), "sha256:" + hashlib.sha256(source.read_bytes()).hexdigest(), "preserve", tmp_path / "assets"
+    )
+    assert [item["text"] for item in result["content"]] == [f"Paragraph {index}" for index in range(1, 7)]
+    assert len(calls) == 4
+    fallback = [item for item in result["warnings"] if item["code"] == "adapter_fallback_used"]
+    assert len(fallback) == 1 and fallback[0]["content_loss"] is False
+    assert "limit=max_xml_nodes" in fallback[0]["message"]
+    revision = [item for item in result["warnings"] if item["code"] == "office_revisions_flattened_to_accepted_view"]
+    assert len(revision) == 1 and revision[0]["content_loss"] is True
+
+
+def test_anydoc_ooxml_orphan_provider_asset_is_not_published(tmp_path, fake_anydoc):
+    source = tmp_path / 'orphan.docx'
+    _write_ooxml_image_fixture(source, referenced=False)
+    output_assets = tmp_path / 'assets' / 'images'
+
+    result = fake_anydoc.AnyDocAdapter().extract(
+        str(source), 'sha256:' + hashlib.sha256(source.read_bytes()).hexdigest(), 'preserve', output_assets
+    )
+
+    assert result['assets'] == []
+    assert not any(item.get('type') == 'image' for item in result['content'])
+    assert not any(item.get('type') == 'image_occurrence' for item in result['relationships'])
+    assert not list(output_assets.glob('*'))
+    assert any(item['code'] == 'office_image_relationship_unproved' for item in result['warnings'])
+
+
+def test_anydoc_ooxml_unresolved_occurrence_retains_asset_without_guessing_node(tmp_path, fake_anydoc):
+    source = tmp_path / 'unresolved.docx'
+    _write_ooxml_image_fixture(source, referenced=True)
+    fake_anydoc._ANYDOC.to_document = lambda data, format=None: SimpleNamespace(
+        blocks=[_Block('paragraph', [_Inline('text', text='Visible text')])],
+        notes=[],
+        assets=[_Asset()],
+    )
+
+    result = fake_anydoc.AnyDocAdapter().extract(
+        str(source), 'sha256:' + hashlib.sha256(source.read_bytes()).hexdigest(), 'preserve', tmp_path / 'assets' / 'images'
+    )
+
+    assert len(result['assets']) == 1
+    assert not any(item.get('type') == 'image' for item in result['content'])
+    occurrences = [item for item in result['relationships'] if item.get('type') == 'image_occurrence']
+    assert len(occurrences) == 1
+    assert occurrences[0]['placement'] == 'unresolved'
+    assert 'content_node_id' not in occurrences[0]
+    assert occurrences[0]['package_part'] == 'word/media/image1.png'
+    warning = [item for item in result['warnings'] if item['code'] == 'office_image_position_unresolved']
+    assert len(warning) == 1 and warning[0]['content_loss'] is True
+
+
+def test_anydoc_ooxml_surplus_provider_occurrence_is_discarded(tmp_path, fake_anydoc):
+    source = tmp_path / 'surplus.docx'
+    _write_ooxml_image_fixture(source, referenced=True)
+    image_one = _Inline('image', alt='first', source=_ImageSource())
+    image_two = _Inline('image', alt='surplus', source=_ImageSource())
+    fake_anydoc._ANYDOC.to_document = lambda data, format=None: SimpleNamespace(
+        blocks=[_Block('paragraph', [image_one, image_two])],
+        notes=[],
+        assets=[_Asset()],
+    )
+
+    result = fake_anydoc.AnyDocAdapter().extract(
+        str(source), 'sha256:' + hashlib.sha256(source.read_bytes()).hexdigest(), 'preserve', tmp_path / 'assets' / 'images'
+    )
+
+    images = [item for item in result['content'] if item.get('type') == 'image']
+    occurrences = [item for item in result['relationships'] if item.get('type') == 'image_occurrence']
+    assert len(images) == len(occurrences) == 1
+    assert occurrences[0]['content_node_id'] == images[0]['id']
+    assert occurrences[0]['placement'] == 'resolved'
+    warning = [item for item in result['warnings'] if item['code'] == 'office_image_occurrence_unproved']
+    assert len(warning) == 1 and warning[0]['content_loss'] is True
+
+
+def test_runtimeerror_lookalike_does_not_use_capacity_recovery(tmp_path, fake_anydoc):
+    source = tmp_path / "lookalike.docx"
+    source.write_bytes(b"PK fake")
+    fake_anydoc._ANYDOC.ConvertError = type("ConvertError", (Exception,), {})
+    fake_anydoc._ANYDOC.to_document = lambda data, format=None: (_ for _ in ()).throw(
+        RuntimeError("max_xml_nodes exceeded")
+    )
+    with pytest.raises(RuntimeError, match="AnyDoc could not convert"):
+        fake_anydoc.AnyDocAdapter().extract(
+            str(source), "sha256:" + "a" * 64, "preserve", tmp_path / "assets"
+        )
 
 
 def test_anydoc_markdown_only_omits_assets_and_image_nodes(tmp_path, fake_anydoc):
@@ -207,7 +399,7 @@ def test_anydoc_flattening_warnings_and_model_paths(tmp_path, fake_anydoc):
     assert all("[^" not in node.get("text", "") for node in result["content"])
 
 
-def test_anydoc_newer_stable_version_emits_non_loss_warning(tmp_path, fake_anydoc, monkeypatch):
+def test_anydoc_compatible_version_is_not_a_quality_warning(tmp_path, fake_anydoc, monkeypatch):
     source = tmp_path / "source.docx"
     source.write_bytes(b"PK fake")
     monkeypatch.setattr(
@@ -216,8 +408,8 @@ def test_anydoc_newer_stable_version_emits_non_loss_warning(tmp_path, fake_anydo
         lambda name: "0.1.4" if name == "firecrawl-anydoc" else "0.0",
     )
     result = fake_anydoc.AnyDocAdapter().extract(str(source), "sha256:" + "a" * 64, "preserve", None)
-    warning = next(item for item in result["warnings"] if item["code"] == "anydoc_untested_version")
-    assert warning["content_loss"] is False
+    assert result["adapter"]["version"] == "0.1.4"
+    assert "anydoc_untested_version" not in {item["code"] for item in result["warnings"]}
 
 
 def test_anydoc_heading_preserves_text_image_interleaving_and_warns_on_split(tmp_path, fake_anydoc):
@@ -319,6 +511,22 @@ def test_anydoc_anchor_link_target_emits_specific_warning(tmp_path, fake_anydoc)
     assert any(item["code"] == "anydoc_link_target_flattened" for item in result["warnings"])
 
 
+def test_anydoc_common_inline_emphasis_is_not_reported_as_content_loss(tmp_path, fake_anydoc):
+    source = tmp_path / "bold.docx"
+    source.write_bytes(b"PK fake")
+    inline = _Inline("text", text="Bold but present")
+    inline.style = SimpleNamespace(bold=True, italic=False, strike=False, code=False)
+    fake_anydoc._ANYDOC.to_document = lambda data, format=None: SimpleNamespace(
+        blocks=[_Block("paragraph", [inline])], notes=[], assets=[]
+    )
+    result = fake_anydoc.AnyDocAdapter().extract(
+        str(source), "sha256:" + "a" * 64, "preserve", tmp_path / "assets"
+    )
+    style_warning = next(item for item in result["warnings"] if item["code"] == "anydoc_inline_style_flattened")
+    assert style_warning["content_loss"] is False
+    assert "anydoc_rich_inline_flattened" not in {item["code"] for item in result["warnings"]}
+
+
 def test_anydoc_format_mapping_is_immutable_and_single_source():
     import adapters
     from types import MappingProxyType
@@ -344,16 +552,16 @@ def test_missing_anydoc_cli_fails_closed_without_publication(tmp_path):
         text=True,
     )
     assert result.returncode == 1
-    assert 'pip install "firecrawl-anydoc>=0.1.3"' in result.stderr
+    assert 'pip install firecrawl-anydoc' in result.stderr
     assert not (tmp_path / "missing").exists()
 
 
-def test_anydoc_missing_dependency_has_minimum_install_command(monkeypatch):
+def test_anydoc_missing_dependency_has_unpinned_install_command(monkeypatch):
     import adapters
 
     monkeypatch.setattr(adapters, "_ANYDOC", None)
     monkeypatch.setattr(adapters.importlib.metadata, "version", lambda name: (_ for _ in ()).throw(adapters.importlib.metadata.PackageNotFoundError(name)))
-    with pytest.raises(RuntimeError, match=r'pip install "firecrawl-anydoc>=0\.1\.3"'):
+    with pytest.raises(RuntimeError, match=r'pip install firecrawl-anydoc'):
         adapters.anydoc_capability_check()
 
 
@@ -402,11 +610,12 @@ def test_real_anydoc_fixture_manifest_is_provenance_and_hash_complete():
 
 @pytest.mark.parametrize("suffix", sorted(_REAL_BASE_FIXTURES))
 def test_real_anydoc_fixture_converts_every_mapped_extension(tmp_path, suffix):
-    """Exercise every mapping key through the installed 0.1.3 AnyDoc wheel."""
+    """Exercise every mapping key through the installed capability-compatible wheel."""
     import adapters
 
     capability = adapters.anydoc_capability_check()
-    assert capability["version"] == "0.1.3"
+    assert capability["version"] == adapters.anydoc_version()
+    assert "tested_version" not in capability and "untested" not in capability
     expected = adapters.ANYDOC_FORMAT_BY_EXTENSION[suffix]
     base = _REAL_FIXTURE_DIR / _REAL_BASE_FIXTURES[suffix]
     assert base.is_file(), base
@@ -442,13 +651,14 @@ def test_real_anydoc_abuse_fixture_fails_closed_without_asset_publication(tmp_pa
 
     source = _REAL_FIXTURE_DIR / "abuse" / name
     output_assets = tmp_path / "assets" / "images"
-    with pytest.raises(RuntimeError, match="AnyDoc could not convert"):
+    with pytest.raises(RuntimeError) as failure:
         adapters.AnyDocAdapter().extract(
             str(source),
             "sha256:" + hashlib.sha256(source.read_bytes()).hexdigest(),
             "preserve",
             output_assets,
         )
+    assert str(failure.value).startswith(("AnyDoc could not convert", "Office "))
     assert not output_assets.exists() or not any(output_assets.rglob("*"))
 
 

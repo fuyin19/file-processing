@@ -705,7 +705,7 @@ def test_version_flag():
     assert 'Dependencies:' in stdout
     # Should show pip install names (not import names)
     assert 'opencc-python-reimplemented' in stdout
-    assert 'markdown-conversion v6.4.0' in stdout
+    assert 'markdown-conversion v6.5.0' in stdout
     assert 'rapidocr:' in stdout
     assert 'onnxruntime:' in stdout
     assert 'ruamel.yaml:' not in stdout
@@ -800,6 +800,155 @@ def test_url_to_slug_empty_fallback():
     from pipeline import url_to_slug
     slug = url_to_slug('https://example.com')
     assert slug  # not empty
+
+
+def test_safe_url_rejects_private_network_resolution(monkeypatch):
+    import safe_url
+
+    monkeypatch.setattr(
+        safe_url.socket,
+        'getaddrinfo',
+        lambda *args, **kwargs: [(safe_url.socket.AF_INET, safe_url.socket.SOCK_STREAM, 6, '', ('127.0.0.1', 80))],
+    )
+    with pytest.raises(RuntimeError, match='non-public'):
+        safe_url._endpoint('http://example.test/report')
+
+
+def test_safe_url_revalidates_redirect_and_redacts_secrets(monkeypatch):
+    import safe_url
+
+    monkeypatch.setattr(
+        safe_url,
+        '_request',
+        lambda value, deadline: (302, {'location': 'http://127.0.0.1/internal?token=secret'}, b''),
+    )
+    with pytest.raises(RuntimeError, match='non-public'):
+        safe_url.download_url('https://example.com/start?api_key=secret')
+    assert safe_url.redact_url('https://user:pass@example.com/report?token=secret#frag') == 'https://example.com/report'
+
+
+def test_url_source_record_hashes_response_bytes_and_redacts_query_secret():
+    from pipeline import _source_record
+
+    record, document_id = _source_record(
+        'https://example.com/report?token=secret',
+        remote_bytes=b'<html>body</html>',
+        remote_locator='https://example.com/report',
+        remote_media_type='text/html',
+    )
+    assert record['locator'] == 'https://example.com/report'
+    assert 'secret' not in json.dumps(record)
+    assert record['hash_basis'] == 'remote_response_bytes'
+    assert record['size_bytes'] == len(b'<html>body</html>')
+    assert document_id == f"sha256:{record['sha256']}"
+
+
+def test_native_provider_worker_timeout_is_bounded(monkeypatch):
+    import pipeline
+
+    def timeout(*args, **kwargs):
+        raise subprocess.TimeoutExpired(args[0], kwargs.get('timeout', 1))
+
+    monkeypatch.setattr(pipeline.subprocess, 'run', timeout)
+    with pytest.raises(pipeline.PipelineError, match='exceeded 0.01 seconds'):
+        pipeline._run_provider_worker({'adapter': 'anydoc'}, timeout=0.01)
+
+
+def test_url_conversion_is_bounded_by_isolated_worker(monkeypatch):
+    import pipeline
+
+    calls = []
+
+    def worker(request, timeout=180.0):
+        calls.append((request, timeout))
+        return {
+            'markdown': '# Remote\n\nBody',
+            'locator': 'https://example.com/report',
+            'media_type': 'text/html',
+            'sha256': 'a' * 64,
+            'size_bytes': 17,
+        }
+
+    monkeypatch.setattr(pipeline, '_run_provider_worker', worker)
+    extracted, source, document_id = pipeline._extract(
+        'https://example.com/report?token=secret', 'preserve', None
+    )
+    assert calls == [({'adapter': 'url_markitdown', 'source': 'https://example.com/report?token=secret'}, 45.0)]
+    assert source['locator'] == 'https://example.com/report'
+    assert source['sha256'] == 'a' * 64
+    assert source['hash_basis'] == 'remote_response_bytes'
+    assert document_id == f"sha256:{'a' * 64}"
+    assert extracted['content']
+
+
+def test_local_markitdown_conversion_is_bounded_by_isolated_worker(tmp_path, monkeypatch):
+    import pipeline
+
+    source = tmp_path / 'source.txt'
+    source.write_text('content', encoding='utf-8')
+    calls = []
+
+    def worker(request, timeout=180.0):
+        calls.append((request, timeout))
+        return {
+            'source_units': [{'id': 'unit-test', 'type': 'document', 'index': 1, 'locator': {}, 'status': 'complete', 'warnings': []}],
+            'content': [{'id': 'node-test', 'type': 'paragraph', 'source_locator': {'source_unit_id': 'unit-test'}, 'raw_text': 'content', 'text': 'content', 'normalized_text': 'content'}],
+            'tables': [], 'assets': [], 'relationships': [], 'warnings': [], 'title': 'source',
+            'adapter': {'name': 'markitdown', 'version': 'test', 'limitations': []},
+        }
+
+    monkeypatch.setattr(pipeline, '_run_provider_worker', worker)
+    result, _, document_id = pipeline._extract(str(source), 'preserve', None)
+    assert result['adapter']['name'] == 'markitdown'
+    assert calls == [({
+        'adapter': 'markitdown', 'source': str(source), 'document_id': document_id,
+        'mode': 'preserve', 'asset_dir': '',
+    }, 180.0)]
+
+
+def test_office_image_ocr_enrichment_is_opt_in_and_provenance_linked(tmp_path, monkeypatch):
+    import pipeline
+    from ocr_provider import OcrSettings
+
+    unit_id = 'unit-0000000000000000'
+    extracted = {
+        'adapter': {'name': 'anydoc'},
+        'source_units': [{'id': unit_id, 'status': 'complete', 'warnings': []}],
+        'content': [{
+            'id': 'node-image000000001',
+            'type': 'image',
+            'asset_id': 'asset-000000000001',
+            'source_locator': {'source_unit_id': unit_id},
+        }],
+        'assets': [{
+            'asset_id': 'asset-000000000001',
+            'path': 'assets/images/asset-000000000001.png',
+        }],
+        'relationships': [],
+        'warnings': [],
+    }
+    monkeypatch.setattr(
+        pipeline,
+        '_run_provider_worker',
+        lambda request: {'items': [{
+            'asset_id': 'asset-000000000001',
+            'text': '圖片中的文字',
+            'confidence': 0.98,
+            'engine': 'rapidocr',
+            'engine_version': 'test',
+        }]},
+    )
+    pipeline._enrich_office_images(
+        extracted,
+        'sha256:' + ('a' * 64),
+        'preserve',
+        tmp_path / 'assets' / 'images',
+        OcrSettings(),
+    )
+    assert [item['type'] for item in extracted['content']] == ['image', 'paragraph']
+    assert extracted['content'][1]['text'] == '圖片中的文字'
+    assert extracted['content'][1]['source_locator']['asset_id'] == 'asset-000000000001'
+    assert extracted['relationships'][-1]['type'] == 'image_ocr_text'
 
 
 # --- Image stripping tests ----------------------------------------------------
@@ -1433,16 +1582,52 @@ def test_ooxml_feature_preflight_is_lightweight_and_nonblocking(tmp_path):
     from adapters import inspect_ooxml_features
     package = tmp_path / 'features.docx'
     with zipfile.ZipFile(package, 'w') as archive:
-        archive.writestr('word/document.xml', '<w:document><w:ins/><w:del/></w:document>')
-        archive.writestr('word/comments.xml', '<w:comments/>')
+        archive.writestr(
+            'word/document.xml',
+            '<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">'
+            '<w:ins/><w:del/><w:instrText>TOC \\o "1-3"</w:instrText></w:document>',
+        )
+        archive.writestr(
+            'word/comments.xml',
+            '<w:comments xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"/>',
+        )
         archive.writestr('word/media/image1.png', b'png')
     warnings = inspect_ooxml_features(package, 'unit-0000000000000000')
     codes = {item['code'] for item in warnings}
     assert codes == {
         'office_comments_not_preserved',
-        'office_tracked_changes_not_preserved',
+        'office_revisions_flattened_to_accepted_view',
     }
     assert all(item['content_loss'] for item in warnings)
+
+
+def test_ooxml_instrtext_is_not_a_revision(tmp_path):
+    import zipfile
+    from adapters import inspect_ooxml_features
+
+    package = tmp_path / 'field.docx'
+    with zipfile.ZipFile(package, 'w') as archive:
+        archive.writestr(
+            'word/document.xml',
+            '<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">'
+            '<w:instrText>TOC \\o "1-3"</w:instrText></w:document>',
+        )
+    assert inspect_ooxml_features(package, 'unit-0000000000000000') == []
+
+
+def test_ooxml_unproved_revision_class_fails_closed(tmp_path):
+    import zipfile
+    from adapters import inspect_ooxml_features
+
+    package = tmp_path / 'unsupported-revision.docx'
+    with zipfile.ZipFile(package, 'w') as archive:
+        archive.writestr(
+            'word/document.xml',
+            '<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">'
+            '<w:cellDel/></w:document>',
+        )
+    with pytest.raises(RuntimeError, match='no proved accepted-view transform'):
+        inspect_ooxml_features(package, 'unit-0000000000000000')
 
 
 def test_extract_ooxml_images_deduplicates_asset_and_preserves_occurrences(tmp_path):
@@ -1482,6 +1667,63 @@ def test_extract_ooxml_images_deduplicates_asset_and_preserves_occurrences(tmp_p
     assert assets[0]['alt'] == 'Company logo'
     assert assets[0]['path'].startswith('assets/images/')
     assert (tmp_path / Path(assets[0]['path'])).is_file()
+
+
+def test_extract_ooxml_images_ignores_orphan_media(tmp_path):
+    import zipfile
+    from ooxml_images import extract_ooxml_images
+
+    source = tmp_path / 'orphan.docx'
+    with zipfile.ZipFile(source, 'w') as archive:
+        archive.writestr('word/document.xml', '<w:document xmlns:w="urn:w"/>')
+        archive.writestr(
+            'word/_rels/document.xml.rels',
+            '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"/>',
+        )
+        archive.writestr('word/media/orphan.png', b'\x89PNG\r\n\x1a\norphan')
+    assets, occurrences, warnings = extract_ooxml_images(
+        source,
+        'sha256:' + ('9' * 64),
+        'unit-0000000000000000',
+        tmp_path / 'assets' / 'images',
+    )
+    assert assets == [] and occurrences == [] and warnings == []
+    assert not (tmp_path / 'assets').exists()
+
+
+def test_office_preflight_rejects_unsafe_member_before_conversion(tmp_path):
+    import zipfile
+    from office_preflight import preflight_office
+
+    source = tmp_path / 'unsafe.xlsx'
+    with zipfile.ZipFile(source, 'w') as archive:
+        archive.writestr('../escape.xml', '<root/>')
+    with pytest.raises(RuntimeError, match='unsafe member path'):
+        preflight_office(source)
+
+
+def test_office_preflight_reports_xml_nodes_without_treating_count_as_danger(tmp_path):
+    import zipfile
+    from office_preflight import preflight_office
+
+    source = tmp_path / 'large.docx'
+    xml = '<root>' + ''.join(f'<p>{index}</p>' for index in range(5000)) + '</root>'
+    with zipfile.ZipFile(source, 'w', compression=zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr('word/document.xml', xml)
+    report = preflight_office(source)
+    assert report.xml_nodes_by_part['word/document.xml'] == 10001
+    assert report.package_members == 1
+
+
+def test_office_preflight_rejects_xml_doctype(tmp_path):
+    import zipfile
+    from office_preflight import preflight_office
+
+    source = tmp_path / 'doctype.docx'
+    with zipfile.ZipFile(source, 'w') as archive:
+        archive.writestr('word/document.xml', '<!DOCTYPE root [<!ENTITY x "text">]><root>&x;</root>')
+    with pytest.raises(RuntimeError, match='prohibited internal document type subset'):
+        preflight_office(source)
 
 
 def test_extract_ooxml_images_warns_without_creating_dangling_asset(tmp_path):
@@ -3402,7 +3644,7 @@ def test_pptx_bundle_exports_embedded_image_to_json_and_markdown(tmp_path):
     assert data['quality']['status'] == 'complete'
 
 
-def test_xlsx_bundle_exports_image_with_inferred_position_warning(tmp_path):
+def test_xlsx_bundle_retains_unresolved_image_without_guessing_position(tmp_path):
     from PIL import Image
     from openpyxl import Workbook
     from openpyxl.drawing.image import Image as SpreadsheetImage
@@ -3425,10 +3667,22 @@ def test_xlsx_bundle_exports_image_with_inferred_position_warning(tmp_path):
         ['--local-document-adapter', 'markitdown'],
     )
     assert code == 0, stderr
-    data, _, markdown = _assert_single_office_bundle_image(bundle)
+    data = _load_bundle(bundle)
+    assert len(data['assets']) == 1
+    asset = data['assets'][0]
+    markdown = (bundle / f'{bundle.name}.md').read_text(encoding='utf-8')
     assert 'Sheet text' in markdown
-    assert data['quality']['status'] == 'complete_with_warnings'
-    assert any(item['code'] == 'office_image_position_inferred' for item in data['quality']['warnings'])
+    assert data['quality']['status'] == 'partial'
+    assert not any(node['type'] == 'image' for node in data['content'])
+    assert f']({asset["path"]})' not in markdown
+    assert any(item['code'] == 'office_image_position_unresolved' for item in data['quality']['warnings'])
+    assert data['relationships'] == [{
+        'type': 'image_occurrence',
+        'source_unit_id': data['source_units'][0]['id'],
+        'asset_id': asset['asset_id'],
+        'occurrence_index': 1,
+        'placement': 'unresolved',
+    }]
 
 
 def test_docx_markdown_only_intentionally_omits_image_assets_and_links(tmp_path):

@@ -13,7 +13,7 @@ from xml.etree import ElementTree
 from canonical import stable_id
 
 
-OOXML_SUFFIXES = {".docx", ".pptx", ".xlsx"}
+OOXML_SUFFIXES = {".docx", ".docm", ".pptx", ".pptm", ".ppsx", ".ppsm", ".xlsx", ".xlsm"}
 RELATIONSHIP_NS = "http://schemas.openxmlformats.org/officeDocument/2006/relationships"
 IMAGE_CONTAINER_NAMES = {
     "inline",
@@ -311,14 +311,6 @@ def extract_ooxml_images(
                     )
                     continue
                 occurrences.append((target, alt))
-
-        if not occurrences and media_parts:
-            occurrences.extend((part, "") for part in sorted(media_parts, key=_natural_key))
-            warn(
-                "office_image_order_inferred",
-                "Office image relationships were unavailable; package media order was used",
-                False,
-            )
 
         assets: list[dict[str, Any]] = []
         asset_by_part: dict[str, str] = {}

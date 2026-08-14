@@ -111,6 +111,13 @@ PDF and referenced DOCX/PPTX/XLSX images use this same structure. Office asset
 locators include the OOXML package part; repeated uses of one embedded binary
 share one asset record and appear as separate `content` image references.
 Rendered Markdown uses the asset's bundle-relative `path` unchanged.
+Every Office occurrence also has an open `relationships` record with
+`type: image_occurrence`, `source_unit_id`, `asset_id`, a positive
+`occurrence_index`, and `placement: resolved|unresolved`. A resolved occurrence
+has `content_node_id`; an unresolved occurrence must not. Validators reject
+dangling references and duplicate occurrence identities. Optional
+`--enrich-images` adds a paragraph after a resolved image plus an
+`image_ocr_text` relationship linking the asset, image node, and OCR text node.
 PDF bundle images are exported by a lightweight PDFium image-object pass. Raw
 neighboring text may be consulted only to prove an image insertion point; it is
 not emitted and does not alter Inspector paragraphs, headings, lists, or tables.

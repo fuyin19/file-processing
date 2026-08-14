@@ -20,13 +20,14 @@ Common codes include `ocr_applied`, `ocr_required`, `ocr_unavailable`,
 `pdf_image_position_ambiguous`, `pdf_image_extraction_failed`,
 `office_image_target_missing`,
 `office_external_image_not_exported`, `office_image_media_type_unsupported`,
-`office_image_position_inferred`, and `office_tracked_changes_not_preserved`.
+`office_image_position_unresolved`, `office_revisions_flattened_to_accepted_view`,
+`office_image_ocr_unavailable`, and `adapter_fallback_used`.
 
 ## No usable content
 
 An all-blank or unsupported source with no accepted text, table, or published
-asset fails and leaves no target. PDF OCR is optional: install the tested pair
-with `python -m pip install "rapidocr==3.9.2" "onnxruntime>=1.20,<2"`, then run with `--ocr auto` or
+asset fails and leaves no target. PDF OCR is optional: install compatible
+`rapidocr` and `onnxruntime` packages, then run with `--ocr auto` or
 `--ocr force`. A missing backend is reported as `ocr_unavailable`; the pipeline
 does not fabricate text or silently fall back to a cloud service.
 
@@ -54,7 +55,8 @@ from Canonical JSON so repeated equivalent conversions remain deterministic.
 
 ## PDF Inspector encoding and fallback
 
-The PDF path pins `pdf-inspector==0.2.6`. Some CJK prospectuses use Type0
+The PDF path accepts a behaviorally compatible PDF Inspector rather than a
+specific version. Some CJK prospectuses use Type0
 Identity fonts without embedded `ToUnicode` streams. PDF Inspector's binary
 standard-CMap fallback does not decode those fonts reliably, which can otherwise
 produce empty or garbled Markdown. This is not a missing system font. The
@@ -107,6 +109,16 @@ targets are restored when replacement fails.
 
 ## URL input
 
-URLs remain a MarkItDown compatibility path. Use an explicit output target for
-predictable automation. Remote download security/caching and the local PDF
-Inspector guarantees are outside v6.
+URLs are fetched through a public-network-only, DNS/IP-pinned downloader with
+redirect revalidation, byte and time limits. Credentials in URLs are rejected;
+persisted locators omit query strings and fragments. The downloaded response is
+then converted locally through MarkItDown and its bytes define source identity.
+
+## Office images and long Word documents
+
+Bundle mode exports relationship-referenced Office image assets. It never treats
+orphan package media as content and never appends unresolved images to the end of
+Markdown. Use `--enrich-images` to OCR resolved image occurrences; the default
+path performs no Office image OCR. A typed AnyDoc `max_xml_nodes` error on DOCX
+uses bounded structural shards and one Canonical merge. Other limits and worker
+timeouts do not fallback and leave no published target.

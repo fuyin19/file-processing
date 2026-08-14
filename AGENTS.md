@@ -25,7 +25,22 @@ structure-safety and testability are prioritized over feature breadth.
 
 The four skills:
 
-- **markdown-conversion** (v6.4.0) — Convert local PDFs, AnyDoc-eligible non-PDF documents, remaining supported files, URLs, or directories through one canonical model. Local PDFs use PDF Inspector 0.2.6 full-document Markdown as the authoritative text and structure source. A standard-CID-repaired page that Inspector still reports as garbled remains on the Inspector path when its selected-page Markdown passes a conservative readability gate, preserving Inspector tables and headings; other OCR-required pages use lazy local OCR. Selected-page output must prove a unique complete selected-page signature before that span is removed or replaced. Inspector failure or an unprovable flagged-page span routes the whole document to ordered OCR. PDFium is limited to OCR rasterization and lightweight bundle image-object export and never supplies canonical text or structure. AnyDoc is the default local adapter for its supported formats; MarkItDown remains the explicit rollback and URL/other-format adapter. The default output is a JSON + Markdown bundle, while `--output-mode markdown` emits one clean Markdown file. Canonical output preserves raw/cleaned/normalized text, uses exact five-field YAML frontmatter, defaults Chinese normalization to simplified, and publishes transactionally.
+- **markdown-conversion** (v6.5.0) — Convert local PDFs, AnyDoc-eligible
+  non-PDF documents, remaining supported files, URLs, or directories through one
+  canonical model. Local PDFs use a behaviorally compatible PDF Inspector as the
+  authoritative text and structure source; RapidOCR recovers only routed pages,
+  while PDFium remains limited to OCR rasterization and image-object export.
+  Office inputs receive bounded read-only preflight; Word conversion uses a
+  temporary accepted/final-view revision snapshot, and only a provider-typed
+  DOCX `max_xml_nodes` capacity error may trigger ordered structural sharding.
+  AnyDoc remains the default local adapter and MarkItDown the explicit rollback
+  and URL/other-format adapter. Native providers run in deadline-bounded workers,
+  Office images are exported without OCR by default, and `--enrich-images`
+  explicitly adds provenance-linked OCR text in bundle mode. The default output
+  is a JSON + Markdown bundle, while `--output-mode markdown` emits one clean
+  Markdown file. Canonical output preserves raw/cleaned/normalized text, uses
+  exact five-field YAML frontmatter, defaults Chinese normalization to
+  simplified, and publishes transactionally.
 - **content-review** (v2.0.0) — Review files for grammar, typos, logic, and stylistic issues. Verify content against reference materials (fact-checking). `scripts/review_plan.py` computes a dimension × chunk matrix and assembles sub-agent results; `references/` (criteria + sub-agent prompts) and `assets/` (report template).
 - **markdown-cleanup** (v1.0.0) — Clean up formatting artifacts in markitdown-converted .md files. Pure Python stdlib.
 - **translate** (v2.0.0) — Translate files to a target language with optional reference-guided terminology. Hybrid architecture: Python pipeline (`translate_pipeline.py`, `glossary_utils.py`) for deterministic work (structure-safe chunking, source-driven glossary slicing, per-occurrence forced-application QA); Claude/sub-agents for linguistic work.
@@ -170,14 +185,46 @@ The plugin lives in `skills/` with one subdirectory per skill. Each skill has a 
 ### Pipeline Flow (markdown-conversion)
 
 1. **Precheck and target resolution** — validates `--input` versus `--input-dir`, CLI combinations, output roots, source/output aliasing, and collisions before loading expensive adapters.
-2. **Adapter selection** — local PDFs use PDF Inspector 0.2.6 full-document Markdown as the authoritative text and structure source. Standard Adobe CJK Identity fonts that lack `ToUnicode` are repaired only in a temporary copy before Inspector runs. Inspector's precise per-page classification refines the full-result OCR signal so sparse readable pages are not discarded. A repaired page reported only as suspected garbled text remains on the Inspector path when its selected-page Markdown passes conservative readability checks. For every remaining OCR-required page, selected-page output must prove a unique complete selected-page signature; the proven span is removed even when OCR is disabled or unavailable. An empty selected page receives a zero-width insertion point only when ordered per-page Markdown accounts for the complete global visible signature. Partial, reordered, or otherwise unprovable matches trigger ordered whole-document OCR. PDFium is restricted to OCR rasterization and lightweight bundle image-object export and never supplies canonical text, layout, or table structure. AnyDoc's `to_document` model handles eligible local non-PDF inputs; URLs and other formats use one reusable MarkItDown instance. `--local-document-adapter markitdown` is explicit rollback and AnyDoc failures never silently fall back. A lightweight OOXML preflight records unsupported-feature warnings.
+2. **Preflight and adapter selection** — Office containers receive bounded ZIP,
+   XML, relationship, and image-budget checks before conversion. Word revisions
+   are classified by exact namespace-aware tags and converted from a temporary
+   accepted/final-view snapshot without changing the source. AnyDoc handles
+   eligible local non-PDF inputs; only its typed DOCX `max_xml_nodes` capacity
+   error may enter ordered structural sharding and Canonical merge. Other
+   provider errors and safety limits fail closed. Local PDFs use a behaviorally
+   compatible PDF Inspector full-document result as the authoritative text and
+   structure source. Standard Adobe CJK Identity fonts without `ToUnicode` are
+   repaired only in a temporary copy. Inspector page signals route required
+   pages to RapidOCR; selected-page removal or replacement still requires a
+   unique complete signature, otherwise the whole document routes to ordered
+   OCR. PDFium never supplies canonical text or structure. URLs and remaining
+   local formats use MarkItDown, and `--local-document-adapter markitdown`
+   remains the explicit rollback. AnyDoc, PDF Inspector, RapidOCR, local
+   MarkItDown, and URL MarkItDown execute in deadline-bounded workers. URL fetch
+   policy rejects private destinations, revalidates redirects, limits bytes and
+   time, and redacts sensitive locator data.
 3. **Canonical assembly** — builds Canonical JSON v1 with source hash, stable document/node ids, source units/locators, authoritative `content` order, general tables, assets, relationships, and quality warnings.
 4. **Language normalization** — preserves `raw_text` and cleaned `text`, then produces `normalized_text` in one batched OpenCC pass while protecting code, URLs, paths, ids, hashes, locators, and formulas.
 5. **Validation and rendering** — validates JSON Schema plus semantic references, paths, hashes, output manifests, and quality state; renders Markdown from canonical content with exact five-field frontmatter unless disabled.
 6. **Publication** — default `bundle` writes `<stem>/<stem>.json`, `<stem>.md`, and optional `assets/images/`; `--output-mode markdown` writes exactly one clean `.md` and omits image binaries/dead links.
 7. **Transactional replace** — stages complete output beside the target, validates before commit, rolls back pre-commit replacement failures, and treats post-commit backup cleanup failure as a non-fatal maintenance warning.
 
-PDF v6.3 pins `pdf-inspector==0.2.6`. Its full-document headings, paragraphs, lists, tables, line wrapping, and reading order remain authoritative; the pipeline adds no PDFium-driven heading, table, list, dewrapping, column-order, cross-page, or chrome rewrite and no custom header/footer cleanup. The default `auto` OCR mode refines Inspector's full-result `pages_needing_ocr` signal with its per-page layout classification, then retains conservatively readable standard-CID-repaired pages; `off` leaves remaining required pages unrecovered after removing any proven untrusted Inspector span, and `force` routes every page to OCR. OCR dependencies are never installed silently. OCR recovery publishes one conservative page-level paragraph with provider-returned line breaks and exact page provenance; an unrecovered required page remains `ocr_required` and produces publishable `partial` output when other usable content exists. PDFium native text is never a fallback. AnyDoc is distributed as `firecrawl-anydoc`; runtime performs no install/upgrade and checks its public API/model shape in the active interpreter. RAG chunk schemas, advanced formulas, tracked-change preservation, and model enrichment remain non-goals.
+Provider compatibility is capability-based rather than an exact/minimum/maximum
+version gate. The pipeline never installs, upgrades, downgrades, or repairs
+provider packages at runtime; missing or incompatible providers fail explicitly.
+PDF Inspector supplies full-document headings, paragraphs, lists, tables, line
+wrapping, and reading order but does not execute OCR. The default `auto` mode
+refines Inspector's OCR-routing signal and retains conservatively readable
+standard-CID-repaired pages; `off` leaves remaining required pages unrecovered
+after removing any proven untrusted Inspector span, and `force` routes every page
+to RapidOCR. OCR output has exact page provenance; an unrecovered required page
+remains `ocr_required` and produces publishable `partial` output when other
+usable content exists. PDFium native text is never a fallback. Office image
+assets are relationship-reconciled: unresolved placements are recorded without
+guessing content position, and image OCR is opt-in through `--enrich-images`.
+Accepted/final-view revision text is preserved, while revision history and
+comments remain explicitly reported losses. RAG chunk schemas, advanced
+formulas, revision-history preservation, and model enrichment remain non-goals.
 
 ### Cleanup Pipeline Flow (markdown-cleanup)
 
@@ -214,7 +261,10 @@ Anti-skip levers (both skills): (1) narrow per-cell/per-chunk mandates; (2) prom
 ### Cross-Skill Patterns
 
 - **Config merge**: `load_config()` reads `scripts/config.json`, auto-creates with defaults if missing, merges partial configs with `DEFAULT_CONFIG`
-- **Auto-dependency management**: `_ensure_package()` installs missing packages on demand via pip
+- **Dependency management**: `content-review` and `translate` may install
+  MarkItDown on demand; `markdown-conversion` never mutates the active
+  environment and only accepts dependencies that pass its behavioral capability
+  checks
 - **Gate-based error handling**: Each step validates output and calls `die()` on failure
 - **Code block/frontmatter protection**: Used by both cleanup and translate pipelines
 - **Path resolution**: `config.json` is resolved relative to the pipeline script's directory (not CWD), unless overridden by `--config`.

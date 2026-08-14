@@ -106,9 +106,14 @@ def _protect_spans(text: str) -> tuple[str, list[str]]:
 
 
 def _restore_spans(text: str, protected: list[str]) -> str:
-    for index, value in enumerate(protected):
-        text = text.replace(f"\ue000{index}\ue001", value)
-    return text
+    if not protected:
+        return text
+
+    def restore(match: re.Match[str]) -> str:
+        index = int(match.group(1))
+        return protected[index] if index < len(protected) else match.group(0)
+
+    return re.sub(r"\ue000(\d+)\ue001", restore, text)
 
 
 def convert_chinese(text: str, mode: str = "simplified") -> str:
@@ -364,6 +369,34 @@ def validate_canonical(
             for field in ("raw_text", "text", "normalized_text"):
                 if field not in node:
                     raise CanonicalValidationError(f"text node lacks {field}: {node['id']}")
+    node_ids = {item["id"] for item in document.get("content", [])}
+    occurrence_keys: set[tuple[str, int]] = set()
+    for relationship in document.get("relationships", []):
+        if relationship.get("type") != "image_occurrence":
+            continue
+        source_unit_id = relationship.get("source_unit_id")
+        asset_id = relationship.get("asset_id")
+        occurrence_index = relationship.get("occurrence_index")
+        placement = relationship.get("placement")
+        if source_unit_id not in source_unit_ids:
+            raise CanonicalValidationError(f"dangling relationship source unit: {source_unit_id}")
+        if asset_id not in asset_ids:
+            raise CanonicalValidationError(f"dangling relationship asset: {asset_id}")
+        if not isinstance(occurrence_index, int) or occurrence_index < 1:
+            raise CanonicalValidationError("image occurrence index must be a positive integer")
+        key = (str(source_unit_id), occurrence_index)
+        if key in occurrence_keys:
+            raise CanonicalValidationError(f"duplicate image occurrence identity: {key}")
+        occurrence_keys.add(key)
+        content_node_id = relationship.get("content_node_id")
+        if placement == "resolved":
+            if content_node_id not in node_ids:
+                raise CanonicalValidationError(f"resolved image occurrence lacks a valid content node: {content_node_id}")
+        elif placement == "unresolved":
+            if content_node_id is not None:
+                raise CanonicalValidationError("unresolved image occurrence must not reference a content node")
+        else:
+            raise CanonicalValidationError(f"invalid image occurrence placement: {placement}")
     for asset in document.get("assets", []):
         relative = PurePosixPath(asset["path"])
         if relative.is_absolute() or ".." in relative.parts:

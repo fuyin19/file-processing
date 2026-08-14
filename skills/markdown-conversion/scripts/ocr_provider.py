@@ -11,6 +11,7 @@ import importlib.metadata
 import math
 import threading
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, Callable, Mapping, Protocol, runtime_checkable
 
 
@@ -242,7 +243,7 @@ class RapidOcrProvider:
         except (ImportError, ModuleNotFoundError) as exc:
             raise OcrUnavailableError(
                 "RapidOCR is not installed or incompatible; install the tested "
-                "'rapidocr==3.9.2' and 'onnxruntime>=1.20,<2'"
+                "compatible 'rapidocr' and 'onnxruntime' packages"
             ) from exc
 
         try:
@@ -534,7 +535,7 @@ class RapidOcrProvider:
             except (ImportError, ModuleNotFoundError) as exc:
                 raise OcrUnavailableError(
                     "RapidOCR's inference runtime is unavailable; install "
-                    "'onnxruntime>=1.20,<2'"
+                    "a compatible 'onnxruntime' package"
                 ) from exc
             except Exception as exc:
                 raise OcrProviderError(
@@ -577,6 +578,51 @@ class RapidOcrProvider:
                 bitmap.close()
             except Exception:
                 pass
+
+
+    def extract_image_text(self, image_path: str | Path) -> dict[str, Any]:
+        """OCR one extracted Office image for explicit enrichment workflows."""
+        try:
+            from PIL import Image
+        except ImportError as exc:
+            raise OcrUnavailableError("Pillow is required for Office image OCR enrichment") from exc
+        engine = self._get_engine()
+        with Image.open(image_path) as source:
+            image = source.convert("RGB")
+            try:
+                width, height = image.size
+                longest = max(width, height)
+                if longest > self.settings.max_long_edge:
+                    scale = self.settings.max_long_edge / longest
+                    image = image.resize((max(1, round(width * scale)), max(1, round(height * scale))))
+                with self._engine_lock:
+                    output = engine(image, return_word_box=False)
+            except Exception as exc:
+                raise OcrProviderError(f"RapidOCR image inference failed ({type(exc).__name__})") from exc
+            finally:
+                image.close()
+        texts = self._as_sequence(getattr(output, "txts", None), "txts")
+        scores = self._as_sequence(getattr(output, "scores", None), "scores")
+        if len(texts) != len(scores):
+            raise OcrProviderError("RapidOCR image output has mismatched text/confidence lengths")
+        accepted: list[str] = []
+        confidences: list[float] = []
+        for raw_text, raw_score in zip(texts, scores):
+            text = str(raw_text or "").strip()
+            try:
+                score = float(raw_score)
+            except (TypeError, ValueError, OverflowError):
+                continue
+            if text and math.isfinite(score) and score >= self.settings.min_confidence:
+                accepted.append(text)
+                confidences.append(score)
+        return {
+            "text": "\n".join(accepted),
+            "confidence": (sum(confidences) / len(confidences)) if confidences else None,
+            "engine": self.name,
+            "engine_version": self.version,
+            "language": self.settings.language,
+        }
 
 
 __all__ = [
