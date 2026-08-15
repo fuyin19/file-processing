@@ -1,6 +1,7 @@
 # Canonical JSON v1
 
-`<stem>.json` is the canonical, loss-aware output of `markdown-conversion` v6.3.
+`<stem>.json` is the canonical, loss-aware bundle output of
+`markdown-conversion` v6.5.1.
 The machine-readable schema is `../schemas/canonical-v1.schema.json`.
 
 ## Top-level fields
@@ -95,7 +96,7 @@ For adapters that emit one stitched logical paragraph or table across pages,
 its locator may include a `spans` array. Every nested span carries its
 page/source-unit provenance and is validated against `source_units`; stable
 node/table IDs are generated only after any adapter-provided stitching is
-complete. The v6.3 Inspector path does not perform this stitching and instead
+complete. The v6.5.1 Inspector path does not perform this stitching and instead
 uses document-range provenance for Inspector nodes.
 
 The main PDF path adds no custom running-header, footer, or page-label rewrite;
@@ -132,9 +133,11 @@ reading-order placement and produces a warning.
 - `partial`: known omitted or quarantined source content, while artifacts remain
   valid and at least one usable content node exists.
 
-All three states publish with exit code `0`. Invalid schema/serialization,
-duplicate IDs, broken references, asset verification failure, no usable content,
-or transactional publication failure prevents publication.
+All three states publish with exit code `0`. In bundle mode, invalid schema/
+serialization, duplicate IDs, broken references, asset verification failure,
+no usable content, or transactional publication failure prevents publication. Markdown-only emits
+no Canonical JSON artifact and therefore skips JSON Schema validation while
+retaining applicable semantic checks.
 
 `outputs` records the rendered Markdown path/hash and all published asset
 paths/hashes. JSON does not record its own hash, avoiding a circular digest.

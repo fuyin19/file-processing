@@ -725,6 +725,15 @@ def _text_fingerprint(node: dict[str, Any]) -> str:
     return "".join(character.casefold() for character in value if not character.isspace())
 
 
+def _extract_image(image: Any, target: Path) -> None:
+    """Render one PDFium image object to PNG for optional bundle export."""
+    bitmap = image.get_bitmap(render=True, scale_to_original=True)
+    try:
+        bitmap.to_pil().save(target, format="PNG")
+    finally:
+        bitmap.close()
+
+
 def _extract_pdf_image_support(
     source: str,
     document_id: str,
@@ -738,7 +747,6 @@ def _extract_pdf_image_support(
     become canonical document text or influence Inspector's structure.
     """
     import pypdfium2 as pdfium
-    from pdf_adapter import _extract_image
 
     assets: list[dict[str, Any]] = []
     content: list[dict[str, Any]] = []
@@ -986,7 +994,7 @@ class PdfInspectorAdapter:
         except Exception:
             total_pages = 0
 
-        inspector = self.inspector or _pdf_inspector()
+        inspector = self.inspector
         global_markdown = ""
         run_spans: dict[tuple[int, int], tuple[int, int]] = {}
         reason_by_page: dict[int, str] = {}
@@ -1001,6 +1009,7 @@ class PdfInspectorAdapter:
             required_pages = set(range(1, total_pages + 1))
             reason_by_page = {page: "forced" for page in required_pages}
         else:
+            inspector = inspector or _pdf_inspector()
             temporary_fd, temporary_name = tempfile.mkstemp(
                 prefix="pdf-inspector-", suffix=".pdf"
             )

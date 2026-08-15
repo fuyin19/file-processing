@@ -34,25 +34,21 @@ from adapters import (
 from canonical import (
     CanonicalValidationError,
     convert_chinese,
-    fix_encoding,
     frontmatter,
-    inject_frontmatter,
     quality_from_warnings,
     render_markdown,
     sha256_bytes,
     sha256_file,
     stable_id,
-    strip_images,
     title_from_markdown,
     validate_canonical,
 )
-from canonical import MOJIBAKE_PATTERNS
 from ocr_provider import NullOcrProvider, OcrSettings, RapidOcrProvider
 from pdf_inspector_adapter import PdfInspectorAdapter
 from safe_url import redact_url
 
 
-VERSION = "6.5.0"
+VERSION = "6.5.1"
 DEFAULT_CONFIG: dict[str, Any] = {
     "pdf_ocr": {
         "mode": "auto",
@@ -71,18 +67,16 @@ SUPPORTED_EXTENSIONS = set(ANYDOC_FORMAT_BY_EXTENSION) | {
     ".zip", ".txt",
 }
 DEPS = [
-    ("markitdown", "markitdown", True),
-    ("opencc", "opencc-python-reimplemented", True),
-    ("markdown_it", "markdown-it-py", True),
-    ("jsonschema", "jsonschema", True),
-    ("pypdfium2", "pypdfium2", True),
-    ("pdf_inspector", "pdf-inspector", True),
-    ("pypdf", "pypdf", True),
-    ("pdfminer", "pdfminer.six", True),
-    ("chardet", "chardet", True),
-    ("doc2docx", "doc2docx", False),
-    ("rapidocr", "rapidocr", False),
-    ("onnxruntime", "onnxruntime", False),
+    ("opencc", "opencc-python-reimplemented", "core"),
+    ("markdown_it", "markdown-it-py", "core"),
+    ("jsonschema", "jsonschema", "route-specific"),
+    ("markitdown", "markitdown", "route-specific"),
+    ("pypdf", "pypdf", "route-specific"),
+    ("pdf_inspector", "pdf-inspector", "route-specific"),
+    ("pypdfium2", "pypdfium2", "route-specific"),
+    ("rapidocr", "rapidocr", "route-specific"),
+    ("onnxruntime", "onnxruntime", "route-specific"),
+    ("pdfminer", "pdfminer.six", "optional"),
 ]
 _rfc3339_datetime_re = re.compile(
     r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$"
@@ -166,31 +160,6 @@ def _source_stem(source: str) -> str:
         path = urllib.parse.unquote(urllib.parse.urlparse(source).path)
         return Path(path).stem or url_to_slug(source)
     return Path(source).stem or "untitled"
-
-
-def _ensure_package(package: str, install_name: str | None = None):
-    """Import a declared dependency without mutating the active environment."""
-    install_name = install_name or package
-    try:
-        return __import__(package)
-    except ImportError as exc:
-        raise PipelineError(
-            f"Required dependency {install_name} is unavailable; install a compatible provider in the active interpreter"
-        ) from exc
-
-
-def ensure_pdf_dependencies() -> None:
-    pdf_imports = {"pypdfium2", "pdf_inspector", "pypdf", "pdfminer"}
-    for import_name, install_name, required in DEPS:
-        if required and import_name in pdf_imports:
-            _ensure_package(import_name, install_name)
-
-
-def convert_doc_to_docx(doc_path: str) -> str:
-    raise PipelineError(
-        "Legacy .doc COM conversion is disabled because it cannot be safely isolated; "
-        "use the AnyDoc route or convert the file to .docx in a trusted desktop workflow"
-    )
 
 
 def resolve_timestamp(value: str) -> str:
@@ -287,10 +256,27 @@ def precheck(args) -> None:
         die(f"File not found: {args.input}")
     if args.input_dir and not Path(args.input_dir).is_dir():
         die(f"Directory not found: {args.input_dir}")
+    if args.input_dir:
+        try:
+            _validate_batch_output_root(Path(args.input_dir), _batch_root(args))
+        except PipelineError as exc:
+            die(str(exc))
 
 
 def _batch_root(args) -> Path:
     return Path(args.output_dir).resolve() if args.output_dir else (Path(args.input_dir).resolve() / "_converted")
+
+
+def _validate_batch_output_root(input_root: Path, output_root: Path) -> None:
+    resolved_input = input_root.resolve()
+    resolved_output = output_root.resolve()
+    if resolved_output == resolved_input:
+        raise PipelineError("Batch output root must not equal the input root")
+    try:
+        resolved_input.relative_to(resolved_output)
+    except ValueError:
+        return
+    raise PipelineError("Batch output root must not be an ancestor of the input root")
 
 
 def resolve_target(args, source: str, relative_path: Path | None = None) -> Target:
@@ -309,14 +295,6 @@ def resolve_target(args, source: str, relative_path: Path | None = None) -> Targ
         base = root / stem
     path = base if args.output_mode == "bundle" else base.parent / f"{stem}.md"
     return Target(args.output_mode, path, stem)
-
-
-def resolve_output_path(args) -> str:
-    """Compatibility helper returning the resolved single/batch output root."""
-    _normalize_mode(args)
-    if args.input_dir:
-        return str(_batch_root(args))
-    return str(resolve_target(args, args.input).path)
 
 
 def _renamed_target(target: Target) -> Target:
@@ -458,7 +436,6 @@ def _extract(
         return result, source_record, document_id
     source_record, document_id = _source_record(identity_source)
     if Path(source).suffix.lower() == ".pdf":
-        ensure_pdf_dependencies()
         if type(ocr_provider) in {RapidOcrProvider, NullOcrProvider}:
             settings = getattr(ocr_provider, "settings", OcrSettings(mode=ocr_mode, engine="none"))
             result = _run_provider_worker({
@@ -708,57 +685,24 @@ def _write_markdown_file(markdown: str, target: Path, overwrite: bool) -> None:
 
 
 def convert_one(args, source: str, relative_path: Path | None = None) -> tuple[Path, str, list[dict[str, Any]]]:
-    target = _preflight_target(resolve_target(args, source, relative_path), source, args.overwrite, args.rename)
-    ocr_settings = getattr(args, "ocr_settings", OcrSettings(mode="off", engine="none"))
-    ocr_provider = getattr(args, "ocr_provider", None)
-    temporary_docx: str | None = None
-    actual_source = source
     local_adapter = getattr(args, "local_adapter", getattr(args, "document_adapter", "anydoc"))
     if local_adapter not in {"anydoc", "markitdown"}:
         raise PipelineError(f"Unsupported local document adapter: {local_adapter}")
     if not is_url(source) and Path(source).suffix.lower() == ".doc" and local_adapter == "markitdown":
-        temporary_docx = convert_doc_to_docx(source)
-        actual_source = temporary_docx
-    try:
-        if target.mode == "bundle":
-            target.path.parent.mkdir(parents=True, exist_ok=True)
-            stage = Path(tempfile.mkdtemp(prefix=f".{target.path.name}.staging-", dir=target.path.parent))
-            try:
-                asset_dir = stage / "assets" / "images"
-                document = _build_document(
-                    actual_source, args.timestamp, args.language_normalization, "bundle", asset_dir,
-                    identity_source=source,
-                    ocr_provider=ocr_provider,
-                    ocr_mode=ocr_settings.mode,
-                    local_adapter=local_adapter,
-                    enrich_images=getattr(args, "enrich_images", False),
-                    ocr_settings=ocr_settings,
-                )
-                markdown_name = f"{target.stem}.md"
-                json_name = f"{target.stem}.json"
-                markdown = render_markdown(document, not args.no_frontmatter, "bundle")
-                markdown_path = stage / markdown_name
-                markdown_path.write_text(markdown, encoding="utf-8", newline="\n")
-                document["outputs"] = {
-                    "mode": "bundle",
-                    "markdown": {"path": markdown_name, "sha256": sha256_file(markdown_path)},
-                    "assets": [{"path": item["path"], "sha256": item["sha256"]} for item in document["assets"]],
-                }
-                validate_canonical(document, stage)
-                json_path = stage / json_name
-                json_path.write_text(json.dumps(document, ensure_ascii=False, indent=2) + "\n", encoding="utf-8", newline="\n")
-                persisted = json.loads(json_path.read_text(encoding="utf-8"))
-                # Full JSON Schema validation already ran on the identical object;
-                # the persisted round-trip only needs semantic/hash verification.
-                validate_canonical(persisted, stage, validate_schema=False)
-                _publish_directory(stage, target.path, args.overwrite)
-            except Exception:
-                if stage.exists():
-                    shutil.rmtree(stage)
-                raise
-        else:
+        raise PipelineError(
+            "MarkItDown cannot safely convert legacy .doc files; use the default AnyDoc adapter "
+            "or first convert the file to .docx in a trusted desktop environment"
+        )
+    target = _preflight_target(resolve_target(args, source, relative_path), source, args.overwrite, args.rename)
+    ocr_settings = getattr(args, "ocr_settings", OcrSettings(mode="off", engine="none"))
+    ocr_provider = getattr(args, "ocr_provider", None)
+    if target.mode == "bundle":
+        target.path.parent.mkdir(parents=True, exist_ok=True)
+        stage = Path(tempfile.mkdtemp(prefix=f".{target.path.name}.staging-", dir=target.path.parent))
+        try:
+            asset_dir = stage / "assets" / "images"
             document = _build_document(
-                actual_source, args.timestamp, args.language_normalization, "markdown", None,
+                source, args.timestamp, args.language_normalization, "bundle", asset_dir,
                 identity_source=source,
                 ocr_provider=ocr_provider,
                 ocr_mode=ocr_settings.mode,
@@ -766,29 +710,47 @@ def convert_one(args, source: str, relative_path: Path | None = None) -> tuple[P
                 enrich_images=getattr(args, "enrich_images", False),
                 ocr_settings=ocr_settings,
             )
-            markdown = render_markdown(document, not args.no_frontmatter, "markdown")
+            markdown_name = f"{target.stem}.md"
+            json_name = f"{target.stem}.json"
+            markdown = render_markdown(document, not args.no_frontmatter, "bundle")
+            markdown_path = stage / markdown_name
+            markdown_path.write_text(markdown, encoding="utf-8", newline="\n")
             document["outputs"] = {
-                "mode": "markdown",
-                "markdown": {"path": target.path.name, "sha256": sha256_bytes(markdown.encode("utf-8"))},
-                "assets": [],
+                "mode": "bundle",
+                "markdown": {"path": markdown_name, "sha256": sha256_file(markdown_path)},
+                "assets": [{"path": item["path"], "sha256": item["sha256"]} for item in document["assets"]],
             }
-            validate_canonical(document, validate_schema=False)
-            _write_markdown_file(markdown, target.path, args.overwrite)
-        return target.path, document["quality"]["status"], document["quality"]["warnings"]
-    finally:
-        if temporary_docx and Path(temporary_docx).exists():
-            Path(temporary_docx).unlink()
-
-
-def write_to_vault(text: str, output_path: str, overwrite: bool, rename: bool) -> str:
-    target = Path(output_path)
-    if target.exists() and rename:
-        target = _renamed_target(Target("markdown", target, target.stem)).path
-    elif target.exists() and not overwrite:
-        print(f"ERROR: Output file already exists: {target}", file=sys.stderr)
-        raise SystemExit(2)
-    _write_markdown_file(text, target, True)
-    return str(target)
+            validate_canonical(document, stage)
+            json_path = stage / json_name
+            json_path.write_text(json.dumps(document, ensure_ascii=False, indent=2) + "\n", encoding="utf-8", newline="\n")
+            persisted = json.loads(json_path.read_text(encoding="utf-8"))
+            # Full JSON Schema validation already ran on the identical object;
+            # the persisted round-trip only needs semantic/hash verification.
+            validate_canonical(persisted, stage, validate_schema=False)
+            _publish_directory(stage, target.path, args.overwrite)
+        except Exception:
+            if stage.exists():
+                shutil.rmtree(stage)
+            raise
+    else:
+        document = _build_document(
+            source, args.timestamp, args.language_normalization, "markdown", None,
+            identity_source=source,
+            ocr_provider=ocr_provider,
+            ocr_mode=ocr_settings.mode,
+            local_adapter=local_adapter,
+            enrich_images=getattr(args, "enrich_images", False),
+            ocr_settings=ocr_settings,
+        )
+        markdown = render_markdown(document, not args.no_frontmatter, "markdown")
+        document["outputs"] = {
+            "mode": "markdown",
+            "markdown": {"path": target.path.name, "sha256": sha256_bytes(markdown.encode("utf-8"))},
+            "assets": [],
+        }
+        validate_canonical(document, validate_schema=False)
+        _write_markdown_file(markdown, target.path, args.overwrite)
+    return target.path, document["quality"]["status"], document["quality"]["warnings"]
 
 
 def _validate_types(types: list[str] | None) -> None:
@@ -832,7 +794,7 @@ def run_batch(args) -> int:
 def show_version() -> None:
     print(f"markdown-conversion v{VERSION}")
     print("Dependencies:")
-    for import_name, install_name, required in DEPS:
+    for import_name, install_name, scope in DEPS:
         distribution_name = re.split(r"[<>=!~]", install_name, maxsplit=1)[0]
         try:
             __import__(import_name)
@@ -841,9 +803,9 @@ def show_version() -> None:
             except importlib.metadata.PackageNotFoundError:
                 version = "installed"
         except ImportError:
-            version = "NOT INSTALLED" if required else "not installed (optional)"
-        print(f"  {install_name}: {version}")
-    print(f"  firecrawl-anydoc: {anydoc_version()} (behavioral capability check)")
+            version = "NOT INSTALLED"
+        print(f"  {install_name}: {version} [{scope}]")
+    print(f"  firecrawl-anydoc: {anydoc_version()} [route-specific; behavioral capability check]")
 
 
 def build_parser() -> argparse.ArgumentParser:

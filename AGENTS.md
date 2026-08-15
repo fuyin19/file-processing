@@ -10,10 +10,10 @@ copy of this content there.
 
 ## Project Purpose
 
-`file-processing` is a Claude Code plugin (v4.0.0) that packages four
+`file-processing` is a Claude Code plugin (v5.0.0) that packages three
 file-processing skills as `/file-processing:<name>` commands. It serves
 developers working inside Claude Code who need repeatable, script-backed
-document workflows — convert, review, translate, clean up — where deterministic
+document workflows — convert, review, and translate — where deterministic
 Python pipelines do the structural work and Claude / sub-agents do the
 linguistic and judgment work. It exists so these workflows are consistent,
 testable, and resistant to LLM step-skipping (via sub-agent orchestration)
@@ -23,9 +23,9 @@ Immutable long-term tradeoff (one line): for `translate`, accuracy / terminology
 match is prioritized over speed and token cost; across all skills,
 structure-safety and testability are prioritized over feature breadth.
 
-The four skills:
+The three skills:
 
-- **markdown-conversion** (v6.5.0) — Convert local PDFs, AnyDoc-eligible
+- **markdown-conversion** (v6.5.1) — Convert local PDFs, AnyDoc-eligible
   non-PDF documents, remaining supported files, URLs, or directories through one
   canonical model. Local PDFs use a behaviorally compatible PDF Inspector as the
   authoritative text and structure source; RapidOCR recovers only routed pages,
@@ -42,7 +42,6 @@ The four skills:
   exact five-field YAML frontmatter, defaults Chinese normalization to
   simplified, and publishes transactionally.
 - **content-review** (v2.0.0) — Review files for grammar, typos, logic, and stylistic issues. Verify content against reference materials (fact-checking). `scripts/review_plan.py` computes a dimension × chunk matrix and assembles sub-agent results; `references/` (criteria + sub-agent prompts) and `assets/` (report template).
-- **markdown-cleanup** (v1.0.0) — Clean up formatting artifacts in markitdown-converted .md files. Pure Python stdlib.
 - **translate** (v2.0.0) — Translate files to a target language with optional reference-guided terminology. Hybrid architecture: Python pipeline (`translate_pipeline.py`, `glossary_utils.py`) for deterministic work (structure-safe chunking, source-driven glossary slicing, per-occurrence forced-application QA); Claude/sub-agents for linguistic work.
 
 ## Goal Format
@@ -63,7 +62,7 @@ Every goal includes, at minimum:
 Optional fields (add only when they'd change execution):
 
 - **Constraints** — hard boundaries for this task (e.g. "do not touch
-  markdown-conversion or markdown-cleanup"; "no new runtime dependencies").
+  markdown-conversion or translate"; "no new runtime dependencies").
 - **Work Plan / Work Loop** — multi-step rhythm, e.g. `write test → run pytest →
   implement → run full suite`.
 - **Non-Goals**, **State** (progress ledger for long tasks), **Reviewer**,
@@ -71,9 +70,6 @@ Optional fields (add only when they'd change execution):
 
 Transform vague asks into verifiable goals:
 
-- "add a cleanup fixer" → "add a fixer plus a test fixture it must clean; run
-  `python -m pytest tests/markdown-cleanup/test_cleanup_pipeline.py -v` and
-  confirm the new test passes and existing fixers are unchanged."
 - "fix a pipeline bug" → "add a reproducing `pytest` case that fails, then make
   it pass; run the full suite to confirm no regression."
 - "add validation" → "write tests for invalid inputs, then make them pass."
@@ -92,9 +88,6 @@ per goal.
 # Markdown-conversion tests
 python -m pytest tests/markdown-conversion/test_pipeline.py -v
 
-# Markdown-cleanup tests
-python -m pytest tests/markdown-cleanup/test_cleanup_pipeline.py -v
-
 # Content-review tests
 python -m pytest tests/content-review/test_review_plan.py -v
 
@@ -102,12 +95,11 @@ python -m pytest tests/content-review/test_review_plan.py -v
 python -m pytest tests/translate/test_translate_pipeline.py -v
 
 # Single test or pattern
-python -m pytest tests/markdown-conversion/test_pipeline.py -k "test_fix_encoding_utf8" -v
+python -m pytest tests/markdown-conversion/test_pipeline.py -k "test_default_timestamp_is_timezone_aware" -v
 python -m pytest tests/translate/test_translate_pipeline.py -k "glossary" -v
 
 # Categories (markdown-conversion)
 python -m pytest tests/markdown-conversion/test_pipeline.py -k "pdf_inspector or product_pdf_bundle" -v    # PDF Inspector product path
-python -m pytest tests/markdown-conversion/test_pipeline.py -k "legacy_pdfium" -v    # retained v6.2 adapter characterization only
 python -m pytest tests/markdown-conversion/test_pipeline.py -k "bundle or markdown_only or replace_failure" -v    # publication / rollback
 python -m pytest tests/markdown-conversion/test_pipeline.py -k "canonical or semantic_validator or normalization" -v    # schema / text fidelity
 python -m pytest tests/markdown-conversion/test_pipeline.py -k "markitdown or ooxml or office" -v    # Office regression
@@ -136,19 +128,9 @@ python skills/markdown-conversion/scripts/pipeline.py --input-dir <dir> [--outpu
 python skills/markdown-conversion/scripts/pipeline.py --config <path> --input <file> [--output-dir <outdir>]
 python skills/markdown-conversion/scripts/pipeline.py --version
 
-# Markdown-cleanup — single file or directory
-python skills/markdown-cleanup/scripts/cleanup_pipeline.py --input <file.md>
-python skills/markdown-cleanup/scripts/cleanup_pipeline.py --input <dir>
-
-# Markdown-cleanup — preview / selective fixers / list fixers
-python skills/markdown-cleanup/scripts/cleanup_pipeline.py --input <file.md> --dry-run --diff
-python skills/markdown-cleanup/scripts/cleanup_pipeline.py --input <file.md> --only base64_image_stubs,blank_lines
-python skills/markdown-cleanup/scripts/cleanup_pipeline.py --list-fixers
 ```
 
 **Exit codes (markdown-conversion)**: 0=success (including publishable warnings/partial output), 1=input/conversion/validation/publication error, 2=single-target collision (needs `--overwrite` or `--rename`). `--overwrite` uses staged replacement with rollback before commit; `--rename` appends a deterministic suffix.
-
-**Exit codes (markdown-cleanup)**: 0=success, 1=error. Output writes to same directory as source by default.
 
 ```bash
 # content-review — matrix plan + assemble (deterministic, testable without sub-agents)
@@ -180,11 +162,11 @@ python skills/translate/scripts/translate_pipeline.py qa --source <file> --trans
 
 ### Skill Structure
 
-The plugin lives in `skills/` with one subdirectory per skill. Each skill has a `SKILL.md` defining the `/file-processing:<name>` command and workflow. All four skills are script-backed. `content-review` and `translate` additionally keep sub-agent prompt templates in `references/subagent-prompts.md`.
+The plugin lives in `skills/` with one subdirectory per skill. Each skill has a `SKILL.md` defining the `/file-processing:<name>` command and workflow. All three skills are script-backed. `content-review` and `translate` additionally keep sub-agent prompt templates in `references/subagent-prompts.md`.
 
 ### Pipeline Flow (markdown-conversion)
 
-1. **Precheck and target resolution** — validates `--input` versus `--input-dir`, CLI combinations, output roots, source/output aliasing, and collisions before loading expensive adapters.
+1. **Precheck and target resolution** — validates `--input` versus `--input-dir`, CLI combinations, output roots, source/output aliasing, and collisions before loading expensive adapters. Batch rejects an output root equal to or above the input root, then resolves, converts, and publishes each collected file sequentially; a descendant output such as `_converted` remains allowed and excluded from collection.
 2. **Preflight and adapter selection** — Office containers receive bounded ZIP,
    XML, relationship, and image-budget checks before conversion. Word revisions
    are classified by exact namespace-aware tags and converted from a temporary
@@ -197,21 +179,29 @@ The plugin lives in `skills/` with one subdirectory per skill. Each skill has a 
    repaired only in a temporary copy. Inspector page signals route required
    pages to RapidOCR; selected-page removal or replacement still requires a
    unique complete signature, otherwise the whole document routes to ordered
-   OCR. PDFium never supplies canonical text or structure. URLs and remaining
-   local formats use MarkItDown, and `--local-document-adapter markitdown`
-   remains the explicit rollback. AnyDoc, PDF Inspector, RapidOCR, local
+   OCR. PDFium never supplies canonical text or structure. All URLs, including
+   PDF URLs, and remaining local formats use MarkItDown, and
+   `--local-document-adapter markitdown`
+   remains the explicit rollback except for legacy `.doc`, which is rejected
+   before worker or staging creation and must use AnyDoc or first be converted
+   to `.docx` in a trusted desktop workflow. AnyDoc, PDF Inspector, RapidOCR, local
    MarkItDown, and URL MarkItDown execute in deadline-bounded workers. URL fetch
    policy rejects private destinations, revalidates redirects, limits bytes and
    time, and redacts sensitive locator data.
 3. **Canonical assembly** — builds Canonical JSON v1 with source hash, stable document/node ids, source units/locators, authoritative `content` order, general tables, assets, relationships, and quality warnings.
 4. **Language normalization** — preserves `raw_text` and cleaned `text`, then produces `normalized_text` in one batched OpenCC pass while protecting code, URLs, paths, ids, hashes, locators, and formulas.
-5. **Validation and rendering** — validates JSON Schema plus semantic references, paths, hashes, output manifests, and quality state; renders Markdown from canonical content with exact five-field frontmatter unless disabled.
+5. **Validation and rendering** — bundle mode validates JSON Schema plus semantic references, paths, hashes, output manifests, and quality state; Markdown-only skips JSON Schema because it emits no JSON sidecar but retains applicable semantic validation. Both render Markdown from canonical content with exact five-field frontmatter unless disabled.
 6. **Publication** — default `bundle` writes `<stem>/<stem>.json`, `<stem>.md`, and optional `assets/images/`; `--output-mode markdown` writes exactly one clean `.md` and omits image binaries/dead links.
-7. **Transactional replace** — stages complete output beside the target, validates before commit, rolls back pre-commit replacement failures, and treats post-commit backup cleanup failure as a non-fatal maintenance warning.
+7. **Transactional replace** — stages each target beside its destination, validates before commit, rolls back pre-commit replacement failures, and treats post-commit backup cleanup failure as a non-fatal maintenance warning. Batch retains this per-file transaction boundary rather than promising an all-files atomic commit.
 
 Provider compatibility is capability-based rather than an exact/minimum/maximum
 version gate. The pipeline never installs, upgrades, downgrades, or repairs
-provider packages at runtime; missing or incompatible providers fail explicitly.
+provider packages at runtime. Local PDFs require `pypdf`; `auto/off` require PDF
+Inspector, while `force` does not. `pdfminer.six` loads only when CID repair is
+needed, PDFium only for OCR rasterization or bundle image export, and RapidOCR/
+ONNX only when OCR executes. Missing route-required capabilities fail
+explicitly; missing optional recovery or image capabilities preserve the
+documented warning/partial behavior.
 PDF Inspector supplies full-document headings, paragraphs, lists, tables, line
 wrapping, and reading order but does not execute OCR. The default `auto` mode
 refines Inspector's OCR-routing signal and retains conservatively readable
@@ -225,15 +215,6 @@ guessing content position, and image OCR is opt-in through `--enrich-images`.
 Accepted/final-view revision text is preserved, while revision history and
 comments remain explicitly reported losses. RAG chunk schemas, advanced
 formulas, revision-history preservation, and model enrichment remain non-goals.
-
-### Cleanup Pipeline Flow (markdown-cleanup)
-
-1. **Precheck** → **Load config** (merge `DEFAULT_CONFIG` with `config.json`, resolve `--only`/`--disable`)
-2. **Collect .md files** → **Protect** (extract frontmatter, replace code blocks with placeholders)
-3. **Run fixers** — pure functions `(text) → (text, changes)`, executed in defined order. 12 fixers total (10 enabled, 2 disabled by default). Key principle: preserve meaningful structure (PPT slide boundaries, list numbering, sections).
-4. **Restore** → **Write** → **Report**
-
-Uses only Python stdlib (`re`, `difflib`).
 
 ### Translate Pipeline Flow (translate)
 
@@ -266,14 +247,13 @@ Anti-skip levers (both skills): (1) narrow per-cell/per-chunk mandates; (2) prom
   environment and only accepts dependencies that pass its behavioral capability
   checks
 - **Gate-based error handling**: Each step validates output and calls `die()` on failure
-- **Code block/frontmatter protection**: Used by both cleanup and translate pipelines
+- **Code block/frontmatter protection**: Used by the translate pipeline
 - **Path resolution**: `config.json` is resolved relative to the pipeline script's directory (not CWD), unless overridden by `--config`.
 
 ## Configuration
 
 Each skill stores its own `scripts/config.json` (gitignored):
 - `skills/markdown-conversion/scripts/config.json` — `pdf_ocr` defaults: `mode` (`auto`), `engine` (`rapidocr`), `language` (`ch`), `dpi` (`300.0`), `max_long_edge` (`4096`), and `min_confidence` (`0.5`); single-file bundle output defaults beside the source and batch output defaults to `<input-dir>/_converted`
-- `skills/markdown-cleanup/scripts/config.json` — fixer enable/disable settings
 - `skills/content-review/scripts/config.json` — `chunk_lines` (400), `max_chunks` (20), `max_cells` (60)
 - `skills/translate/scripts/config.json` — `default_target_language` (zh), `chunk_lines` (300), `max_chunks` (30), `max_terms` (800), `max_terms_per_chunk_prompt` (120), `max_reference_passages_per_term` (5), `max_workspace_mb` (100)
 
@@ -281,9 +261,7 @@ Each skill stores its own `scripts/config.json` (gitignored):
 
 `.claude/settings.json` pre-allows:
 - `python -m pytest tests/markdown-conversion/test_pipeline.py *`
-- `python -m pytest tests/markdown-cleanup/test_cleanup_pipeline.py *`
 - `python -m pytest tests/content-review/test_review_plan.py *`
 - `python *pipeline.py*`
-- `python *cleanup_pipeline.py*`
 - `python *translate_pipeline.py*`
 - `python *review_plan.py*`

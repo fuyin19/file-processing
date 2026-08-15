@@ -3,7 +3,7 @@ name: markdown-conversion
 description: |
   Convert local PDF and AnyDoc/MarkItDown-supported documents, supported files, URLs, or directories into a canonical JSON plus Markdown bundle, or one clean Markdown file. Use for PDF Inspector-backed PDF extraction, AnyDoc-backed local non-PDF extraction, explicit MarkItDown rollback, deterministic five-field frontmatter, Chinese language normalization, batch conversion, and transactional output handling.
 metadata:
-  version: 6.5.0
+  version: 6.5.1
 ---
 
 # Convert files to canonical JSON and Markdown
@@ -19,10 +19,13 @@ Inspector failure or an unprovable flagged-page span routes the whole document t
 ordered OCR. PDFium native text is never a content or structure fallback;
 PDFium is limited to OCR rasterization and lightweight bundle image-object
 export, without running its document text/layout/table pipeline. Local formats
-supported by AnyDoc use its `to_document` model by default; URLs and formats
+supported by AnyDoc use its `to_document` model by default; URLs (including PDF
+URLs) and formats
 outside AnyDoc continue through a reused MarkItDown adapter. Pass
 `--local-document-adapter markitdown` (alias `--local-adapter`) to explicitly use MarkItDown for an eligible local
-file. In bundle mode, embedded AnyDoc image assets are exported from memory.
+file. Legacy `.doc` is not eligible for this rollback: it is rejected before
+worker or staging creation and must use AnyDoc or first be converted to `.docx`
+in a trusted desktop workflow. In bundle mode, embedded AnyDoc image assets are exported from memory.
 Both adapters produce the same Canonical JSON v1 asset model and shared
 Markdown rendering.
 
@@ -62,15 +65,22 @@ report/
 
 The assets directory is created only when assets exist. Batch output defaults
 to `<input-dir>/_converted/` and mirrors the input hierarchy. An explicit
-`--output-dir` replaces that output root.
+`--output-dir` replaces that output root. Batch conversion handles each file as
+its own preflight and publication transaction; it is not atomic across the
+whole directory.
 
 Markdown-only mode emits exactly one `.md` file: no JSON, assets, or sidecars.
 Image caption text is retained in reading order; unlabelled images are omitted,
-and no broken image links are emitted.
+and no broken image links are emitted. Because no JSON artifact exists, this
+mode skips JSON Schema validation while retaining applicable semantic checks.
 
 ## Workflow
 
-1. Resolve and preflight every target before loading an expensive adapter.
+1. Resolve and preflight a single target before loading an expensive adapter.
+   For batch input, first reject an output root equal to or above the input
+   root, then resolve, convert, and publish each collected file sequentially. A
+   descendant output such as `_converted` remains allowed and is excluded from
+   collection.
 2. Extract local PDFs with PDF Inspector. Before extraction, standard
    Identity-H/Identity-V CJK fonts that lack `ToUnicode` receive temporary,
    self-contained maps generated from the bundled `pdfminer.six` Adobe data;
@@ -94,9 +104,11 @@ and no broken image links are emitted.
    Inspector span, mark the page `ocr_required`, and never substitute PDFium
    native text. Add no custom header/footer cleanup; inherit Inspector's default
    behavior. Use AnyDoc for eligible local non-PDF formats and MarkItDown for
-   URLs/other formats. All local Office/AnyDoc inputs first pass the same bounded,
-   read-only container/XML/image preflight. Native AnyDoc, PDF Inspector, and OCR
-   work runs in a deadline-bounded worker. Only a provider-typed DOCX
+   all URLs, including PDF URLs, and other formats. All local Office/AnyDoc
+   inputs first pass the same bounded,
+   read-only container/XML/image preflight. Native AnyDoc, MarkItDown, PDF
+   Inspector, and OCR provider calls run in deadline-bounded workers. Only a
+   provider-typed DOCX
    `max_xml_nodes` capacity error may trigger ordered structural DOCX sharding;
    other limits, parse errors, crashes, and timeouts fail without fallback.
 3. Build Canonical JSON v1 with source units, one ordered content stream,
@@ -104,8 +116,11 @@ and no broken image links are emitted.
 4. Preserve adapter `raw_text` and cleaned `text`; derive `normalized_text` with
    one protected OpenCC pass. The default is `simplified`.
 5. Render Markdown from canonical nodes with the exact five-field frontmatter.
-6. Validate schema, references, asset containment, and hashes.
-7. Publish through staging plus replace/rollback. `--rename` uses `_1`, `_2`, ….
+6. In bundle mode, validate JSON Schema, references, asset containment, and
+   hashes. In Markdown-only mode, skip JSON Schema and run the applicable
+   semantic checks.
+7. Publish each target through staging plus replace/rollback. `--rename` uses
+   `_1`, `_2`, …; batch does not extend that transaction across files.
 
 `quality.status` is `complete`, `complete_with_warnings`, or `partial`; all
 three publish successfully. Known loss, including an OCR-required page, is
@@ -162,6 +177,13 @@ stem/slug fallback.
   and a failed or empty required
   OCR page remains loss-aware `partial` output. Runtime elapsed time is intentionally not serialized so
   equivalent conversions remain deterministic.
+- Local PDF dependencies are capability-bound. `pypdf` supplies the common
+  PDF layer; `auto/off` require PDF Inspector, while `force` does not.
+  `pdfminer.six` loads only when a CID repair is needed, PDFium only for OCR
+  rasterization or bundle image export, and RapidOCR/ONNX only when OCR runs.
+  Missing route-required capabilities fail explicitly. Missing optional
+  recovery or image capabilities preserve the documented warning/partial
+  behavior.
 - Embedded Office images remain assets by default and are not OCRed on the fast
   path. `--enrich-images` (bundle mode only) OCRs resolved image occurrences in
   the isolated worker and inserts provenance-linked paragraphs immediately after
@@ -173,7 +195,8 @@ stem/slug fallback.
   blocks and embedded image bytes; page/slide/sheet provenance and rich styles
   are flattened with deterministic warnings because Canonical v1 has no fields
   for them. Canonical asset paths are generated and never derived from package
-  paths; Markdown-only intentionally emits no binary assets or links.
+  paths; Markdown-only intentionally emits no binary assets or links. A local
+  `.doc` must use AnyDoc; explicit MarkItDown selection fails before conversion.
 - The runtime distribution is `firecrawl-anydoc`; the adapter performs a
   no-install compatibility check in the active Python interpreter. Install a
   provider explicitly with `python -m pip install firecrawl-anydoc`.
@@ -181,10 +204,11 @@ stem/slug fallback.
   rerun the full tests and benchmark after upgrades.
 - The authoritative AnyDoc upstream is `firecrawl/anydoc`; `fuyin19/anydoc` is
   a mirror. Referencing GitHub does not update an installed wheel.
-- v6.5 does not emit RAG chunks, change Canonical schema 1.0, or claim page,
+- v6.5.1 does not emit RAG chunks, change Canonical schema 1.0, or claim page,
   slide, sheet, rich-style, formula, or external-image fidelity beyond the
   AnyDoc model and documented warnings.
-- URL input is downloaded through a public-network-only, redirect-revalidated,
+- URL input, including a PDF URL, is downloaded through a public-network-only,
+  redirect-revalidated,
   DNS/IP-pinned byte/time-bounded client before local MarkItDown conversion.
   Source identity hashes response bytes, and persisted locators omit credentials,
   query strings, and fragments.

@@ -1,7 +1,7 @@
 # file-processing
 
 A Claude Code plugin for deterministic document conversion, content review,
-Markdown cleanup, and translation.
+and translation.
 
 ## Installation
 
@@ -11,7 +11,7 @@ claude skill add /path/to/file-processing
 
 ## Skills
 
-### markdown-conversion (v6.5.0)
+### markdown-conversion (v6.5.1)
 
 Convert local PDFs, Office documents, supported files, URLs, or directories
 through one canonical pipeline. Local PDFs use PDF Inspector as the
@@ -26,9 +26,12 @@ selected pages are placed only when Inspector's ordered per-page Markdown fully
 accounts for the global visible text. PDFium is limited to
 OCR rasterization plus lightweight bundle image-object export; it does not run
 the PDF text/layout/table pipeline. AnyDoc handles supported local non-PDF
-formats by default through its ordered document model; URLs and other formats
-continue through MarkItDown. Use `--local-document-adapter markitdown` for an explicit
-rollback. Embedded AnyDoc image bytes are exported by default in bundle mode.
+formats by default through its ordered document model; URLs (including PDF
+URLs) and other formats continue through MarkItDown. Use
+`--local-document-adapter markitdown` for an explicit rollback. Legacy `.doc`
+files must remain on AnyDoc; the MarkItDown rollback rejects them before
+conversion and recommends a trusted desktop conversion to `.docx`. Embedded
+AnyDoc image bytes are exported by default in bundle mode.
 The
 default output is a movable bundle:
 
@@ -51,7 +54,9 @@ report/
 
 Use `--output-mode markdown` or single-file `--output-path` for exactly one clean
 Markdown file. Bundle batch output defaults to `<input-dir>/_converted/`; use
-`--output-dir` to choose another root.
+`--output-dir` to choose another root. Batch conversion preflights and publishes
+each file sequentially rather than treating the whole directory as one atomic
+transaction.
 
 Canonical JSON v1 preserves source text and stable locators/IDs while Markdown
 defaults to simplified Chinese. Change this with
@@ -62,8 +67,9 @@ defaults to simplified Chinese. Change this with
 PDF and AnyDoc bundle images use the same canonical asset contract:
 binary files live under `assets/images/`, Markdown references their
 bundle-relative paths, and JSON records paths, hashes, media types, source
-locators, and ordered image nodes. Markdown-only intentionally omits binaries
-and image links.
+locators, and ordered image nodes. Markdown-only intentionally omits binaries,
+image links, and JSON Schema validation; it still runs the applicable semantic
+checks before publishing the single Markdown file.
 
 PDF OCR is an optional local path. Install compatible `rapidocr` and
 `onnxruntime` packages. The default `auto` mode refines
@@ -76,6 +82,14 @@ published as a fallback. OCR text and its page-level union bounding box retain
 page provenance; an
 unrecovered page remains `ocr_required` and the document is published as
 loss-aware `partial` output when other content is usable.
+
+Local PDF dependencies are loaded by capability: `pypdf` supplies the common
+page/preflight layer; PDF Inspector is required by `auto` and `off` extraction
+but not by `force`; `pdfminer.six` is loaded only for a required CID repair;
+PDFium is loaded only for OCR rasterization or bundle image-object export; and
+RapidOCR/ONNX is initialized only when OCR actually runs. Missing route-required
+capabilities fail explicitly, while unavailable optional recovery or image
+capabilities retain the documented warning/partial behavior.
 
 The PDF path preserves Inspector's full-document headings, paragraphs, line
 wrapping, tables, and reading order without PDFium reinterpretation. It adds no
@@ -95,8 +109,9 @@ update an already-installed wheel.
 All local Office formats share a bounded read-only preflight. Word revisions
 are converted from a temporary accepted/final-view snapshot; the source is not
 modified. A provider-typed DOCX `max_xml_nodes` capacity error alone may use
-ordered structural sharding. Native conversion and PDF/OCR work run in a
-deadline-bounded worker. Office images remain exported assets by default;
+ordered structural sharding. Native AnyDoc, MarkItDown, PDF Inspector, and OCR
+provider calls run in deadline-bounded workers. Office images remain exported
+assets by default;
 `--enrich-images` explicitly adds provenance-linked OCR text for resolved image
 occurrences without changing the default-path cost.
 
@@ -111,16 +126,6 @@ fact checking through a deterministic dimension × chunk matrix.
 ```text
 /file-processing:content-review ~/Documents/report.md --focus all
 /file-processing:content-review ~/Documents/report.md --references ~/Documents/sources
-```
-
-### markdown-cleanup (v1.0.0)
-
-Clean MarkItDown formatting artifacts while preserving meaningful Markdown
-structure.
-
-```text
-/file-processing:markdown-cleanup ~/Documents/report.md
-/file-processing:markdown-cleanup ~/Documents/notes --dry-run --diff
 ```
 
 ### translate (v2.0.0)

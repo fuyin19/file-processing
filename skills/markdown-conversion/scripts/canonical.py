@@ -14,13 +14,8 @@ QUALITY_STATUSES = {"complete", "complete_with_warnings", "partial"}
 TEXT_NODE_TYPES = {"heading", "paragraph", "list_item", "code", "boilerplate", "page_label"}
 
 MOJIBAKE_PATTERNS = ["茂驴陆", "脙陇", "芒鈧", "脙漏", "脙篓", "脙鹿", "脙禄"]
-_mojibake_re = re.compile("|".join(re.escape(value) for value in MOJIBAKE_PATTERNS))
 _h1_re = re.compile(r"^ {0,3}#(?!#)\s+(.+?)(?:\s+#+\s*)?$")
 _fence_re = re.compile(r"^ {0,3}(`{3,}|~{3,})")
-_inline_image_re = re.compile(r"!\[([^\]]*)\]\(([^)]+)\)")
-_orphan_image_re = re.compile(
-    r"^\s*\S+\.(?:jpg|jpeg|png|gif|bmp|svg|webp|tiff?)\s*$", re.IGNORECASE
-)
 _protected_re = re.compile(
     r"```[\s\S]*?```|~~~[\s\S]*?~~~|`[^`\n]+`|"
     r"https?://[^\s<>)]+|"
@@ -56,34 +51,6 @@ def stable_id(prefix: str, document_id: str, locator: Any, node_type: str, occur
         separators=(",", ":"),
     ).encode("utf-8")
     return f"{prefix}-{sha256_bytes(payload)[:16]}"
-
-
-def fix_encoding(raw_bytes: bytes) -> str:
-    """Decode actual byte input once; in-memory Unicode should bypass this function."""
-    try:
-        text = raw_bytes.decode("utf-8-sig")
-    except UnicodeDecodeError:
-        try:
-            import chardet
-        except ImportError as exc:  # pragma: no cover - dependency contract
-            raise CanonicalValidationError("chardet is required to decode non-UTF-8 input") from exc
-        detected = chardet.detect(raw_bytes)
-        candidates = []
-        if detected.get("encoding") and float(detected.get("confidence") or 0) >= 0.7:
-            candidates.append(str(detected["encoding"]))
-        candidates.extend(["gb18030", "big5", "shift_jis", "euc-jp", "euc-kr"])
-        text = ""
-        for encoding in dict.fromkeys(candidates):
-            try:
-                text = raw_bytes.decode(encoding)
-                break
-            except (UnicodeDecodeError, LookupError):
-                continue
-        else:
-            raise CanonicalValidationError("Could not detect file encoding")
-    if _mojibake_re.search(text):
-        raise CanonicalValidationError("Encoding fix produced garbled output")
-    return text
 
 
 @lru_cache(maxsize=3)
@@ -170,29 +137,6 @@ def normalize_canonical_text(
     sync_headers()
 
 
-def strip_images(text: str) -> str:
-    """Legacy helper: strip images outside fenced code while retaining ordinary links."""
-    output: list[str] = []
-    fence_char: str | None = None
-    fence_length = 0
-    for line in text.replace("\r\n", "\n").replace("\r", "\n").split("\n"):
-        marker = _fence_re.match(line)
-        if fence_char is not None:
-            output.append(line)
-            if re.fullmatch(rf" {{0,3}}{re.escape(fence_char)}{{{fence_length},}}\s*", line):
-                fence_char = None
-            continue
-        if marker:
-            fence_char = marker.group(1)[0]
-            fence_length = len(marker.group(1))
-            output.append(line)
-            continue
-        line = _inline_image_re.sub("", line)
-        if not _orphan_image_re.fullmatch(line):
-            output.append(line)
-    return re.sub(r"\n{3,}", "\n\n", "\n".join(output))
-
-
 def title_from_markdown(text: str, fallback: str) -> str:
     fence_char: str | None = None
     fence_length = 0
@@ -225,12 +169,6 @@ def frontmatter(title: str, timestamp: str) -> str:
         f"timestamp: {json.dumps(timestamp, ensure_ascii=False)}\n"
         "---\n\n"
     )
-
-
-def inject_frontmatter(text: str, source: str, timestamp: str) -> str:
-    fallback = Path(source).stem if source else "untitled"
-    title = title_from_markdown(text, fallback) if source.lower().startswith(("http://", "https://")) else fallback
-    return frontmatter(title or "untitled", timestamp) + text
 
 
 def quality_from_warnings(warnings: list[dict[str, Any]]) -> str:

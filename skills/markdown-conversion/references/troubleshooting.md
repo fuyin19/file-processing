@@ -43,7 +43,7 @@ does not fabricate text or silently fall back to a cloud service.
   Inspector fails or a flagged page's retained text span cannot be proved, the
   documented safety fallback OCRs the whole document in page order.
 - `--ocr force` routes every PDF page to OCR. It is an explicit replacement
-  mode, not a merge with PDFium native text.
+  mode, not a merge with PDFium native text, and does not require PDF Inspector.
 
 The defaults are configurable under `pdf_ocr` in `scripts/config.json`:
 `mode`, `engine`, `language`, `dpi`, `max_long_edge`, and `min_confidence`.
@@ -87,7 +87,7 @@ otherwise it takes the same whole-document safety fallback.
 
 ## PDF structure behavior
 
-The v6.3 PDF path parses Inspector's full-document headings, paragraphs, lists,
+The v6.5.1 PDF path parses Inspector's full-document headings, paragraphs, lists,
 tables, line wrapping, and reading order once, avoiding page-local heading
 re-rooting. It does
 not apply PDFium native-text corrections for columns, cross-page joins, table
@@ -109,10 +109,17 @@ targets are restored when replacement fails.
 
 ## URL input
 
-URLs are fetched through a public-network-only, DNS/IP-pinned downloader with
+URLs, including PDF URLs, are fetched through a public-network-only,
+DNS/IP-pinned downloader with
 redirect revalidation, byte and time limits. Credentials in URLs are rejected;
 persisted locators omit query strings and fragments. The downloaded response is
 then converted locally through MarkItDown and its bytes define source identity.
+
+## Legacy `.doc` with MarkItDown
+
+A local `.doc` explicitly routed to MarkItDown fails before any provider worker,
+staging directory, or output is created. Use the default AnyDoc route, or first
+convert the source to `.docx` in a trusted desktop workflow.
 
 ## Office images and long Word documents
 

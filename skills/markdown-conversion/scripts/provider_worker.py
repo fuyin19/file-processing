@@ -15,6 +15,27 @@ from pdf_inspector_adapter import PdfInspectorAdapter
 from safe_url import download_url
 
 
+def _require_dependency(import_name: str, install_name: str) -> None:
+    """Import one route capability without mutating the worker environment."""
+    try:
+        __import__(import_name)
+    except ImportError as exc:
+        raise RuntimeError(
+            f"Required PDF route dependency {install_name} is unavailable; "
+            "install a compatible provider in the active interpreter"
+        ) from exc
+
+
+def _require_pdf_route(ocr_mode: str) -> None:
+    _require_dependency("pypdf", "pypdf")
+    if ocr_mode == "force":
+        _require_dependency("pypdfium2", "pypdfium2")
+        _require_dependency("rapidocr", "rapidocr")
+        _require_dependency("onnxruntime", "onnxruntime")
+    else:
+        _require_dependency("pdf_inspector", "pdf-inspector")
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--request", required=True)
@@ -35,6 +56,7 @@ def main() -> int:
             )
         elif adapter == "pdf_inspector":
             settings = OcrSettings.from_mapping(request.get("ocr_settings"))
+            _require_pdf_route(request["ocr_mode"])
             provider = RapidOcrProvider(settings) if settings.engine in {"rapidocr", "auto"} else NullOcrProvider(settings)
             value = PdfInspectorAdapter(provider, ocr_mode=request["ocr_mode"]).extract(
                 request["source"], request["document_id"], request["mode"], asset_dir
