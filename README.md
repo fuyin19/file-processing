@@ -59,8 +59,19 @@ Markdown file. Bundle batch output defaults to `<input-dir>/_converted/`; use
 `--output-dir` to choose another root. Batch conversion preflights and publishes
 each file sequentially rather than treating the whole directory as one atomic
 transaction. Every local bundle, including each batch item, archives the exact
-user input as `src/<original-basename>`. URL bundles do not create `src/`, and
-Markdown-only output creates no source copy or other sidecar.
+user input as `src/<original-basename>` before adapter execution. Canonical
+source identity is derived from those archived bytes and rechecked before
+publication. URL bundles do not create `src/`, and Markdown-only output creates
+no source copy or other sidecar.
+
+All local path-sensitive operations use extended-length native paths on
+Windows, including UNC paths, while Canonical JSON retains only ordinary
+normalized logical locators. Publication uses exclusive short
+`.mc-stage-<uuid>` entries and atomic no-replace moves. `--overwrite` is a
+two-move transaction through `.mc-backup-<uuid>/original`; it rolls back caught
+pre-commit failures when exact identities prove that safe, but it is not
+crash-atomic. Any unverifiable recovery backup is retained and reported by its
+exact path rather than swept by name.
 
 Canonical JSON v1 preserves source text and stable locators/IDs while Markdown
 defaults to simplified Chinese. Change this with

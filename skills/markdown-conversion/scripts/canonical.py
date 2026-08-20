@@ -8,6 +8,8 @@ from functools import lru_cache
 from pathlib import Path, PurePosixPath
 from typing import Any, Iterable
 
+import native_paths
+
 
 SCHEMA_VERSION = "1.0"
 QUALITY_STATUSES = {"complete", "complete_with_warnings", "partial"}
@@ -36,11 +38,7 @@ def sha256_bytes(value: bytes) -> str:
 
 
 def sha256_file(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as stream:
-        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
+    return native_paths.sha256_file(path)
 
 
 def stable_id(prefix: str, document_id: str, locator: Any, node_type: str, occurrence: int) -> str:
@@ -342,11 +340,13 @@ def validate_canonical(
         if bundle_root is not None:
             path = bundle_root.joinpath(*relative.parts)
             try:
-                path.resolve().relative_to(bundle_root.resolve())
-            except ValueError as exc:
-                raise CanonicalValidationError(f"asset path escapes bundle: {asset['path']}") from exc
-            if not path.is_file():
+                path = native_paths.verified_bundle_file(bundle_root, path)
+            except FileNotFoundError:
                 raise CanonicalValidationError(f"asset does not exist: {asset['path']}")
+            except native_paths.UnsafeContainmentError as exc:
+                raise CanonicalValidationError(
+                    f"asset path is not safely contained in bundle: {asset['path']}"
+                ) from exc
             if sha256_file(path) != asset["sha256"]:
                 raise CanonicalValidationError(f"asset hash mismatch: {asset['path']}")
     expected_status = quality_from_warnings(document.get("quality", {}).get("warnings", []))
@@ -363,8 +363,14 @@ def validate_canonical(
         raise CanonicalValidationError("Markdown output path escapes bundle")
     if bundle_root is not None:
         markdown_path = bundle_root.joinpath(*markdown_relative.parts)
-        if not markdown_path.is_file():
+        try:
+            markdown_path = native_paths.verified_bundle_file(bundle_root, markdown_path)
+        except FileNotFoundError:
             raise CanonicalValidationError("rendered Markdown output is missing")
+        except native_paths.UnsafeContainmentError as exc:
+            raise CanonicalValidationError(
+                "rendered Markdown output is not safely contained in bundle"
+            ) from exc
         if sha256_file(markdown_path) != markdown_output.get("sha256"):
             raise CanonicalValidationError("rendered Markdown hash mismatch")
     if not validate_schema:
@@ -374,7 +380,7 @@ def validate_canonical(
         from jsonschema import Draft202012Validator
     except ImportError as exc:  # pragma: no cover - dependency contract
         raise CanonicalValidationError("jsonschema is required for bundle validation") from exc
-    schema = json.loads(schema_path.read_text(encoding="utf-8"))
+    schema = json.loads(native_paths.read_text(schema_path, encoding="utf-8"))
     errors = sorted(Draft202012Validator(schema).iter_errors(document), key=lambda error: list(error.path))
     if errors:
         first = errors[0]

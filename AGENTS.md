@@ -192,7 +192,16 @@ The plugin lives in `skills/` with one subdirectory per skill. Each skill has a 
 4. **Language normalization** — preserves `raw_text` and cleaned `text`, then produces `normalized_text` in one batched OpenCC pass while protecting code, URLs, paths, ids, hashes, locators, and formulas.
 5. **Validation and rendering** — bundle mode validates JSON Schema plus semantic references, paths, hashes, output manifests, and quality state; Markdown-only skips JSON Schema because it emits no JSON sidecar but retains applicable semantic validation. Both render Markdown from canonical content with exact five-field frontmatter unless disabled.
 6. **Publication** — default `bundle` writes `<stem>/<stem>.json`, `<stem>.md`, and optional `assets/images/`; `--output-mode markdown` writes exactly one clean `.md` and omits image binaries/dead links.
-7. **Transactional replace** — stages each target beside its destination, validates before commit, rolls back pre-commit replacement failures, and treats post-commit backup cleanup failure as a non-fatal maintenance warning. Batch retains this per-file transaction boundary rather than promising an all-files atomic commit.
+7. **Transactional replace** — local bundles archive the source into an
+   exclusive short sibling stage before adapter execution and bind canonical
+   identity to those bytes. Path-sensitive operations use native extended
+   Windows paths while persisted locators remain logical. Publication uses
+   atomic no-replace entry moves; overwrite first moves the old target to an
+   exact `.mc-backup-<uuid>/original`, restores caught pre-commit failures only
+   when identities prove it safe, and treats confirmed post-commit backup
+   cleanup failure as a non-fatal maintenance warning. The two-move overwrite
+   is not crash-atomic and has no broad recovery/delete route. Batch retains
+   this per-file boundary rather than promising an all-files atomic commit.
 
 Provider compatibility is capability-based rather than an exact/minimum/maximum
 version gate. The pipeline never installs, upgrades, downgrades, or repairs

@@ -67,6 +67,11 @@ report/
 
 Every local bundle contains the exact user input bytes at
 `src/<original-basename>`; this also applies independently to every batch item.
+The pipeline creates the owned stage and copies those bytes before adapter
+execution. Canonical source hash, size, document ID, and persisted logical
+locator are derived from that archived copy, which is identity- and hash-checked
+again before publication. Windows extended-length operational paths are never
+persisted in JSON or Markdown.
 The source copy is archival output and is not listed in Canonical `assets` or
 `outputs.assets`. URL bundles do not create `src/`. The assets directory is
 created only when assets exist. Batch output defaults to
@@ -88,7 +93,13 @@ mode skips JSON Schema validation while retaining applicable semantic checks.
    root, then resolve, convert, and publish each collected file sequentially. A
    descendant output such as `_converted` remains allowed and is excluded from
    collection.
-2. Extract local PDFs with PDF Inspector. Before extraction, standard
+2. For a local bundle, create one short, exclusive `.mc-stage-<uuid>` sibling,
+   reject a source equal to or beneath the bundle target, and stream-copy the
+   source into `src/<original-basename>`. Derive source identity from the
+   archive and give adapters its native operational path while preserving the
+   original logical locator and basename in canonical output. URL input is
+   unchanged.
+3. Extract local PDFs with PDF Inspector. Before extraction, standard
    Identity-H/Identity-V CJK fonts that lack `ToUnicode` receive temporary,
    self-contained maps generated from the bundled `pdfminer.six` Adobe data;
    the source PDF is never modified. Parse Inspector's full Markdown once so
@@ -118,20 +129,24 @@ mode skips JSON Schema validation while retaining applicable semantic checks.
    provider-typed DOCX
    `max_xml_nodes` capacity error may trigger ordered structural DOCX sharding;
    other limits, parse errors, crashes, and timeouts fail without fallback.
-3. Build Canonical JSON v1 with source units, one ordered content stream,
+4. Build Canonical JSON v1 with source units, one ordered content stream,
    referenced tables/assets, stable IDs, and quality warnings.
-4. For a local bundle, copy the user's original input bytes to
-   `src/<original-basename>` and verify the copy against Canonical
-   `source.sha256`. Do not copy a temporary accepted/final-view Word snapshot;
-   URL and Markdown-only outputs skip this step.
-5. Preserve adapter `raw_text` and cleaned `text`; derive `normalized_text` with
+5. Recheck the archived source entry identity and SHA-256 after adapter work.
+   Do not archive a temporary accepted/final-view Word snapshot; URL and
+   Markdown-only outputs skip this archive.
+6. Preserve adapter `raw_text` and cleaned `text`; derive `normalized_text` with
    one protected OpenCC pass. The default is `simplified`.
-6. Render Markdown from canonical nodes with the exact five-field frontmatter.
-7. In bundle mode, validate JSON Schema, references, asset containment, and
+7. Render Markdown from canonical nodes with the exact five-field frontmatter.
+8. In bundle mode, validate JSON Schema, references, asset containment, and
    hashes. In Markdown-only mode, skip JSON Schema and run the applicable
    semantic checks.
-8. Publish each target through staging plus replace/rollback. `--rename` uses
-   `_1`, `_2`, …; batch does not extend that transaction across files.
+9. Publish by atomic no-replace entry renames. An absent target receives the
+   verified owned stage directly. Overwrite first moves the old entry to
+   `.mc-backup-<uuid>/original`, then moves the stage to the target; a caught
+   pre-commit failure restores only when exact identities prove restoration is
+   safe. Cleanup never scans a prefix or parent and never follows a symlink or
+   junction. `--rename` keeps `_1`, `_2`, …; batch does not extend that
+   transaction across files.
 
 `quality.status` is `complete`, `complete_with_warnings`, or `partial`; all
 three publish successfully. Known loss, including an OCR-required page, is
@@ -162,6 +177,17 @@ compatibility behavior of using the first effective H1 with a URL-derived
 stem/slug fallback.
 
 ## Scope and limitations
+
+- Windows operations use absolute extended-length paths internally, including
+  UNC paths, so local input, staging, assets, validation, and publication work
+  when ordinary path APIs are limited to 260 characters. Canonical locators and
+  reported final paths remain ordinary logical paths.
+- Overwrite is a deliberate two-move transaction, not crash-atomic. An abrupt
+  process or machine stop can leave the old target at the target, the old entry
+  at an exact `.mc-backup-<uuid>/original` recovery path with no target, or a
+  confirmed new target plus that backup. There is no broad recovery/delete
+  route, lock, journal, or background cleanup service. A reported retained
+  backup must be inspected at its exact printed path.
 
 - PDF conversion uses a behaviorally compatible PDF Inspector for headings, paragraphs, line wrapping,
   reading order, and Markdown tables. Its full-document Markdown is parsed

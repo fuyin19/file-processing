@@ -5,6 +5,31 @@
 Exit code `2` means the target bundle directory or Markdown file already exists.
 Use `--overwrite` for transactional replacement or `--rename` for `_1`, `_2`, ….
 
+Exact collision checks happen before adapters or staging. Publication also uses
+an atomic no-replace rename, so a target created after preflight is preserved
+and reported as a collision. Similarly named files have no special meaning and
+do not suppress conversion.
+
+## Long Windows paths
+
+Local input, batch traversal, staging, archived source bytes, assets,
+validation, and publication use extended-length Windows paths internally,
+including UNC forms. The canonical source locator and displayed final output
+remain normalized ordinary absolute paths; a `\\?\` prefix must never appear in
+persisted output. This does not require changing the machine-wide
+`LongPathsEnabled` policy.
+
+## Retained overwrite backup
+
+Overwrite uses two atomic no-replace moves and is not crash-atomic. The old
+entry is first moved to an exact sibling `.mc-backup-<uuid>/original`; only then
+is the complete stage moved to the target. If safe restoration or cleanup
+cannot be proved, the error or warning prints that exact recovery directory and
+leaves it in place. Inspect that one path manually. There is intentionally no
+prefix sweep, broad recovery/delete command, journal, lock, or cleanup service.
+Symlinks and junctions inside an old target are removed only as leaf entries
+during confirmed post-commit cleanup; their external targets are not followed.
+
 ## Partial output
 
 `partial` is publishable and returns exit code `0`. Inspect

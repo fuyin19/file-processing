@@ -3603,7 +3603,7 @@ def test_bundle_replace_failure_rolls_back_with_staged_source_copy(tmp_path, mon
     target.mkdir(parents=True)
     (target / 'old.txt').write_bytes(b'old output')
     _stub_bundle_conversion(monkeypatch, pipeline, source)
-    real_replace = os.replace
+    real_replace = pipeline.np.rename_no_replace
     calls = []
 
     def flaky(source_path, destination):
@@ -3613,7 +3613,7 @@ def test_bundle_replace_failure_rolls_back_with_staged_source_copy(tmp_path, mon
             raise OSError('simulated replace failure')
         return real_replace(source_path, destination)
 
-    monkeypatch.setattr(pipeline.os, 'replace', flaky)
+    monkeypatch.setattr(pipeline.np, 'rename_no_replace', flaky)
 
     with pytest.raises(OSError, match='simulated replace failure'):
         pipeline.convert_one(
@@ -3634,7 +3634,7 @@ def test_bundle_replace_failure_rolls_back_previous_target(tmp_path, monkeypatch
     stage = tmp_path / 'stage'
     stage.mkdir()
     (stage / 'new.txt').write_text('new', encoding='utf-8')
-    real_replace = os.replace
+    real_replace = pipeline.np.rename_no_replace
     calls = []
 
     def flaky(source, destination):
@@ -3643,7 +3643,7 @@ def test_bundle_replace_failure_rolls_back_previous_target(tmp_path, monkeypatch
             raise OSError('simulated replace failure')
         return real_replace(source, destination)
 
-    monkeypatch.setattr(pipeline.os, 'replace', flaky)
+    monkeypatch.setattr(pipeline.np, 'rename_no_replace', flaky)
     with pytest.raises(OSError, match='simulated'):
         pipeline._publish_directory(stage, target, True)
     assert (target / 'old.txt').read_text(encoding='utf-8') == 'old'
@@ -3676,7 +3676,7 @@ def test_bundle_backup_cleanup_failure_is_nonfatal_after_commit(tmp_path, monkey
     real_remove_path = pipeline._remove_path
 
     def fail_backup_cleanup(path):
-        if '.target.backup-' in Path(path).name:
+        if Path(path).name.startswith('.mc-backup-'):
             raise PermissionError('simulated cleanup failure')
         return real_remove_path(path)
 
@@ -3686,9 +3686,9 @@ def test_bundle_backup_cleanup_failure_is_nonfatal_after_commit(tmp_path, monkey
 
     assert (target / 'new.txt').read_text(encoding='utf-8') == 'new'
     assert not (target / 'old.txt').exists()
-    backups = list(tmp_path.glob('.target.backup-*'))
+    backups = list(tmp_path.glob('.mc-backup-*'))
     assert len(backups) == 1
-    assert (backups[0] / 'old.txt').read_text(encoding='utf-8') == 'old'
+    assert (backups[0] / 'original' / 'old.txt').read_text(encoding='utf-8') == 'old'
     stderr = capsys.readouterr().err
     assert 'published' in stderr
     assert 'could not remove backup' in stderr

@@ -10,16 +10,17 @@ import json
 import mimetypes
 import os
 import re
-import shutil
+import shutil  # compatibility seam; native_paths performs the actual copy
 import subprocess
 import sys
 import tempfile
 import urllib.parse
-import uuid
 from dataclasses import dataclass
 from dataclasses import asdict
 from pathlib import Path
 from typing import Any, NoReturn
+
+import native_paths as np
 
 from adapters import (
     ANYDOC_FORMAT_BY_EXTENSION,
@@ -93,13 +94,20 @@ class OutputCollision(PipelineError):
     pass
 
 
+_OWNED_ENTRIES: dict[str, np.OwnedEntry] = {}
+
+
+def _owned_key(path: Path) -> str:
+    return os.path.normcase(str(np.logical(path)))
+
+
 def _run_provider_worker(request: dict[str, Any], timeout: float = PROVIDER_TIMEOUT_SECONDS) -> dict[str, Any]:
     """Run native parsing/OCR outside the publishing process with a hard deadline."""
     with tempfile.TemporaryDirectory(prefix=".conversion-worker-") as directory:
         root = Path(directory)
         request_path = root / "request.json"
         result_path = root / "result.json"
-        request_path.write_text(json.dumps(request, ensure_ascii=False), encoding="utf-8")
+        np.write_text(request_path, json.dumps(request, ensure_ascii=False), encoding="utf-8")
         environment = dict(os.environ)
         environment.update({"OMP_NUM_THREADS": "1", "OPENBLAS_NUM_THREADS": "1", "MKL_NUM_THREADS": "1"})
         try:
@@ -113,10 +121,10 @@ def _run_provider_worker(request: dict[str, Any], timeout: float = PROVIDER_TIME
             )
         except subprocess.TimeoutExpired as exc:
             raise PipelineError(f"Native conversion worker exceeded {timeout:g} seconds") from exc
-        if not result_path.is_file():
+        if not np.is_file(result_path):
             raise PipelineError(f"Native conversion worker exited {completed.returncode} without a result")
         try:
-            envelope = json.loads(result_path.read_text(encoding="utf-8"))
+            envelope = json.loads(np.read_text(result_path, encoding="utf-8"))
         except (OSError, UnicodeError, json.JSONDecodeError) as exc:
             raise PipelineError("Native conversion worker returned an invalid result") from exc
         if completed.returncode != 0 or envelope.get("ok") is not True:
@@ -183,11 +191,11 @@ def resolve_timestamp(value: str) -> str:
 
 
 def load_config() -> dict[str, Any]:
-    if not os.path.exists(CONFIG_PATH):
-        Path(CONFIG_PATH).write_text(json.dumps(DEFAULT_CONFIG, indent=2) + "\n", encoding="utf-8")
+    if not np.exists(CONFIG_PATH):
+        np.write_text(CONFIG_PATH, json.dumps(DEFAULT_CONFIG, indent=2) + "\n", encoding="utf-8")
         return dict(DEFAULT_CONFIG)
     try:
-        value = json.loads(Path(CONFIG_PATH).read_text(encoding="utf-8"))
+        value = json.loads(np.read_text(CONFIG_PATH, encoding="utf-8"))
     except (json.JSONDecodeError, OSError) as exc:
         print(f"Warning: config.json parse error ({exc}), using defaults", file=sys.stderr)
         return dict(DEFAULT_CONFIG)
@@ -252,9 +260,9 @@ def precheck(args) -> None:
     _normalize_mode(args)
     if getattr(args, "enrich_images", False) and args.output_mode != "bundle":
         die("--enrich-images requires bundle output so extracted image assets remain available")
-    if args.input and not is_url(args.input) and not Path(args.input).is_file():
+    if args.input and not is_url(args.input) and not np.is_file(args.input):
         die(f"File not found: {args.input}")
-    if args.input_dir and not Path(args.input_dir).is_dir():
+    if args.input_dir and not np.is_dir(args.input_dir):
         die(f"Directory not found: {args.input_dir}")
     if args.input_dir:
         try:
@@ -264,33 +272,30 @@ def precheck(args) -> None:
 
 
 def _batch_root(args) -> Path:
-    return Path(args.output_dir).resolve() if args.output_dir else (Path(args.input_dir).resolve() / "_converted")
+    return np.logical(args.output_dir) if args.output_dir else (np.logical(args.input_dir) / "_converted")
 
 
 def _validate_batch_output_root(input_root: Path, output_root: Path) -> None:
-    resolved_input = input_root.resolve()
-    resolved_output = output_root.resolve()
-    if resolved_output == resolved_input:
+    resolved_input = np.logical(input_root)
+    resolved_output = np.logical(output_root)
+    if np.paths_equal(resolved_output, resolved_input):
         raise PipelineError("Batch output root must not equal the input root")
-    try:
-        resolved_input.relative_to(resolved_output)
-    except ValueError:
-        return
-    raise PipelineError("Batch output root must not be an ancestor of the input root")
+    if np.is_within(resolved_input, resolved_output):
+        raise PipelineError("Batch output root must not be an ancestor of the input root")
 
 
 def resolve_target(args, source: str, relative_path: Path | None = None) -> Target:
     stem = _source_stem(source)
     if args.input and args.output_path:
-        return Target("markdown", Path(args.output_path).resolve(), Path(args.output_path).stem)
+        return Target("markdown", np.logical(args.output_path), Path(args.output_path).stem)
     if args.input_dir:
         relative_path = relative_path or Path(source).name
         parent = relative_path.parent
         root = _batch_root(args)
         base = root / parent / stem
     else:
-        root = Path(args.output_dir).resolve() if args.output_dir else (
-            Path.cwd() if is_url(source) else Path(source).resolve().parent
+        root = np.logical(args.output_dir) if args.output_dir else (
+            np.logical(Path.cwd()) if is_url(source) else np.logical(source).parent
         )
         base = root / stem
     path = base if args.output_mode == "bundle" else base.parent / f"{stem}.md"
@@ -298,21 +303,23 @@ def resolve_target(args, source: str, relative_path: Path | None = None) -> Targ
 
 
 def _renamed_target(target: Target) -> Target:
-    if not target.path.exists():
+    if not np.exists(target.path):
         return target
     for index in range(1, 10000):
         stem = f"{target.stem}_{index}"
         suffix = "" if target.mode == "bundle" else target.path.suffix
         path = target.path.with_name(f"{stem}{suffix}")
-        if not path.exists():
+        if not np.exists(path):
             return Target(target.mode, path, stem)
     raise PipelineError(f"Could not find an available renamed target for {target.path}")
 
 
 def _preflight_target(target: Target, source: str, overwrite: bool, rename: bool) -> Target:
-    if not is_url(source) and target.path.resolve() == Path(source).resolve():
+    if not is_url(source) and np.paths_equal(target.path, source):
         raise PipelineError("Refusing to overwrite the source file")
-    if target.path.exists():
+    if not is_url(source) and target.mode == "bundle" and np.is_within(source, target.path):
+        raise PipelineError("Refusing bundle output that contains the local source")
+    if np.exists(target.path):
         if rename:
             return _renamed_target(target)
         if not overwrite:
@@ -326,23 +333,17 @@ def collect_files(
     types: list[str] | None,
     exclude_root: Path | None = None,
 ) -> list[str]:
-    root = Path(input_dir).resolve()
-    if not root.is_dir():
+    root = np.logical(input_dir)
+    if not np.is_dir(root):
         die(f"Directory not found: {input_dir}")
     normalized = None
     if types is not None:
         normalized = {value.lower() if value.startswith(".") else f".{value.lower()}" for value in types}
     files: list[str] = []
-    iterator = root.rglob("*") if recursive else root.iterdir()
-    for path in iterator:
-        if not path.is_file():
-            continue
+    for path in np.walk_files(root, recursive):
         if exclude_root is not None:
-            try:
-                path.resolve().relative_to(exclude_root.resolve())
+            if np.is_within(path, exclude_root):
                 continue
-            except ValueError:
-                pass
         suffix = path.suffix.lower()
         if normalized is not None and suffix not in normalized:
             continue
@@ -384,7 +385,7 @@ def _source_record(
             },
             f"sha256:{digest}",
         )
-    path = Path(source).resolve()
+    path = np.logical(source)
     digest = sha256_file(path)
     return (
         {
@@ -393,11 +394,29 @@ def _source_record(
             "locator": str(path),
             "sha256": digest,
             "hash_basis": "source_bytes",
-            "size_bytes": path.stat().st_size,
+            "size_bytes": np.stat(path).st_size,
             "media_type": mimetypes.guess_type(path.name)[0],
         },
         f"sha256:{digest}",
     )
+
+
+def _archived_source_identity(
+    logical_source: str,
+    archived_source: Path,
+) -> tuple[dict[str, Any], str]:
+    source_path = np.logical(logical_source)
+    digest = sha256_file(archived_source)
+    record = {
+        "kind": "file",
+        "file_name": source_path.name,
+        "locator": str(source_path),
+        "sha256": digest,
+        "hash_basis": "source_bytes",
+        "size_bytes": np.stat(archived_source).st_size,
+        "media_type": mimetypes.guess_type(source_path.name)[0],
+    }
+    return record, f"sha256:{digest}"
 
 
 def _extract(
@@ -408,6 +427,7 @@ def _extract(
     ocr_provider=None,
     ocr_mode: str = "off",
     local_adapter: str = "anydoc",
+    precomputed_identity: tuple[dict[str, Any], str] | None = None,
 ) -> tuple[dict[str, Any], dict[str, Any], str]:
     identity_source = identity_source or source
     if is_url(source):
@@ -434,7 +454,10 @@ def _extract(
             "limitations": ["embedded_images_may_not_be_exported"],
         }
         return result, source_record, document_id
-    source_record, document_id = _source_record(identity_source)
+    if precomputed_identity is None:
+        source_record, document_id = _source_record(identity_source)
+    else:
+        source_record, document_id = precomputed_identity
     if Path(source).suffix.lower() == ".pdf":
         if type(ocr_provider) in {RapidOcrProvider, NullOcrProvider}:
             settings = getattr(ocr_provider, "settings", OcrSettings(mode=ocr_mode, engine="none"))
@@ -583,6 +606,7 @@ def _build_document(
     local_adapter: str = "anydoc",
     enrich_images: bool = False,
     ocr_settings: OcrSettings | None = None,
+    precomputed_identity: tuple[dict[str, Any], str] | None = None,
 ) -> dict[str, Any]:
     identity_source = identity_source or source
     extracted, source_record, document_id = _extract(
@@ -593,6 +617,7 @@ def _build_document(
         ocr_provider,
         ocr_mode,
         local_adapter,
+        precomputed_identity,
     )
     if enrich_images:
         _enrich_office_images(
@@ -630,73 +655,222 @@ def _build_document(
     }
 
 
-def _copy_local_source_to_bundle(source: str, stage: Path, expected_sha256: str) -> Path:
-    """Copy the user's local input bytes into ``src/`` and verify their identity."""
-    source_path = Path(source)
+def _new_owned_dir(parent: Path, prefix: str) -> np.OwnedEntry:
+    try:
+        entry = np.create_owned_dir(parent, prefix)
+    except RuntimeError as exc:
+        raise PipelineError(str(exc)) from exc
+    _OWNED_ENTRIES[_owned_key(entry.path)] = entry
+    return entry
+
+
+def _new_owned_file(parent: Path, prefix: str, suffix: str = "") -> np.OwnedEntry:
+    try:
+        entry = np.create_owned_file(parent, prefix, suffix)
+    except RuntimeError as exc:
+        raise PipelineError(str(exc)) from exc
+    _OWNED_ENTRIES[_owned_key(entry.path)] = entry
+    return entry
+
+
+def _copy_local_source_to_bundle(source: str, stage: Path) -> tuple[Path, np.EntryIdentity, tuple[dict[str, Any], str]]:
+    """Archive source bytes before conversion and bind canonical identity to them."""
+    source_path = np.logical(source)
     destination = stage / "src" / source_path.name
-    destination.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copyfile(source_path, destination)
-    actual_sha256 = sha256_file(destination)
-    if actual_sha256 != expected_sha256:
+    np.mkdir(destination.parent, parents=True, exist_ok=True)
+    np.copy_file(source_path, destination)
+    identity = np.EntryIdentity.capture(destination)
+    source_identity = _archived_source_identity(str(source_path), destination)
+    return destination, identity, source_identity
+
+
+def _verify_archived_source(
+    archived: Path,
+    identity: np.EntryIdentity,
+    expected_sha256: str,
+) -> None:
+    if not identity.matches(archived):
+        raise PipelineError("Archived bundle source was replaced during conversion")
+    actual = sha256_file(archived)
+    if actual != expected_sha256:
         raise PipelineError(
-            "Bundle source copy hash mismatch: "
-            f"expected {expected_sha256}, got {actual_sha256}"
+            "Bundle source copy hash mismatch after conversion: "
+            f"expected {expected_sha256}, got {actual}"
         )
-    return destination
+
+
+def _cleanup_owned(entry: np.OwnedEntry, *, warning: str | None = None) -> bool:
+    try:
+        np.remove_owned(entry)
+        _OWNED_ENTRIES.pop(_owned_key(entry.path), None)
+        return True
+    except OSError as exc:
+        if warning is not None:
+            print(f"Warning: {warning} {entry.path}: {exc}", file=sys.stderr)
+        return False
 
 
 def _remove_path(path: Path) -> None:
-    """Remove one filesystem entry without assuming it is a directory."""
-    if path.is_symlink() or path.is_file():
-        path.unlink()
-    elif path.exists():
-        shutil.rmtree(path)
+    """Compatibility seam: remove only an entry created by this invocation."""
+    entry = _OWNED_ENTRIES.get(_owned_key(path))
+    if entry is None:
+        raise OSError(f"Refusing to remove an entry not owned by this invocation: {path}")
+    np.remove_owned(entry)
+    _OWNED_ENTRIES.pop(_owned_key(path), None)
 
 
-def _publish_directory(stage: Path, target: Path, overwrite: bool) -> None:
-    backup: Path | None = None
+def _recovery_error(target: Path, backup: np.OwnedEntry, detail: str) -> PipelineError:
+    return PipelineError(
+        f"{detail}; retained exact recovery backup at {backup.path} for target {target}"
+    )
+
+
+def _finish_backup_after_commit(target: Path, backup: np.OwnedEntry) -> None:
     try:
-        if target.exists():
-            if not overwrite:
-                raise OutputCollision(f"Output already exists: {target}")
-            backup = target.with_name(f".{target.name}.backup-{uuid.uuid4().hex}")
-            os.replace(target, backup)
-        os.replace(stage, target)
+        _remove_path(backup.path)
+    except OSError as exc:
+        print(
+            f"Warning: published {target}, but could not remove backup {backup.path}: {exc}",
+            file=sys.stderr,
+        )
+        # The commit is confirmed.  Cleanup remains deliberately non-fatal and
+        # the exact path printed above is the only recovery surface.
+        return
+
+
+def _restore_old_target(
+    target: Path,
+    backup: np.OwnedEntry,
+    payload: Path,
+    old_identity: np.EntryIdentity,
+) -> bool:
+    if np.exists(target) or not old_identity.matches(payload):
+        return False
+    try:
+        np.rename_no_replace(payload, target)
     except Exception:
-        if backup is not None and backup.exists():
-            if target.exists():
-                _remove_path(target)
-            os.replace(backup, target)
-        raise
-    else:
-        if backup is not None and backup.exists():
-            try:
-                _remove_path(backup)
-            except OSError as exc:
-                # The second replace is the commit point. Reporting failure after
-                # it would tell callers that no output was published even though
-                # the new target is already live. Keep the recoverable backup and
-                # report cleanup as a non-fatal maintenance warning instead.
-                print(
-                    f"Warning: published {target}, but could not remove backup "
-                    f"{backup}: {exc}",
-                    file=sys.stderr,
+        # A wrapper or kernel boundary may report failure after the move.  The
+        # state, not the exception alone, decides whether restoration happened.
+        pass
+    return old_identity.matches(target) and not np.exists(payload)
+
+
+def _publish_owned(
+    stage: np.OwnedEntry,
+    target: Path,
+    overwrite: bool,
+    *,
+    allow_stage_cleanup: bool,
+) -> None:
+    """Publish one owned file/directory with exact, identity-aware rollback."""
+    target = np.logical(target)
+    if not stage.matches(stage.path):
+        raise PipelineError(f"Owned stage identity changed before publication: {stage.path}")
+    old_identity = np.EntryIdentity.capture(target) if np.exists(target) else None
+    if old_identity is not None and not overwrite:
+        raise OutputCollision(f"Output already exists: {target}")
+
+    if old_identity is None:
+        try:
+            np.rename_no_replace(stage.path, target)
+        except FileExistsError as exc:
+            if allow_stage_cleanup and stage.matches(stage.path):
+                _cleanup_owned(stage, warning="could not remove exact late-collision stage")
+            raise OutputCollision(f"Output already exists: {target}") from exc
+        except Exception:
+            if stage.matches(target) and not np.exists(stage.path):
+                _OWNED_ENTRIES.pop(_owned_key(stage.path), None)
+                return
+            raise
+        if not stage.matches(target) or np.exists(stage.path):
+            raise PipelineError(f"Could not verify published target identity: {target}")
+        _OWNED_ENTRIES.pop(_owned_key(stage.path), None)
+        return
+
+    backup = _new_owned_dir(target.parent, ".mc-backup-")
+    payload = backup.path / "original"
+    try:
+        try:
+            np.rename_no_replace(target, payload)
+        except Exception as move_error:
+            if old_identity.matches(payload) and not np.exists(target):
+                restored = _restore_old_target(target, backup, payload, old_identity)
+                if restored:
+                    _cleanup_owned(
+                        backup,
+                        warning=f"restored {target}, but could not remove empty backup",
+                    )
+                    raise move_error
+                raise _recovery_error(target, backup, "Old target move failed after displacement") from move_error
+            if old_identity.matches(target) and not np.exists(payload):
+                _cleanup_owned(
+                    backup,
+                    warning=f"target {target} remained in place, but could not remove empty backup",
                 )
+                raise move_error
+            raise _recovery_error(target, backup, "Old target move entered an indeterminate state") from move_error
+
+        if not old_identity.matches(payload) or np.exists(target):
+            raise _recovery_error(target, backup, "Moved old target identity could not be verified")
+
+        try:
+            np.rename_no_replace(stage.path, target)
+        except Exception as commit_error:
+            if stage.matches(target) and not np.exists(stage.path):
+                _OWNED_ENTRIES.pop(_owned_key(stage.path), None)
+                _finish_backup_after_commit(target, backup)
+                return
+            restored = _restore_old_target(target, backup, payload, old_identity)
+            if restored:
+                _cleanup_owned(
+                    backup,
+                    warning=f"restored {target}, but could not remove empty backup",
+                )
+                if allow_stage_cleanup and stage.matches(stage.path):
+                    _cleanup_owned(
+                        stage,
+                        warning="could not remove exact failed publication stage",
+                    )
+                raise commit_error
+            raise _recovery_error(target, backup, "New target commit failed and exact restoration was not verified") from commit_error
+
+        if not stage.matches(target) or np.exists(stage.path):
+            raise _recovery_error(target, backup, "New target commit identity could not be verified")
+        _OWNED_ENTRIES.pop(_owned_key(stage.path), None)
+        if not old_identity.matches(payload):
+            raise _recovery_error(target, backup, "Committed target has an unverifiable recovery payload")
+        _finish_backup_after_commit(target, backup)
+    except Exception:
+        # No broad rollback and no parent/prefix sweep.  The state-specific
+        # branches above decide whether an exact owned stage is safe to remove.
+        raise
+
+
+def _publish_directory(
+    stage: Path,
+    target: Path,
+    overwrite: bool,
+    stage_owner: np.OwnedEntry | None = None,
+) -> None:
+    identity = np.EntryIdentity.capture(stage)
+    owner = stage_owner or np.OwnedEntry(
+        identity.path, identity.st_dev, identity.st_ino, identity.st_mode
+    )
+    _publish_owned(owner, target, overwrite, allow_stage_cleanup=stage_owner is not None)
 
 
 def _write_markdown_file(markdown: str, target: Path, overwrite: bool) -> None:
-    target.parent.mkdir(parents=True, exist_ok=True)
-    descriptor, name = tempfile.mkstemp(prefix=f".{target.stem}.staging-", suffix=".md", dir=target.parent)
-    os.close(descriptor)
-    stage = Path(name)
+    target = np.logical(target)
+    np.mkdir(target.parent, parents=True, exist_ok=True)
+    stage = _new_owned_file(target.parent, ".mc-stage-", ".md")
     try:
-        stage.write_text(markdown, encoding="utf-8", newline="\n")
-        if target.exists() and not overwrite:
-            raise OutputCollision(f"Output already exists: {target}")
-        os.replace(stage, target)
+        np.write_text(stage.path, markdown, encoding="utf-8", newline="\n")
+        if not stage.matches(stage.path):
+            raise PipelineError(f"Owned Markdown stage identity changed: {stage.path}")
+        _publish_owned(stage, target, overwrite, allow_stage_cleanup=True)
     finally:
-        if stage.exists():
-            stage.unlink()
+        if stage.matches(stage.path):
+            _cleanup_owned(stage, warning="could not remove exact failed Markdown stage")
 
 
 def convert_one(args, source: str, relative_path: Path | None = None) -> tuple[Path, str, list[dict[str, Any]]]:
@@ -712,26 +886,40 @@ def convert_one(args, source: str, relative_path: Path | None = None) -> tuple[P
     ocr_settings = getattr(args, "ocr_settings", OcrSettings(mode="off", engine="none"))
     ocr_provider = getattr(args, "ocr_provider", None)
     if target.mode == "bundle":
-        target.path.parent.mkdir(parents=True, exist_ok=True)
-        stage = Path(tempfile.mkdtemp(prefix=f".{target.path.name}.staging-", dir=target.path.parent))
+        np.mkdir(target.path.parent, parents=True, exist_ok=True)
+        stage_owner = _new_owned_dir(target.path.parent, ".mc-stage-")
+        stage = stage_owner.path
         try:
+            archived_source: Path | None = None
+            archived_identity: np.EntryIdentity | None = None
+            precomputed_identity: tuple[dict[str, Any], str] | None = None
+            operational_source = source
+            if not is_url(source):
+                archived_source, archived_identity, precomputed_identity = _copy_local_source_to_bundle(
+                    source, stage
+                )
+                operational_source = np.native(archived_source)
             asset_dir = stage / "assets" / "images"
             document = _build_document(
-                source, args.timestamp, args.language_normalization, "bundle", asset_dir,
+                operational_source, args.timestamp, args.language_normalization, "bundle",
+                Path(np.native(asset_dir)),
                 identity_source=source,
                 ocr_provider=ocr_provider,
                 ocr_mode=ocr_settings.mode,
                 local_adapter=local_adapter,
                 enrich_images=getattr(args, "enrich_images", False),
                 ocr_settings=ocr_settings,
+                precomputed_identity=precomputed_identity,
             )
-            if not is_url(source):
-                _copy_local_source_to_bundle(source, stage, document["source"]["sha256"])
+            if archived_source is not None and archived_identity is not None:
+                _verify_archived_source(
+                    archived_source, archived_identity, document["source"]["sha256"]
+                )
             markdown_name = f"{target.stem}.md"
             json_name = f"{target.stem}.json"
             markdown = render_markdown(document, not args.no_frontmatter, "bundle")
             markdown_path = stage / markdown_name
-            markdown_path.write_text(markdown, encoding="utf-8", newline="\n")
+            np.write_text(markdown_path, markdown, encoding="utf-8", newline="\n")
             document["outputs"] = {
                 "mode": "bundle",
                 "markdown": {"path": markdown_name, "sha256": sha256_file(markdown_path)},
@@ -739,25 +927,41 @@ def convert_one(args, source: str, relative_path: Path | None = None) -> tuple[P
             }
             validate_canonical(document, stage)
             json_path = stage / json_name
-            json_path.write_text(json.dumps(document, ensure_ascii=False, indent=2) + "\n", encoding="utf-8", newline="\n")
-            persisted = json.loads(json_path.read_text(encoding="utf-8"))
+            np.write_text(
+                json_path,
+                json.dumps(document, ensure_ascii=False, indent=2) + "\n",
+                encoding="utf-8",
+                newline="\n",
+            )
+            persisted = json.loads(np.read_text(json_path, encoding="utf-8"))
             # Full JSON Schema validation already ran on the identical object;
             # the persisted round-trip only needs semantic/hash verification.
             validate_canonical(persisted, stage, validate_schema=False)
-            _publish_directory(stage, target.path, args.overwrite)
+            if not stage_owner.matches(stage):
+                raise PipelineError(f"Owned bundle stage identity changed: {stage}")
+            _publish_directory(stage, target.path, args.overwrite, stage_owner)
         except Exception:
-            if stage.exists():
-                shutil.rmtree(stage)
+            if stage_owner.matches(stage):
+                _cleanup_owned(
+                    stage_owner,
+                    warning="could not remove exact failed bundle stage",
+                )
             raise
     else:
+        precomputed_identity = None
+        operational_source = source
+        if not is_url(source):
+            precomputed_identity = _source_record(source)
+            operational_source = np.native(source)
         document = _build_document(
-            source, args.timestamp, args.language_normalization, "markdown", None,
+            operational_source, args.timestamp, args.language_normalization, "markdown", None,
             identity_source=source,
             ocr_provider=ocr_provider,
             ocr_mode=ocr_settings.mode,
             local_adapter=local_adapter,
             enrich_images=getattr(args, "enrich_images", False),
             ocr_settings=ocr_settings,
+            precomputed_identity=precomputed_identity,
         )
         markdown = render_markdown(document, not args.no_frontmatter, "markdown")
         document["outputs"] = {
@@ -781,12 +985,12 @@ def _validate_types(types: list[str] | None) -> None:
 def run_batch(args) -> int:
     types = [value.strip() for value in args.types.split(",") if value.strip()] or None
     _validate_types(types)
-    root = Path(args.input_dir).resolve()
+    root = np.logical(args.input_dir)
     output_root = _batch_root(args)
     files = collect_files(args.input_dir, not args.no_recursive, types, output_root)
     converted = failed = skipped = 0
     for source in files:
-        relative = Path(source).resolve().relative_to(root)
+        relative = np.logical(source).relative_to(root)
         try:
             path, status, warnings = convert_one(args, source, relative)
             label = "PARTIAL" if status == "partial" else "WARN" if status == "complete_with_warnings" else "OK"
@@ -872,7 +1076,7 @@ def main() -> int:
         show_version()
         return 0
     if args.config:
-        CONFIG_PATH = str(Path(args.config).resolve())
+        CONFIG_PATH = str(np.logical(args.config))
     config = load_config()
     args.ocr_settings = resolve_ocr_settings(args, config)
     args.ocr_provider = create_ocr_provider(args.ocr_settings)
