@@ -59,17 +59,24 @@ Single-file bundle output defaults beside the source:
 report/
 ├── report.json
 ├── report.md
+├── src/
+│   └── report.pdf
 └── assets/
     └── images/
 ```
 
-The assets directory is created only when assets exist. Batch output defaults
-to `<input-dir>/_converted/` and mirrors the input hierarchy. An explicit
+Every local bundle contains the exact user input bytes at
+`src/<original-basename>`; this also applies independently to every batch item.
+The source copy is archival output and is not listed in Canonical `assets` or
+`outputs.assets`. URL bundles do not create `src/`. The assets directory is
+created only when assets exist. Batch output defaults to
+`<input-dir>/_converted/` and mirrors the input hierarchy. An explicit
 `--output-dir` replaces that output root. Batch conversion handles each file as
 its own preflight and publication transaction; it is not atomic across the
 whole directory.
 
-Markdown-only mode emits exactly one `.md` file: no JSON, assets, or sidecars.
+Markdown-only mode emits exactly one `.md` file: no JSON, assets, source copy,
+or other sidecars.
 Image caption text is retained in reading order; unlabelled images are omitted,
 and no broken image links are emitted. Because no JSON artifact exists, this
 mode skips JSON Schema validation while retaining applicable semantic checks.
@@ -113,13 +120,17 @@ mode skips JSON Schema validation while retaining applicable semantic checks.
    other limits, parse errors, crashes, and timeouts fail without fallback.
 3. Build Canonical JSON v1 with source units, one ordered content stream,
    referenced tables/assets, stable IDs, and quality warnings.
-4. Preserve adapter `raw_text` and cleaned `text`; derive `normalized_text` with
+4. For a local bundle, copy the user's original input bytes to
+   `src/<original-basename>` and verify the copy against Canonical
+   `source.sha256`. Do not copy a temporary accepted/final-view Word snapshot;
+   URL and Markdown-only outputs skip this step.
+5. Preserve adapter `raw_text` and cleaned `text`; derive `normalized_text` with
    one protected OpenCC pass. The default is `simplified`.
-5. Render Markdown from canonical nodes with the exact five-field frontmatter.
-6. In bundle mode, validate JSON Schema, references, asset containment, and
+6. Render Markdown from canonical nodes with the exact five-field frontmatter.
+7. In bundle mode, validate JSON Schema, references, asset containment, and
    hashes. In Markdown-only mode, skip JSON Schema and run the applicable
    semantic checks.
-7. Publish each target through staging plus replace/rollback. `--rename` uses
+8. Publish each target through staging plus replace/rollback. `--rename` uses
    `_1`, `_2`, …; batch does not extend that transaction across files.
 
 `quality.status` is `complete`, `complete_with_warnings`, or `partial`; all

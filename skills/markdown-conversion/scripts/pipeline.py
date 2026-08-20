@@ -630,6 +630,21 @@ def _build_document(
     }
 
 
+def _copy_local_source_to_bundle(source: str, stage: Path, expected_sha256: str) -> Path:
+    """Copy the user's local input bytes into ``src/`` and verify their identity."""
+    source_path = Path(source)
+    destination = stage / "src" / source_path.name
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copyfile(source_path, destination)
+    actual_sha256 = sha256_file(destination)
+    if actual_sha256 != expected_sha256:
+        raise PipelineError(
+            "Bundle source copy hash mismatch: "
+            f"expected {expected_sha256}, got {actual_sha256}"
+        )
+    return destination
+
+
 def _remove_path(path: Path) -> None:
     """Remove one filesystem entry without assuming it is a directory."""
     if path.is_symlink() or path.is_file():
@@ -710,6 +725,8 @@ def convert_one(args, source: str, relative_path: Path | None = None) -> tuple[P
                 enrich_images=getattr(args, "enrich_images", False),
                 ocr_settings=ocr_settings,
             )
+            if not is_url(source):
+                _copy_local_source_to_bundle(source, stage, document["source"]["sha256"])
             markdown_name = f"{target.stem}.md"
             json_name = f"{target.stem}.json"
             markdown = render_markdown(document, not args.no_frontmatter, "bundle")

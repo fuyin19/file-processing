@@ -39,6 +39,8 @@ default output is a movable bundle:
 report/
 ├── report.json
 ├── report.md
+├── src/
+│   └── report.pdf     # original local input bytes and basename
 └── assets/images/     # only when images exist
 ```
 
@@ -56,7 +58,9 @@ Use `--output-mode markdown` or single-file `--output-path` for exactly one clea
 Markdown file. Bundle batch output defaults to `<input-dir>/_converted/`; use
 `--output-dir` to choose another root. Batch conversion preflights and publishes
 each file sequentially rather than treating the whole directory as one atomic
-transaction.
+transaction. Every local bundle, including each batch item, archives the exact
+user input as `src/<original-basename>`. URL bundles do not create `src/`, and
+Markdown-only output creates no source copy or other sidecar.
 
 Canonical JSON v1 preserves source text and stable locators/IDs while Markdown
 defaults to simplified Chinese. Change this with
@@ -67,9 +71,10 @@ defaults to simplified Chinese. Change this with
 PDF and AnyDoc bundle images use the same canonical asset contract:
 binary files live under `assets/images/`, Markdown references their
 bundle-relative paths, and JSON records paths, hashes, media types, source
-locators, and ordered image nodes. Markdown-only intentionally omits binaries,
-image links, and JSON Schema validation; it still runs the applicable semantic
-checks before publishing the single Markdown file.
+locators, and ordered image nodes. The `src/` source copy is archival output and
+is not added to Canonical `assets` or `outputs.assets`. Markdown-only
+intentionally omits binaries, image links, and JSON Schema validation; it still
+runs the applicable semantic checks before publishing the single Markdown file.
 
 PDF OCR is an optional local path. Install compatible `rapidocr` and
 `onnxruntime` packages. The default `auto` mode refines

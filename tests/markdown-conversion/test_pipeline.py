@@ -417,6 +417,8 @@ def test_batch_mirrors_subdirectory_structure(tmp_path):
     sub.mkdir(parents=True)
     (src_dir / 'top.txt').write_text('Top', encoding='utf-8')
     (sub / 'nested.txt').write_text('Nested', encoding='utf-8')
+    (src_dir / 'same.txt').write_bytes(b'top-level bytes')
+    (sub / 'same.txt').write_bytes(b'nested bytes')
 
     out_dir = tmp_path / 'output'
     out_dir.mkdir()
@@ -425,6 +427,10 @@ def test_batch_mirrors_subdirectory_structure(tmp_path):
     assert code == 0, stderr
     assert (out_dir / 'top' / 'top.md').exists()
     assert (out_dir / 'sub' / 'nested' / 'nested.md').exists()
+    assert (out_dir / 'top' / 'src' / 'top.txt').read_bytes() == b'Top'
+    assert (out_dir / 'sub' / 'nested' / 'src' / 'nested.txt').read_bytes() == b'Nested'
+    assert (out_dir / 'same' / 'src' / 'same.txt').read_bytes() == b'top-level bytes'
+    assert (out_dir / 'sub' / 'same' / 'src' / 'same.txt').read_bytes() == b'nested bytes'
 
 
 def test_batch_no_recursive_flattens(tmp_path):
@@ -1292,17 +1298,82 @@ def _load_bundle(bundle):
     return json.loads((bundle / f'{bundle.name}.json').read_text(encoding='utf-8'))
 
 
+def _direct_bundle_args(source, output_dir, *, overwrite=False, rename=False):
+    from argparse import Namespace
+    return Namespace(
+        input=str(source), input_dir=None, output_path='', output_dir=str(output_dir),
+        output_mode='bundle', overwrite=overwrite, rename=rename,
+        timestamp='2026-08-20T12:00:00+08:00', language_normalization='preserve',
+        no_frontmatter=False, local_adapter='markitdown', enrich_images=False,
+    )
+
+
+def _fake_bundle_document(source_sha256):
+    return {
+        'schema_version': '1.0',
+        'source': {'kind': 'file', 'sha256': source_sha256},
+        'document': {},
+        'adapter': {},
+        'source_units': [],
+        'content': [],
+        'tables': [],
+        'assets': [],
+        'relationships': [],
+        'quality': {'status': 'complete', 'warnings': []},
+        'outputs': {},
+    }
+
+
 def test_default_bundle_contains_canonical_json_and_markdown(tmp_path):
     src = tmp_path / 'report.txt'
     src.write_text('# Report\n\nBody', encoding='utf-8')
     code, stdout, stderr, bundle = _run_product_bundle(src, tmp_path / 'out')
     assert code == 0, stderr
-    assert sorted(path.name for path in bundle.iterdir()) == ['report.json', 'report.md']
+    assert sorted(path.name for path in bundle.iterdir()) == ['report.json', 'report.md', 'src']
+    assert (bundle / 'src' / src.name).read_bytes() == src.read_bytes()
     data = _load_bundle(bundle)
     assert data['schema_version'] == '1.0'
     assert data['outputs']['mode'] == 'bundle'
     assert data['document']['document_id'] == f"sha256:{data['source']['sha256']}"
     assert data['quality']['status'] == 'complete'
+    assert data['assets'] == []
+    assert data['outputs']['assets'] == []
+
+
+def test_explicit_bundle_copies_multidot_unicode_source_without_renaming_it(tmp_path):
+    src = tmp_path / '季度報告.final.v2.txt'
+    source_bytes = '原始位元組\nBody'.encode('utf-8')
+    src.write_bytes(source_bytes)
+    output = tmp_path / 'out'
+    result = subprocess.run(
+        SCRIPT + CONFIG_ARG + [
+            '--input', str(src), '--output-mode', 'bundle', '--output-dir', str(output),
+        ],
+        capture_output=True,
+    )
+
+    assert result.returncode == 0, result.stderr.decode(errors='replace')
+    bundle = output / '季度報告.final.v2'
+    assert (bundle / 'src' / '季度報告.final.v2.txt').read_bytes() == source_bytes
+    assert not (bundle / 'src' / f'{bundle.name}.md').exists()
+
+
+def test_url_bundle_does_not_create_source_archive(tmp_path, monkeypatch):
+    import pipeline
+
+    url = 'https://example.com/report.txt'
+    document = _fake_bundle_document('a' * 64)
+    document['source']['kind'] = 'url'
+    monkeypatch.setattr(pipeline, '_build_document', lambda *args, **kwargs: document)
+    monkeypatch.setattr(pipeline, '_copy_local_source_to_bundle', lambda *args: pytest.fail('URL was copied'))
+    monkeypatch.setattr(pipeline, 'render_markdown', lambda *args: 'Remote body\n')
+    monkeypatch.setattr(pipeline, 'validate_canonical', lambda *args, **kwargs: None)
+
+    target, _, _ = pipeline.convert_one(_direct_bundle_args(url, tmp_path / 'out'), url)
+
+    assert target == tmp_path / 'out' / 'report'
+    assert (target / 'report.json').exists()
+    assert not (target / 'src').exists()
 
 
 def test_markitdown_local_title_uses_literal_source_stem_in_markdown_and_json(tmp_path):
@@ -1379,6 +1450,7 @@ def test_single_file_without_output_flags_uses_sibling_bundle(tmp_path):
     assert result.returncode == 0, result.stderr.decode(errors='replace')
     assert (tmp_path / 'sibling' / 'sibling.json').exists()
     assert (tmp_path / 'sibling' / 'sibling.md').exists()
+    assert (tmp_path / 'sibling' / 'src' / 'sibling.txt').read_bytes() == src.read_bytes()
 
 
 def test_output_path_rejects_explicit_bundle_mode(tmp_path):
@@ -1411,6 +1483,22 @@ def test_markdown_only_emits_exactly_one_file_and_no_dead_image_links(tmp_path):
     assert 'missing.png' not in markdown
     assert 'silent.png' not in markdown
     assert '![' not in markdown
+    assert not (tmp_path / 'src').exists()
+
+
+def test_explicit_markdown_mode_emits_no_source_sidecar(tmp_path):
+    src = tmp_path / 'source.txt'
+    src.write_text('Body', encoding='utf-8')
+    output = tmp_path / 'markdown'
+    result = subprocess.run(
+        SCRIPT + CONFIG_ARG + [
+            '--input', str(src), '--output-mode', 'markdown', '--output-dir', str(output),
+        ],
+        capture_output=True,
+    )
+
+    assert result.returncode == 0, result.stderr.decode(errors='replace')
+    assert sorted(path.name for path in output.iterdir()) == ['source.md']
 
 
 def test_traditional_raw_text_is_preserved_while_markdown_is_simplified(tmp_path):
@@ -1559,8 +1647,25 @@ def test_bundle_rename_uses_deterministic_suffix_for_folder_and_files(tmp_path):
     renamed = output / 'report_1'
     assert (renamed / 'report_1.json').exists()
     assert (renamed / 'report_1.md').exists()
+    assert (renamed / 'src' / 'report.txt').read_bytes() == src.read_bytes()
+    assert not (renamed / 'src' / 'report_1.txt').exists()
     assert _load_bundle(renamed)['document']['title'] == 'report'
     assert 'title: "report"' in (renamed / 'report_1.md').read_text(encoding='utf-8')
+
+
+def test_bundle_overwrite_replaces_archived_source_bytes(tmp_path):
+    src = tmp_path / 'report.txt'
+    output = tmp_path / 'out'
+    src.write_bytes(b'first version')
+    assert _run_product_bundle(src, output)[0] == 0
+    src.write_bytes(b'second version')
+
+    code, _, stderr, bundle = _run_product_bundle(src, output, ['--overwrite'])
+
+    assert code == 0, stderr
+    assert (bundle / 'src' / 'report.txt').read_bytes() == b'second version'
+    assert not list(output.glob('.report.staging-*'))
+    assert not list(output.glob('.report.backup-*'))
 
 
 def test_collision_rename_preserves_dotted_logical_stem_in_both_modes(tmp_path):
@@ -1615,6 +1720,11 @@ def test_collision_is_detected_before_adapter_or_normalizer(tmp_path, monkeypatc
         no_frontmatter=False,
     )
     monkeypatch.setattr(pipeline, '_build_document', lambda *a, **k: pytest.fail('adapter was called'))
+    monkeypatch.setattr(
+        pipeline,
+        '_copy_local_source_to_bundle',
+        lambda *a, **k: pytest.fail('source copy was called'),
+    )
     with pytest.raises(pipeline.OutputCollision):
         pipeline.convert_one(args, str(src))
 
@@ -3371,6 +3481,151 @@ def test_table_renderer_uses_null_confidence_without_inventing_headers():
     assert 'header' not in rendered.lower()
 
 
+def _stub_bundle_conversion(monkeypatch, pipeline, source):
+    digest = pipeline.sha256_file(source)
+    monkeypatch.setattr(
+        pipeline,
+        '_build_document',
+        lambda *args, **kwargs: _fake_bundle_document(digest),
+    )
+    monkeypatch.setattr(pipeline, 'render_markdown', lambda *args: 'Body\n')
+    monkeypatch.setattr(pipeline, 'validate_canonical', lambda *args, **kwargs: None)
+
+
+def test_tracked_revision_docx_bundle_archives_user_original_not_accepted_snapshot(
+    tmp_path, monkeypatch,
+):
+    import pipeline
+    import zipfile
+    from adapters import accepted_word_snapshot
+
+    source = tmp_path / 'tracked.docx'
+    document_xml = (
+        '<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">'
+        '<w:body><w:p><w:ins><w:r><w:t>Accepted</w:t></w:r></w:ins>'
+        '<w:del><w:r><w:delText>Deleted</w:delText></w:r></w:del></w:p></w:body>'
+        '</w:document>'
+    )
+    with zipfile.ZipFile(source, 'w') as archive:
+        archive.writestr('word/document.xml', document_xml)
+    original_bytes = source.read_bytes()
+    accepted_bytes, revision_counts = accepted_word_snapshot(source)
+    assert revision_counts and accepted_bytes != original_bytes
+    _stub_bundle_conversion(monkeypatch, pipeline, source)
+
+    target, _, _ = pipeline.convert_one(
+        _direct_bundle_args(source, tmp_path / 'out'), str(source)
+    )
+
+    assert (target / 'src' / source.name).read_bytes() == original_bytes
+    assert (target / 'src' / source.name).read_bytes() != accepted_bytes
+
+
+def test_bundle_source_copy_oserror_cleans_stage_and_preserves_overwrite_target(
+    tmp_path, monkeypatch,
+):
+    import pipeline
+
+    source = tmp_path / 'source.txt'
+    source.write_bytes(b'new source')
+    output = tmp_path / 'out'
+    target = output / 'source'
+    target.mkdir(parents=True)
+    (target / 'old.txt').write_bytes(b'old output')
+    _stub_bundle_conversion(monkeypatch, pipeline, source)
+    monkeypatch.setattr(
+        pipeline.shutil,
+        'copyfile',
+        lambda *args, **kwargs: (_ for _ in ()).throw(OSError('copy failed')),
+    )
+
+    with pytest.raises(OSError, match='copy failed'):
+        pipeline.convert_one(
+            _direct_bundle_args(source, output, overwrite=True), str(source)
+        )
+
+    assert (target / 'old.txt').read_bytes() == b'old output'
+    assert not list(output.glob('.source.staging-*'))
+    assert not list(output.glob('.source.backup-*'))
+
+
+def test_bundle_source_copy_hash_mismatch_cleans_stage(tmp_path, monkeypatch):
+    import pipeline
+
+    source = tmp_path / 'source.txt'
+    source.write_bytes(b'source bytes')
+    output = tmp_path / 'out'
+    _stub_bundle_conversion(monkeypatch, pipeline, source)
+    monkeypatch.setattr(pipeline, 'sha256_file', lambda path: '0' * 64)
+
+    with pytest.raises(pipeline.PipelineError, match='source copy hash mismatch'):
+        pipeline.convert_one(_direct_bundle_args(source, output), str(source))
+
+    assert not (output / 'source').exists()
+    assert not list(output.glob('.source.staging-*'))
+
+
+def test_bundle_validation_failure_removes_staged_source_and_preserves_target(
+    tmp_path, monkeypatch,
+):
+    import pipeline
+
+    source = tmp_path / 'source.txt'
+    source.write_bytes(b'new source')
+    output = tmp_path / 'out'
+    target = output / 'source'
+    target.mkdir(parents=True)
+    (target / 'old.txt').write_bytes(b'old output')
+    _stub_bundle_conversion(monkeypatch, pipeline, source)
+    monkeypatch.setattr(
+        pipeline,
+        'validate_canonical',
+        lambda *args, **kwargs: (_ for _ in ()).throw(pipeline.PipelineError('invalid bundle')),
+    )
+
+    with pytest.raises(pipeline.PipelineError, match='invalid bundle'):
+        pipeline.convert_one(
+            _direct_bundle_args(source, output, overwrite=True), str(source)
+        )
+
+    assert (target / 'old.txt').read_bytes() == b'old output'
+    assert not list(output.glob('.source.staging-*'))
+    assert not list(output.glob('.source.backup-*'))
+
+
+def test_bundle_replace_failure_rolls_back_with_staged_source_copy(tmp_path, monkeypatch):
+    import pipeline
+
+    source = tmp_path / 'source.txt'
+    source.write_bytes(b'new source')
+    output = tmp_path / 'out'
+    target = output / 'source'
+    target.mkdir(parents=True)
+    (target / 'old.txt').write_bytes(b'old output')
+    _stub_bundle_conversion(monkeypatch, pipeline, source)
+    real_replace = os.replace
+    calls = []
+
+    def flaky(source_path, destination):
+        calls.append((Path(source_path), Path(destination)))
+        if len(calls) == 2:
+            assert (Path(source_path) / 'src' / source.name).read_bytes() == source.read_bytes()
+            raise OSError('simulated replace failure')
+        return real_replace(source_path, destination)
+
+    monkeypatch.setattr(pipeline.os, 'replace', flaky)
+
+    with pytest.raises(OSError, match='simulated replace failure'):
+        pipeline.convert_one(
+            _direct_bundle_args(source, output, overwrite=True), str(source)
+        )
+
+    assert (target / 'old.txt').read_bytes() == b'old output'
+    assert not (target / 'src').exists()
+    assert not list(output.glob('.source.staging-*'))
+    assert not list(output.glob('.source.backup-*'))
+
+
 def test_bundle_replace_failure_rolls_back_previous_target(tmp_path, monkeypatch):
     import pipeline
     target = tmp_path / 'target'
@@ -3455,6 +3710,10 @@ def _assert_single_office_bundle_image(bundle):
     assert published.is_file()
     assert hashlib.sha256(published.read_bytes()).hexdigest() == asset['sha256']
     assert data['outputs']['assets'] == [{'path': asset['path'], 'sha256': asset['sha256']}]
+    assert all(not item['path'].startswith('src/') for item in data['assets'])
+    assert all(not item['path'].startswith('src/') for item in data['outputs']['assets'])
+    archived_sources = list((bundle / 'src').iterdir())
+    assert len(archived_sources) == 1 and archived_sources[0].is_file()
     assert any(node['type'] == 'image' and node['asset_id'] == asset['asset_id'] for node in data['content'])
     markdown = (bundle / f'{bundle.name}.md').read_text(encoding='utf-8')
     assert f']({asset["path"]})' in markdown
