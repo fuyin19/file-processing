@@ -112,7 +112,7 @@ otherwise it takes the same whole-document safety fallback.
 
 ## PDF structure behavior
 
-The v6.5.1 PDF path parses Inspector's full-document headings, paragraphs, lists,
+The v6.5.2 PDF path parses Inspector's full-document headings, paragraphs, lists,
 tables, line wrapping, and reading order once, avoiding page-local heading
 re-rooting. It does
 not apply PDFium native-text corrections for columns, cross-page joins, table

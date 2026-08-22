@@ -11,7 +11,7 @@ claude skill add /path/to/file-processing
 
 ## Skills
 
-### markdown-conversion (v6.5.1)
+### markdown-conversion (v6.5.2)
 
 Convert local PDFs, Office documents, supported files, URLs, or directories
 through one canonical pipeline. Local PDFs use PDF Inspector as the

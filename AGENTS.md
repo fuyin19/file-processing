@@ -25,7 +25,7 @@ structure-safety and testability are prioritized over feature breadth.
 
 The three skills:
 
-- **markdown-conversion** (v6.5.1) — Convert local PDFs, AnyDoc-eligible
+- **markdown-conversion** (v6.5.2) — Convert local PDFs, AnyDoc-eligible
   non-PDF documents, remaining supported files, URLs, or directories through one
   canonical model. Local PDFs use a behaviorally compatible PDF Inspector as the
   authoritative text and structure source; RapidOCR recovers only routed pages,

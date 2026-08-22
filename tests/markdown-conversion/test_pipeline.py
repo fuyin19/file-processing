@@ -1,5 +1,5 @@
 """
-Tests for pipeline.py (v6.5.1 canonical conversion architecture).
+Tests for pipeline.py (v6.5.2 canonical conversion architecture).
 
 Run from project root: pytest scripts/test_pipeline.py -v
 
@@ -20,6 +20,7 @@ _PIPELINE_DIR = os.path.join(os.path.dirname(__file__), '..', '..', 'skills', 'm
 sys.path.insert(0, os.path.normpath(_PIPELINE_DIR))
 
 SCRIPT = [sys.executable, os.path.normpath(os.path.join(_PIPELINE_DIR, 'pipeline.py'))]
+PROVIDER_WORKER = os.path.normpath(os.path.join(_PIPELINE_DIR, 'provider_worker.py'))
 
 # Test config — avoids touching the real config.json
 _TEST_CONFIG = os.path.normpath(os.path.join(os.path.dirname(__file__), 'fixtures', 'test_config.json'))
@@ -743,11 +744,126 @@ def test_version_flag():
     assert 'Dependencies:' in stdout
     # Should show pip install names (not import names)
     assert 'opencc-python-reimplemented' in stdout
-    assert 'markdown-conversion v6.5.1' in stdout
+    assert 'markdown-conversion v6.5.2' in stdout
     assert 'rapidocr:' in stdout
     assert 'onnxruntime:' in stdout
     assert 'ruamel.yaml:' not in stdout
     assert 'cortex:' not in stdout
+
+
+def _hostile_python_environment(tmp_path):
+    hostile = tmp_path / 'hostile-python'
+    hostile.mkdir()
+    (hostile / 'sitecustomize.py').write_text(
+        'raise RuntimeError("hostile sitecustomize executed")\n', encoding='utf-8'
+    )
+    (hostile / 'native_paths.py').write_text(
+        'raise RuntimeError("hostile native_paths imported")\n', encoding='utf-8'
+    )
+    user_base = hostile / 'user-base'
+    user_site = user_base / f'Python{sys.version_info.major}{sys.version_info.minor}' / 'site-packages'
+    user_site.mkdir(parents=True)
+    (user_site / 'usercustomize.py').write_text(
+        'raise RuntimeError("hostile user site executed")\n', encoding='utf-8'
+    )
+    (user_site / 'adapters.py').write_text(
+        'raise RuntimeError("hostile user-site adapters imported")\n', encoding='utf-8'
+    )
+    environment = os.environ.copy()
+    environment.update({
+        'PYTHONIOENCODING': 'ascii',
+        'PYTHONPATH': str(hostile),
+        'PYTHONUSERBASE': str(user_base),
+    })
+    return environment
+
+
+def test_pipeline_direct_isolated_entry_ignores_hostile_python_environment(tmp_path):
+    result = subprocess.run(
+        [sys.executable, '-I', SCRIPT[1], '--version'],
+        capture_output=True,
+        env=_hostile_python_environment(tmp_path),
+    )
+
+    assert result.returncode == 0, result.stderr.decode('utf-8', errors='replace')
+    assert b'markdown-conversion v6.5.2' in result.stdout
+    assert b'hostile' not in result.stdout + result.stderr
+
+
+def test_pipeline_isolated_entry_emits_utf8_error_bytes_under_ascii_host(tmp_path):
+    missing = tmp_path / '“missing”.txt'
+    result = subprocess.run(
+        [sys.executable, '-I', SCRIPT[1], *CONFIG_ARG, '--input', str(missing)],
+        capture_output=True,
+        env=_hostile_python_environment(tmp_path),
+    )
+
+    assert result.returncode == 1
+    assert str(missing).encode('utf-8') in result.stderr
+    assert b'hostile' not in result.stdout + result.stderr
+
+
+def test_provider_worker_subprocess_uses_isolated_mode(tmp_path, monkeypatch):
+    import pipeline
+
+    commands = []
+
+    def completed(command, **_kwargs):
+        commands.append(command)
+        result_path = Path(command[command.index('--result') + 1])
+        result_path.write_text(
+            json.dumps({'ok': True, 'result': {'value': '“curly”'}}, ensure_ascii=False),
+            encoding='utf-8',
+        )
+        return subprocess.CompletedProcess(command, 0, b'', b'')
+
+    monkeypatch.setattr(pipeline.subprocess, 'run', completed)
+
+    assert pipeline._run_provider_worker({'adapter': 'test'}) == {'value': '“curly”'}
+    assert commands[0][:3] == [sys.executable, '-I', str(pipeline.PROVIDER_WORKER)]
+
+
+def test_provider_worker_direct_isolated_entry_ignores_hostile_python_environment(tmp_path):
+    request = tmp_path / 'request.json'
+    result_path = tmp_path / 'result.json'
+    request.write_text(
+        json.dumps({'adapter': '“unsupported”'}, ensure_ascii=False), encoding='utf-8'
+    )
+
+    completed = subprocess.run(
+        [
+            sys.executable, '-I', PROVIDER_WORKER,
+            '--request', str(request), '--result', str(result_path),
+        ],
+        capture_output=True,
+        env=_hostile_python_environment(tmp_path),
+    )
+
+    assert completed.returncode == 1
+    assert b'hostile' not in completed.stdout + completed.stderr
+    envelope = json.loads(result_path.read_bytes().decode('utf-8'))
+    assert envelope == {
+        'ok': False,
+        'error_type': 'RuntimeError',
+        'message': 'Unsupported isolated adapter: “unsupported”',
+    }
+
+
+def test_provider_worker_import_error_is_utf8_under_ascii_host(tmp_path):
+    copied_dir = tmp_path / '“worker”'
+    copied_dir.mkdir()
+    copied_worker = copied_dir / 'provider_worker.py'
+    copied_worker.write_bytes(Path(PROVIDER_WORKER).read_bytes())
+
+    completed = subprocess.run(
+        [sys.executable, '-I', str(copied_worker), '--help'],
+        capture_output=True,
+        env=_hostile_python_environment(tmp_path),
+    )
+
+    assert completed.returncode == 1
+    assert str(copied_worker).encode('utf-8') in completed.stderr
+    assert b'hostile' not in completed.stdout + completed.stderr
 
 
 def test_config_flag_uses_alternate_config(tmp_path):

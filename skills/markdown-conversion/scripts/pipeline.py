@@ -2,6 +2,18 @@
 """Unified PDF/Office-to-canonical/Markdown pipeline (v6)."""
 from __future__ import annotations
 
+import os as _bootstrap_os
+import sys as _bootstrap_sys
+
+_SCRIPTS_DIR = _bootstrap_os.path.dirname(_bootstrap_os.path.realpath(__file__))
+if _SCRIPTS_DIR not in _bootstrap_sys.path:
+    _bootstrap_sys.path.insert(0, _SCRIPTS_DIR)
+if __name__ == "__main__":
+    for _stream in (_bootstrap_sys.stdout, _bootstrap_sys.stderr):
+        if hasattr(_stream, "reconfigure"):
+            _stream.reconfigure(encoding="utf-8", errors="backslashreplace")
+del _bootstrap_os, _bootstrap_sys
+
 import argparse
 from collections import Counter
 import datetime
@@ -49,7 +61,7 @@ from pdf_inspector_adapter import PdfInspectorAdapter
 from safe_url import redact_url
 
 
-VERSION = "6.5.1"
+VERSION = "6.5.2"
 DEFAULT_CONFIG: dict[str, Any] = {
     "pdf_ocr": {
         "mode": "auto",
@@ -112,7 +124,7 @@ def _run_provider_worker(request: dict[str, Any], timeout: float = PROVIDER_TIME
         environment.update({"OMP_NUM_THREADS": "1", "OPENBLAS_NUM_THREADS": "1", "MKL_NUM_THREADS": "1"})
         try:
             completed = subprocess.run(
-                [sys.executable, str(PROVIDER_WORKER), "--request", str(request_path), "--result", str(result_path)],
+                [sys.executable, "-I", str(PROVIDER_WORKER), "--request", str(request_path), "--result", str(result_path)],
                 stdin=subprocess.DEVNULL,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,

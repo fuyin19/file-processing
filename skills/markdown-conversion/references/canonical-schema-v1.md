@@ -1,7 +1,7 @@
 # Canonical JSON v1
 
 `<stem>.json` is the canonical, loss-aware bundle output of
-`markdown-conversion` v6.5.1.
+`markdown-conversion` v6.5.2.
 The machine-readable schema is `../schemas/canonical-v1.schema.json`.
 
 ## Top-level fields
@@ -96,7 +96,7 @@ For adapters that emit one stitched logical paragraph or table across pages,
 its locator may include a `spans` array. Every nested span carries its
 page/source-unit provenance and is validated against `source_units`; stable
 node/table IDs are generated only after any adapter-provided stitching is
-complete. The v6.5.1 Inspector path does not perform this stitching and instead
+complete. The v6.5.2 Inspector path does not perform this stitching and instead
 uses document-range provenance for Inspector nodes.
 
 The main PDF path adds no custom running-header, footer, or page-label rewrite;

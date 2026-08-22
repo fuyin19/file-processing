@@ -2,6 +2,18 @@
 """Isolated native-provider entry point. Its JSON result carries no authority."""
 from __future__ import annotations
 
+import os as _bootstrap_os
+import sys as _bootstrap_sys
+
+_SCRIPTS_DIR = _bootstrap_os.path.dirname(_bootstrap_os.path.realpath(__file__))
+if _SCRIPTS_DIR not in _bootstrap_sys.path:
+    _bootstrap_sys.path.insert(0, _SCRIPTS_DIR)
+if __name__ == "__main__":
+    for _stream in (_bootstrap_sys.stdout, _bootstrap_sys.stderr):
+        if hasattr(_stream, "reconfigure"):
+            _stream.reconfigure(encoding="utf-8", errors="backslashreplace")
+del _bootstrap_os, _bootstrap_sys
+
 import argparse
 import json
 from pathlib import Path

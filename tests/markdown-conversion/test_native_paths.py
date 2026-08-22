@@ -104,6 +104,28 @@ def test_real_windows_long_paths_disabled_and_bundle_markdown_collision_overwrit
     assert "Long-path body" in np.read_text(markdown_target)
 
 
+@pytest.mark.skipif(os.name != "nt", reason="Windows long component staging acceptance")
+def test_short_stage_accepts_legal_220_character_stem_beyond_max_path(tmp_path, monkeypatch):
+    long_parent = _long_parent(tmp_path)
+    stem = "s" * 220
+    source = long_parent / f"{stem}.txt"
+    output = long_parent / "outputs"
+    np.write_text(source, "long component", encoding="utf-8")
+    _install_conversion_double(monkeypatch)
+
+    old_stage_name = f".{stem}.staging-{'0' * 32}"
+    assert len(old_stage_name) > 255
+    assert len(str(source)) > 260
+
+    target, _, _ = pipeline.convert_one(_args(source, output), str(source))
+
+    assert target.name == stem
+    assert np.read_text(target / "src" / source.name) == "long component"
+    assert np.is_file(target / f"{stem}.json")
+    assert np.is_file(target / f"{stem}.md")
+    assert not list(output.glob(".mc-stage-*"))
+
+
 @pytest.mark.skipif(os.name != "nt", reason="Windows long-path containment acceptance")
 def test_verified_bundle_file_accepts_long_ordinary_component_chain(tmp_path):
     root = _long_parent(tmp_path) / "bundle"
