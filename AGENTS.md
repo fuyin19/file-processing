@@ -10,7 +10,7 @@ copy of this content there.
 
 ## Project Purpose
 
-`file-processing` is a Claude Code plugin (v5.0.0) that packages three
+`file-processing` is a Claude Code plugin (v6.0.0) that packages five
 file-processing skills as `/file-processing:<name>` commands. It serves
 developers working inside Claude Code who need repeatable, script-backed
 document workflows — convert, review, and translate — where deterministic
@@ -23,7 +23,7 @@ Immutable long-term tradeoff (one line): for `translate`, accuracy / terminology
 match is prioritized over speed and token cost; across all skills,
 structure-safety and testability are prioritized over feature breadth.
 
-The three skills:
+The five skills:
 
 - **markdown-conversion** (v6.5.2) — Convert local PDFs, AnyDoc-eligible
   non-PDF documents, remaining supported files, URLs, or directories through one
@@ -41,6 +41,17 @@ The three skills:
   Markdown file. Canonical output preserves raw/cleaned/normalized text, uses
   exact five-field YAML frontmatter, defaults Chinese normalization to
   simplified, and publishes transactionally.
+- **pdf-conversion** (v1.0.0) — Convert supported local PDF and Office inputs
+  into a native multipage PDF. PDF sources bypass LibreOffice; Office sources
+  use one private, deadline-bounded x64 LibreOffice process per item with an
+  exact family export filter and a separate bounded structural validation
+  worker. Default bundles contain `<stem>.pdf` plus `src/<original>`; direct
+  mode emits exactly one PDF.
+- **file-conversion** (v1.0.0) — Route one acquired local source snapshot into
+  the existing canonical Markdown bundle emitter plus the native PDF provider,
+  then publish both in one bundle transaction. Hard failure publishes nothing;
+  an existing publishable loss-aware Markdown partial plus a valid PDF remains
+  publishable.
 - **content-review** (v2.0.0) — Review files for grammar, typos, logic, and stylistic issues. Verify content against reference materials (fact-checking). `scripts/review_plan.py` computes a dimension × chunk matrix and assembles sub-agent results; `references/` (criteria + sub-agent prompts) and `assets/` (report template).
 - **translate** (v2.0.0) — Translate files to a target language with optional reference-guided terminology. Hybrid architecture: Python pipeline (`translate_pipeline.py`, `glossary_utils.py`) for deterministic work (structure-safe chunking, source-driven glossary slicing, per-occurrence forced-application QA); Claude/sub-agents for linguistic work.
 
@@ -88,6 +99,12 @@ per goal.
 # Markdown-conversion tests
 python -m pytest tests/markdown-conversion/test_pipeline.py -v
 
+# PDF-conversion tests (unit + installed LibreOffice integration)
+python -m pytest tests/pdf-conversion/test_pipeline.py -v
+
+# File-router tests (including standalone/router byte parity)
+python -m pytest tests/file-conversion/test_pipeline.py -v
+
 # Content-review tests
 python -m pytest tests/content-review/test_review_plan.py -v
 
@@ -128,9 +145,18 @@ python skills/markdown-conversion/scripts/pipeline.py --input-dir <dir> [--outpu
 python skills/markdown-conversion/scripts/pipeline.py --config <path> --input <file> [--output-dir <outdir>]
 python skills/markdown-conversion/scripts/pipeline.py --version
 
+# PDF-conversion — default bundle or exactly one PDF
+python skills/pdf-conversion/scripts/pipeline.py --input <file>
+python skills/pdf-conversion/scripts/pipeline.py --input <file> --output-mode pdf --output-path <out.pdf>
+
+# File-conversion — canonical Markdown/JSON plus sibling PDF bundle
+python skills/file-conversion/scripts/pipeline.py --input <file> [--output-dir <outdir>]
+
 ```
 
 **Exit codes (markdown-conversion)**: 0=success (including publishable warnings/partial output), 1=input/conversion/validation/publication error, 2=single-target collision (needs `--overwrite` or `--rename`). `--overwrite` uses staged replacement with rollback before commit; `--rename` appends a deterministic suffix.
+
+**Exit codes (pdf-conversion and file-conversion)**: 0=success (including a publishable Markdown partial in the router), 1=input/provider/validation/publication error, 2=collision/skip. Both retain the same per-item overwrite/rename and batch precedence (`failure` before `skip`) as Markdown conversion.
 
 ```bash
 # content-review — matrix plan + assemble (deterministic, testable without sub-agents)
@@ -162,7 +188,22 @@ python skills/translate/scripts/translate_pipeline.py qa --source <file> --trans
 
 ### Skill Structure
 
-The plugin lives in `skills/` with one subdirectory per skill. Each skill has a `SKILL.md` defining the `/file-processing:<name>` command and workflow. All three skills are script-backed. `content-review` and `translate` additionally keep sub-agent prompt templates in `references/subagent-prompts.md`.
+The plugin lives in `skills/` with one subdirectory per public skill plus the internal `skills/_shared/` runtime. Each public skill has a `SKILL.md` defining the `/file-processing:<name>` command and workflow. All five skills are script-backed. `content-review` and `translate` additionally keep sub-agent prompt templates in `references/subagent-prompts.md`.
+
+### Pipeline Flow (pdf-conversion and file-conversion)
+
+1. Validate local-only input, supported suffix, output layout, collection root,
+   collision policy, and source aliasing before provider work.
+2. Acquire one identity-bound `SourceSnapshot` while denying Windows write
+   sharing; every archive/provider copy derives from and rechecks those bytes.
+3. PDF inputs copy exactly and validate. Office inputs resolve authoritative
+   CLI/config LibreOffice or safe auto-discovery, then run one no-shell process
+   with a private profile/work/output/temp tree and family-specific PDF filter.
+4. A separate deadline/memory-bounded worker validates the PDF header,
+   encryption state, page count/tree/trailer, stable identity, and hash.
+5. `file-conversion` calls the same staged Markdown bundle emitter as standalone
+   `markdown-conversion`, adds the PDF, then publishes one owned directory.
+   Batch conversion retains the per-item transactional boundary.
 
 ### Pipeline Flow (markdown-conversion)
 
@@ -263,6 +304,8 @@ Anti-skip levers (both skills): (1) narrow per-cell/per-chunk mandates; (2) prom
 
 Each skill stores its own `scripts/config.json` (gitignored):
 - `skills/markdown-conversion/scripts/config.json` — `pdf_ocr` defaults: `mode` (`auto`), `engine` (`rapidocr`), `language` (`ch`), `dpi` (`300.0`), `max_long_edge` (`4096`), and `min_confidence` (`0.5`); single-file bundle output defaults beside the source and batch output defaults to `<input-dir>/_converted`
+- `skills/pdf-conversion/scripts/config.json` — `pdf_conversion` defaults: empty `libreoffice_path` (auto-discovery), `timeout_seconds` (`1000`), and validation limits of 1 GiB / 60 seconds / 2 GiB job memory
+- `skills/file-conversion/scripts/config.json` — the unchanged Markdown `pdf_ocr` block plus the same `pdf_conversion` block; one resolved config feeds both stages
 - `skills/content-review/scripts/config.json` — `chunk_lines` (400), `max_chunks` (20), `max_cells` (60)
 - `skills/translate/scripts/config.json` — `default_target_language` (zh), `chunk_lines` (300), `max_chunks` (30), `max_terms` (800), `max_terms_per_chunk_prompt` (120), `max_reference_passages_per_term` (5), `max_workspace_mb` (100)
 
@@ -270,6 +313,8 @@ Each skill stores its own `scripts/config.json` (gitignored):
 
 `.claude/settings.json` pre-allows:
 - `python -m pytest tests/markdown-conversion/test_pipeline.py *`
+- `python -m pytest tests/pdf-conversion/test_pipeline.py *`
+- `python -m pytest tests/file-conversion/test_pipeline.py *`
 - `python -m pytest tests/content-review/test_review_plan.py *`
 - `python *pipeline.py*`
 - `python *translate_pipeline.py*`

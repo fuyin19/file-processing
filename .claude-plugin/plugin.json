@@ -1,7 +1,7 @@
 {
   "name": "file-processing",
-  "version": "5.0.0",
-  "description": "File processing skills for Claude Code — convert documents, review content, and translate.",
+  "version": "6.0.0",
+  "description": "File processing skills for Claude Code — convert to Markdown/PDF, review content, and translate.",
   "author": {
     "name": "file-processing maintainers"
   }

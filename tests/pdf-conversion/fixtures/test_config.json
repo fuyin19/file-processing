@@ -1,0 +1,11 @@
+{
+  "pdf_conversion": {
+    "libreoffice_path": "C:\\Program Files\\LibreOffice\\program\\soffice.com",
+    "timeout_seconds": 1000,
+    "validation": {
+      "max_pdf_bytes": 1073741824,
+      "timeout_seconds": 60,
+      "job_memory_bytes": 2147483648
+    }
+  }
+}

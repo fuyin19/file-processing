@@ -2,6 +2,8 @@
   "permissions": {
     "allow": [
       "Bash(python -m pytest tests/markdown-conversion/test_pipeline.py *)",
+      "Bash(python -m pytest tests/pdf-conversion/test_pipeline.py *)",
+      "Bash(python -m pytest tests/file-conversion/test_pipeline.py *)",
       "Bash(python -m pytest tests/content-review/test_review_plan.py *)",
       "Bash(python *pipeline.py*)",
       "Bash(python *translate_pipeline.py*)",

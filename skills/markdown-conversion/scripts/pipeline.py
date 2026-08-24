@@ -8,6 +8,11 @@ import sys as _bootstrap_sys
 _SCRIPTS_DIR = _bootstrap_os.path.dirname(_bootstrap_os.path.realpath(__file__))
 if _SCRIPTS_DIR not in _bootstrap_sys.path:
     _bootstrap_sys.path.insert(0, _SCRIPTS_DIR)
+_SHARED_SCRIPTS_DIR = _bootstrap_os.path.realpath(
+    _bootstrap_os.path.join(_SCRIPTS_DIR, "..", "..", "_shared", "scripts")
+)
+if _SHARED_SCRIPTS_DIR not in _bootstrap_sys.path:
+    _bootstrap_sys.path.insert(0, _SHARED_SCRIPTS_DIR)
 if __name__ == "__main__":
     for _stream in (_bootstrap_sys.stdout, _bootstrap_sys.stderr):
         if hasattr(_stream, "reconfigure"):
@@ -33,6 +38,8 @@ from pathlib import Path
 from typing import Any, NoReturn
 
 import native_paths as np
+from conversion_runtime import ConversionError as SharedConversionError
+from conversion_runtime import SourceSnapshot, acquire_source_snapshot
 
 from adapters import (
     ANYDOC_FORMAT_BY_EXTENSION,
@@ -689,11 +696,17 @@ def _copy_local_source_to_bundle(source: str, stage: Path) -> tuple[Path, np.Ent
     """Archive source bytes before conversion and bind canonical identity to them."""
     source_path = np.logical(source)
     destination = stage / "src" / source_path.name
-    np.mkdir(destination.parent, parents=True, exist_ok=True)
-    np.copy_file(source_path, destination)
-    identity = np.EntryIdentity.capture(destination)
-    source_identity = _archived_source_identity(str(source_path), destination)
-    return destination, identity, source_identity
+    try:
+        snapshot = acquire_source_snapshot(
+            source_path,
+            destination,
+            # Preserve the established test/compatibility seam while the locked
+            # original handle prevents source replacement or writes on Windows.
+            compatibility_copier=np.copy_file,
+        )
+    except SharedConversionError as exc:
+        raise PipelineError(str(exc)) from exc
+    return destination, snapshot.snapshot_identity, snapshot.canonical_identity()
 
 
 def _verify_archived_source(
@@ -885,6 +898,91 @@ def _write_markdown_file(markdown: str, target: Path, overwrite: bool) -> None:
             _cleanup_owned(stage, warning="could not remove exact failed Markdown stage")
 
 
+def _stage_markdown_bundle_artifacts(
+    args,
+    stage: Path,
+    target_stem: str,
+    document: dict[str, Any],
+) -> dict[str, Any]:
+    """Render and validate one complete Markdown bundle inside an owned stage."""
+    markdown_name = f"{target_stem}.md"
+    json_name = f"{target_stem}.json"
+    markdown = render_markdown(document, not args.no_frontmatter, "bundle")
+    markdown_path = stage / markdown_name
+    np.write_text(markdown_path, markdown, encoding="utf-8", newline="\n")
+    document["outputs"] = {
+        "mode": "bundle",
+        "markdown": {"path": markdown_name, "sha256": sha256_file(markdown_path)},
+        "assets": [{"path": item["path"], "sha256": item["sha256"]} for item in document["assets"]],
+    }
+    validate_canonical(document, stage)
+    json_path = stage / json_name
+    np.write_text(
+        json_path,
+        json.dumps(document, ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+    persisted = json.loads(np.read_text(json_path, encoding="utf-8"))
+    validate_canonical(persisted, stage, validate_schema=False)
+    return document
+
+
+def _emit_markdown_bundle_core(
+    args,
+    *,
+    operational_source: str,
+    logical_source: str,
+    stage: Path,
+    target_stem: str,
+    precomputed_identity: tuple[dict[str, Any], str],
+    verify_snapshot,
+) -> dict[str, Any]:
+    """Authoritative staged bundle emitter shared by standalone and router."""
+    local_adapter = getattr(args, "local_adapter", getattr(args, "document_adapter", "anydoc"))
+    ocr_settings = getattr(args, "ocr_settings", OcrSettings(mode="off", engine="none"))
+    ocr_provider = getattr(args, "ocr_provider", None)
+    asset_dir = stage / "assets" / "images"
+    document = _build_document(
+        operational_source,
+        args.timestamp,
+        args.language_normalization,
+        "bundle",
+        Path(np.native(asset_dir)),
+        identity_source=logical_source,
+        ocr_provider=ocr_provider,
+        ocr_mode=ocr_settings.mode,
+        local_adapter=local_adapter,
+        enrich_images=getattr(args, "enrich_images", False),
+        ocr_settings=ocr_settings,
+        precomputed_identity=precomputed_identity,
+    )
+    verify_snapshot()
+    return _stage_markdown_bundle_artifacts(args, stage, target_stem, document)
+
+
+def emit_markdown_bundle(
+    args,
+    snapshot: SourceSnapshot,
+    stage: Path,
+    target_stem: str,
+) -> dict[str, Any]:
+    """Emit a local Markdown bundle from a pre-acquired source snapshot.
+
+    This is the router integration seam.  It writes no publication state and
+    does not reacquire or reinterpret the logical source identity.
+    """
+    return _emit_markdown_bundle_core(
+        args,
+        operational_source=np.native(snapshot.physical_path),
+        logical_source=str(snapshot.logical_path),
+        stage=stage,
+        target_stem=target_stem,
+        precomputed_identity=snapshot.canonical_identity(),
+        verify_snapshot=snapshot.verify,
+    )
+
+
 def convert_one(args, source: str, relative_path: Path | None = None) -> tuple[Path, str, list[dict[str, Any]]]:
     local_adapter = getattr(args, "local_adapter", getattr(args, "document_adapter", "anydoc"))
     if local_adapter not in {"anydoc", "markitdown"}:
@@ -902,53 +1000,34 @@ def convert_one(args, source: str, relative_path: Path | None = None) -> tuple[P
         stage_owner = _new_owned_dir(target.path.parent, ".mc-stage-")
         stage = stage_owner.path
         try:
-            archived_source: Path | None = None
-            archived_identity: np.EntryIdentity | None = None
-            precomputed_identity: tuple[dict[str, Any], str] | None = None
-            operational_source = source
-            if not is_url(source):
+            if is_url(source):
+                asset_dir = stage / "assets" / "images"
+                document = _build_document(
+                    source, args.timestamp, args.language_normalization, "bundle",
+                    Path(np.native(asset_dir)),
+                    identity_source=source,
+                    ocr_provider=ocr_provider,
+                    ocr_mode=ocr_settings.mode,
+                    local_adapter=local_adapter,
+                    enrich_images=getattr(args, "enrich_images", False),
+                    ocr_settings=ocr_settings,
+                )
+                document = _stage_markdown_bundle_artifacts(args, stage, target.stem, document)
+            else:
                 archived_source, archived_identity, precomputed_identity = _copy_local_source_to_bundle(
                     source, stage
                 )
-                operational_source = np.native(archived_source)
-            asset_dir = stage / "assets" / "images"
-            document = _build_document(
-                operational_source, args.timestamp, args.language_normalization, "bundle",
-                Path(np.native(asset_dir)),
-                identity_source=source,
-                ocr_provider=ocr_provider,
-                ocr_mode=ocr_settings.mode,
-                local_adapter=local_adapter,
-                enrich_images=getattr(args, "enrich_images", False),
-                ocr_settings=ocr_settings,
-                precomputed_identity=precomputed_identity,
-            )
-            if archived_source is not None and archived_identity is not None:
-                _verify_archived_source(
-                    archived_source, archived_identity, document["source"]["sha256"]
+                document = _emit_markdown_bundle_core(
+                    args,
+                    operational_source=np.native(archived_source),
+                    logical_source=source,
+                    stage=stage,
+                    target_stem=target.stem,
+                    precomputed_identity=precomputed_identity,
+                    verify_snapshot=lambda: _verify_archived_source(
+                        archived_source, archived_identity, precomputed_identity[0]["sha256"]
+                    ),
                 )
-            markdown_name = f"{target.stem}.md"
-            json_name = f"{target.stem}.json"
-            markdown = render_markdown(document, not args.no_frontmatter, "bundle")
-            markdown_path = stage / markdown_name
-            np.write_text(markdown_path, markdown, encoding="utf-8", newline="\n")
-            document["outputs"] = {
-                "mode": "bundle",
-                "markdown": {"path": markdown_name, "sha256": sha256_file(markdown_path)},
-                "assets": [{"path": item["path"], "sha256": item["sha256"]} for item in document["assets"]],
-            }
-            validate_canonical(document, stage)
-            json_path = stage / json_name
-            np.write_text(
-                json_path,
-                json.dumps(document, ensure_ascii=False, indent=2) + "\n",
-                encoding="utf-8",
-                newline="\n",
-            )
-            persisted = json.loads(np.read_text(json_path, encoding="utf-8"))
-            # Full JSON Schema validation already ran on the identical object;
-            # the persisted round-trip only needs semantic/hash verification.
-            validate_canonical(persisted, stage, validate_schema=False)
             if not stage_owner.matches(stage):
                 raise PipelineError(f"Owned bundle stage identity changed: {stage}")
             _publish_directory(stage, target.path, args.overwrite, stage_owner)

@@ -1,7 +1,7 @@
 # file-processing
 
-A Claude Code plugin for deterministic document conversion, content review,
-and translation.
+A Claude Code plugin with five deterministic, script-backed document
+conversion, review, and translation skills.
 
 ## Installation
 
@@ -133,6 +133,54 @@ occurrences without changing the default-path cost.
 
 See [the skill contract](skills/markdown-conversion/SKILL.md) and
 [Canonical JSON v1 reference](skills/markdown-conversion/references/canonical-schema-v1.md).
+
+### pdf-conversion (v1.0.0)
+
+Convert local PDFs and supported Word, PowerPoint, or Excel files to native,
+high-fidelity multipage PDF. PDF inputs bypass LibreOffice and are copied from
+the verified source snapshot. Office inputs use one private, deadline-bounded
+x64 LibreOffice process per item and a separate bounded PDF validation worker.
+
+```text
+/file-processing:pdf-conversion ~/Documents/report.docx
+/file-processing:pdf-conversion ~/Documents/report.xlsx --output-mode pdf
+/file-processing:pdf-conversion ~/Documents/deal-room --types docx,pptx,xlsx
+```
+
+The default bundle is `<stem>/<stem>.pdf` plus `src/<original>`. Direct PDF
+mode emits exactly one `.pdf`. The command is local-only and does not install,
+repair, or drive Microsoft Office, WPS, cloud services, Docker, or LibreOffice
+through COM/UNO reuse. Its private profile hardening reduces exposure but is
+not an operating-system sandbox or no-external-access guarantee.
+
+See [the PDF skill contract](skills/pdf-conversion/SKILL.md).
+
+### file-conversion (v1.0.0)
+
+Create one local bundle containing canonical Markdown/JSON, a sibling native
+PDF, the exact source snapshot, and conditional image assets:
+
+```text
+report/
+├── report.md
+├── report.json
+├── report.pdf
+├── src/report.docx
+└── assets/images/       # when emitted
+```
+
+```text
+/file-processing:file-conversion ~/Documents/report.docx
+/file-processing:file-conversion ~/Documents/deal-room --types docx,pptx,xlsx
+```
+
+The router acquires the source once and publishes only after both Markdown and
+PDF stages validate. With the same source, timestamp, stem, and content flags,
+its Markdown/JSON/source/assets bytes match standalone `markdown-conversion`;
+it adds only the PDF. V1 accepts exactly `--formats markdown,pdf`; use the
+specialized skills for singleton output.
+
+See [the router skill contract](skills/file-conversion/SKILL.md).
 
 ### content-review (v2.0.0)
 
