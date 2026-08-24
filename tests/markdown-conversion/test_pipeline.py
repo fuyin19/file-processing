@@ -1154,7 +1154,7 @@ def test_url_conversion_is_bounded_by_isolated_worker(monkeypatch):
 
     calls = []
 
-    def worker(request, timeout=180.0):
+    def worker(request, timeout=pipeline.PROVIDER_TIMEOUT_SECONDS):
         calls.append((request, timeout))
         return {
             'markdown': '# Remote\n\nBody',
@@ -1188,7 +1188,7 @@ def test_local_markitdown_conversion_is_bounded_by_isolated_worker(tmp_path, mon
     source.write_text('content', encoding='utf-8')
     calls = []
 
-    def worker(request, timeout=180.0):
+    def worker(request, timeout=pipeline.PROVIDER_TIMEOUT_SECONDS):
         calls.append((request, timeout))
         return {
             'source_units': [{'id': 'unit-test', 'type': 'document', 'index': 1, 'locator': {}, 'status': 'complete', 'warnings': []}],
@@ -1208,7 +1208,7 @@ def test_local_markitdown_conversion_is_bounded_by_isolated_worker(tmp_path, mon
     assert calls == [({
         'adapter': 'markitdown', 'source': str(source), 'document_id': document_id,
         'mode': 'preserve', 'asset_dir': '',
-    }, 180.0)]
+    }, 1000.0)]
 
 
 def test_office_image_ocr_enrichment_is_opt_in_and_provenance_linked(tmp_path, monkeypatch):

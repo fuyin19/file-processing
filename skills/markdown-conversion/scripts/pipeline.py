@@ -101,7 +101,7 @@ DEPS = [
 _rfc3339_datetime_re = re.compile(
     r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$"
 )
-PROVIDER_TIMEOUT_SECONDS = 180.0
+PROVIDER_TIMEOUT_SECONDS = 1000.0
 PROVIDER_WORKER = Path(__file__).with_name("provider_worker.py")
 
 
