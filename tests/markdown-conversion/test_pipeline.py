@@ -1,5 +1,5 @@
 """
-Tests for pipeline.py (v6.5.2 canonical conversion architecture).
+Tests for pipeline.py (v7.0.0 canonical conversion architecture).
 
 Run from project root: pytest scripts/test_pipeline.py -v
 
@@ -744,7 +744,7 @@ def test_version_flag():
     assert 'Dependencies:' in stdout
     # Should show pip install names (not import names)
     assert 'opencc-python-reimplemented' in stdout
-    assert 'markdown-conversion v6.5.2' in stdout
+    assert 'markdown-conversion v7.0.0' in stdout
     assert 'rapidocr:' in stdout
     assert 'onnxruntime:' in stdout
     assert 'ruamel.yaml:' not in stdout
@@ -786,7 +786,7 @@ def test_pipeline_direct_isolated_entry_ignores_hostile_python_environment(tmp_p
     )
 
     assert result.returncode == 0, result.stderr.decode('utf-8', errors='replace')
-    assert b'markdown-conversion v6.5.2' in result.stdout
+    assert b'markdown-conversion v7.0.0' in result.stdout
     assert b'hostile' not in result.stdout + result.stderr
 
 
@@ -1445,7 +1445,8 @@ def test_default_bundle_contains_canonical_json_and_markdown(tmp_path):
     src.write_text('# Report\n\nBody', encoding='utf-8')
     code, stdout, stderr, bundle = _run_product_bundle(src, tmp_path / 'out')
     assert code == 0, stderr
-    assert sorted(path.name for path in bundle.iterdir()) == ['report.json', 'report.md', 'src']
+    assert sorted(path.name for path in bundle.iterdir()) == ['AGENTS.md', 'CLAUDE.md', 'assets', 'report.json', 'report.md', 'src']
+    assert (bundle / 'assets' / '.keep').read_bytes() == b''
     assert (bundle / 'src' / src.name).read_bytes() == src.read_bytes()
     data = _load_bundle(bundle)
     assert data['schema_version'] == '1.0'
@@ -1489,7 +1490,74 @@ def test_url_bundle_does_not_create_source_archive(tmp_path, monkeypatch):
 
     assert target == tmp_path / 'out' / 'report'
     assert (target / 'report.json').exists()
-    assert not (target / 'src').exists()
+    assert (target / 'src' / '.keep').read_bytes() == b''
+
+
+@pytest.mark.parametrize('overwrite', [False, True])
+def test_url_relative_bundle_stem_is_rejected_before_conversion_or_write(
+    tmp_path, monkeypatch, overwrite
+):
+    import pipeline
+
+    output = tmp_path / 'out'
+    url = 'https://example.test/%2E%2E'
+    monkeypatch.setattr(
+        pipeline,
+        '_build_document',
+        lambda *args, **kwargs: pytest.fail('unsafe URL reached conversion'),
+    )
+    monkeypatch.setattr(
+        pipeline.np,
+        'mkdir',
+        lambda *args, **kwargs: pytest.fail('unsafe URL reached mkdir'),
+    )
+
+    with pytest.raises(pipeline.knowledge_unit.KnowledgeUnitError, match='relative component'):
+        pipeline.convert_one(_direct_bundle_args(url, output, overwrite=overwrite), url)
+
+    assert not output.exists()
+
+
+def test_default_cli_rejects_relative_url_stem_with_overwrite_and_zero_write(tmp_path):
+    output = tmp_path / 'out'
+    result = subprocess.run(
+        SCRIPT + CONFIG_ARG + [
+            '--input', 'https://example.test/%2E%2E',
+            '--output-dir', str(output),
+            '--overwrite',
+        ],
+        capture_output=True,
+    )
+
+    assert result.returncode == 1
+    assert b'relative component' in result.stderr
+    assert not output.exists()
+
+
+@pytest.mark.parametrize('stem', ['record', 'ReCoRd'])
+def test_canonical_record_json_collision_is_rejected_before_conversion_or_write(
+    tmp_path, monkeypatch, stem
+):
+    import pipeline
+
+    source = tmp_path / f'{stem}.md'
+    source.write_bytes(b'# private collision\n')
+    output = tmp_path / 'out'
+    monkeypatch.setattr(
+        pipeline,
+        '_build_document',
+        lambda *args, **kwargs: pytest.fail('reserved JSON stem reached conversion'),
+    )
+    monkeypatch.setattr(
+        pipeline.np,
+        'mkdir',
+        lambda *args, **kwargs: pytest.fail('reserved JSON stem reached mkdir'),
+    )
+
+    with pytest.raises(pipeline.PipelineError, match='record.json'):
+        pipeline.convert_one(_direct_bundle_args(source, output), str(source))
+
+    assert not output.exists()
 
 
 def test_markitdown_local_title_uses_literal_source_stem_in_markdown_and_json(tmp_path):
@@ -1600,6 +1668,21 @@ def test_markdown_only_emits_exactly_one_file_and_no_dead_image_links(tmp_path):
     assert 'silent.png' not in markdown
     assert '![' not in markdown
     assert not (tmp_path / 'src').exists()
+
+
+def test_record_stem_remains_valid_in_direct_markdown_mode(tmp_path):
+    source = tmp_path / 'record.md'
+    source.write_bytes(b'# direct legacy mode\n')
+    target = tmp_path / 'direct.md'
+
+    result = subprocess.run(
+        SCRIPT + CONFIG_ARG + ['--input', str(source), '--output-path', str(target)],
+        capture_output=True,
+    )
+
+    assert result.returncode == 0, result.stderr.decode(errors='replace')
+    assert target.is_file()
+    assert not (tmp_path / 'record').exists()
 
 
 def test_explicit_markdown_mode_emits_no_source_sidecar(tmp_path):

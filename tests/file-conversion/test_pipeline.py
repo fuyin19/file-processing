@@ -98,9 +98,9 @@ def _fake_emitter(args, snapshot, stage, stem, *, status="complete", warnings=No
 
 def test_skill_frontmatter_and_project_versions():
     skill = (ROOT / "skills" / "file-conversion" / "SKILL.md").read_text(encoding="utf-8")
-    assert "name: file-conversion" in skill and "version: 1.0.0" in skill
-    assert json.loads((ROOT / "package.json").read_text(encoding="utf-8"))["version"] == "6.0.0"
-    assert json.loads((ROOT / ".claude-plugin" / "plugin.json").read_text(encoding="utf-8"))["version"] == "6.0.0"
+    assert "name: file-conversion" in skill and "version: 2.0.0" in skill
+    assert json.loads((ROOT / "package.json").read_text(encoding="utf-8"))["version"] == "7.0.0"
+    assert json.loads((ROOT / ".claude-plugin" / "plugin.json").read_text(encoding="utf-8"))["version"] == "7.0.0"
     assert (ROOT / "CLAUDE.md").read_text(encoding="utf-8").strip() == "@AGENTS.md"
 
 
@@ -131,6 +131,38 @@ def test_single_output_path_is_rejected_and_batch_alias_is_accepted(tmp_path):
 def test_urls_are_rejected(value):
     result = _cli("--input", value)
     assert result.returncode == 1 and "local" in result.stderr.lower()
+
+
+@pytest.mark.parametrize(
+    ("name", "error_type", "message"),
+    [
+        ("ReCoRd.docx", pipeline.markdown_pipeline.PipelineError, "record.json"),
+        (".CoRtEx-item.docx", pipeline.knowledge_unit.KnowledgeUnitError, "reserved Cortex name"),
+    ],
+)
+def test_router_rejects_cortex_collisions_before_engine_or_write(
+    tmp_path, monkeypatch, name, error_type, message
+):
+    source = _source(tmp_path)
+    renamed = source.with_name(name)
+    source.rename(renamed)
+    output = tmp_path / "out"
+    args = _args(renamed, output)
+    monkeypatch.setattr(
+        pipeline,
+        "_engine",
+        lambda *args, **kwargs: pytest.fail("unsafe bundle reached engine creation"),
+    )
+    monkeypatch.setattr(
+        pipeline.np,
+        "mkdir",
+        lambda *args, **kwargs: pytest.fail("unsafe bundle reached mkdir"),
+    )
+
+    with pytest.raises(error_type, match=message):
+        pipeline.convert_one(args, str(renamed), pipeline.load_config(CONFIG))
+
+    assert not output.exists()
 
 
 def test_timestamp_validation_and_alias_parsing(tmp_path):
@@ -179,7 +211,8 @@ def test_partial_markdown_plus_valid_pdf_publishes_flat_bundle(tmp_path, monkeyp
         args, str(source), pipeline.load_config(CONFIG), engine=FakeEngine(_valid_pdf(tmp_path / "valid.pdf"))
     )
     assert status == "partial" and warnings == [warning]
-    assert {path.name for path in target.iterdir()} == {"source.md", "source.json", "source.pdf", "src"}
+    assert {path.name for path in target.iterdir()} == {"AGENTS.md", "CLAUDE.md", "assets", "source.md", "source.json", "source.pdf", "src"}
+    assert (target / "assets/.keep").read_bytes() == b""
 
 
 def test_pdf_hard_failure_publishes_nothing_and_preserves_overwrite_target(tmp_path, monkeypatch):

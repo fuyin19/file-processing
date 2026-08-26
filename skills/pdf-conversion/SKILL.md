@@ -3,7 +3,7 @@ name: pdf-conversion
 description: |
   Convert supported local PDF and Office files or directories to one native, high-fidelity multipage PDF per input using an identity-bound source snapshot and a private LibreOffice process. Use for PDF-preserving copy/validation and Word, PowerPoint, or Excel PDF export.
 metadata:
-  version: 1.0.0
+  version: 2.0.0
 ---
 
 # Convert local files to PDF

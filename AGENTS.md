@@ -10,7 +10,7 @@ copy of this content there.
 
 ## Project Purpose
 
-`file-processing` is a Claude Code plugin (v6.0.0) that packages five
+`file-processing` is a Claude Code plugin (v7.0.0) that packages five
 file-processing skills as `/file-processing:<name>` commands. It serves
 developers working inside Claude Code who need repeatable, script-backed
 document workflows — convert, review, and translate — where deterministic
@@ -25,7 +25,7 @@ structure-safety and testability are prioritized over feature breadth.
 
 The five skills:
 
-- **markdown-conversion** (v6.5.2) — Convert local PDFs, AnyDoc-eligible
+- **markdown-conversion** (v7.0.0) — Convert local PDFs, AnyDoc-eligible
   non-PDF documents, remaining supported files, URLs, or directories through one
   canonical model. Local PDFs use a behaviorally compatible PDF Inspector as the
   authoritative text and structure source; RapidOCR recovers only routed pages,
@@ -37,17 +37,17 @@ The five skills:
   and URL/other-format adapter. Native providers run in deadline-bounded workers,
   Office images are exported without OCR by default, and `--enrich-images`
   explicitly adds provenance-linked OCR text in bundle mode. The default output
-  is a JSON + Markdown bundle, while `--output-mode markdown` emits one clean
+  is a JSON + Markdown knowledge-unit bundle, while `--output-mode markdown` emits one clean
   Markdown file. Canonical output preserves raw/cleaned/normalized text, uses
   exact five-field YAML frontmatter, defaults Chinese normalization to
   simplified, and publishes transactionally.
-- **pdf-conversion** (v1.0.0) — Convert supported local PDF and Office inputs
+- **pdf-conversion** (v2.0.0) — Convert supported local PDF and Office inputs
   into a native multipage PDF. PDF sources bypass LibreOffice; Office sources
   use one private, deadline-bounded x64 LibreOffice process per item with an
   exact family export filter and a separate bounded structural validation
-  worker. Default bundles contain `<stem>.pdf` plus `src/<original>`; direct
+  worker. Default bundles contain the exact envelope, `<stem>.pdf`, and `src/<original>`; direct
   mode emits exactly one PDF.
-- **file-conversion** (v1.0.0) — Route one acquired local source snapshot into
+- **file-conversion** (v2.0.0) — Route one acquired local source snapshot into
   the existing canonical Markdown bundle emitter plus the native PDF provider,
   then publish both in one bundle transaction. Hard failure publishes nothing;
   an existing publishable loss-aware Markdown partial plus a valid PDF remains
@@ -186,6 +186,21 @@ python skills/translate/scripts/translate_pipeline.py qa --source <file> --trans
 
 ## Architecture
 
+### Knowledge-unit bundle contract
+
+Default bundle output is one exact base envelope: root `AGENTS.md` and
+`CLAUDE.md`, one or more same-stem representation files with distinct
+case-folded extensions, and mandatory `assets/` and `src/`. The two navigation
+files are build-time-vendored `knowledge-unit-navigation/v1` resources;
+`CLAUDE.md` is exactly `@AGENTS.md` plus LF. Empty support directories contain
+only a zero-byte `.keep`; payload and marker never coexist. `src/` has at most
+one direct ordinary source file. Validators are read-only and reject links,
+reparse points, nonregular entries, unsafe or case-fold-colliding names, empty
+nested asset directories, and instruction-control files below the root guide
+pair. Direct Markdown/PDF modes remain exactly one file. This repository owns
+its implementation independently; compatibility with Cortex is by exact
+resource bytes and conformance tests, not a cross-repository runtime import.
+
 ### Skill Structure
 
 The plugin lives in `skills/` with one subdirectory per public skill plus the internal `skills/_shared/` runtime. Each public skill has a `SKILL.md` defining the `/file-processing:<name>` command and workflow. All five skills are script-backed. `content-review` and `translate` additionally keep sub-agent prompt templates in `references/subagent-prompts.md`.
@@ -232,7 +247,7 @@ The plugin lives in `skills/` with one subdirectory per public skill plus the in
 3. **Canonical assembly** — builds Canonical JSON v1 with source hash, stable document/node ids, source units/locators, authoritative `content` order, general tables, assets, relationships, and quality warnings.
 4. **Language normalization** — preserves `raw_text` and cleaned `text`, then produces `normalized_text` in one batched OpenCC pass while protecting code, URLs, paths, ids, hashes, locators, and formulas.
 5. **Validation and rendering** — bundle mode validates JSON Schema plus semantic references, paths, hashes, output manifests, and quality state; Markdown-only skips JSON Schema because it emits no JSON sidecar but retains applicable semantic validation. Both render Markdown from canonical content with exact five-field frontmatter unless disabled.
-6. **Publication** — default `bundle` writes `<stem>/<stem>.json`, `<stem>.md`, and optional `assets/images/`; `--output-mode markdown` writes exactly one clean `.md` and omits image binaries/dead links.
+6. **Publication** — default `bundle` writes the exact knowledge-unit envelope with `<stem>.json`, `<stem>.md`, retained `src/`, and optional extracted `assets/`; `--output-mode markdown` writes exactly one clean `.md` and omits image binaries/dead links.
 7. **Transactional replace** — local bundles archive the source into an
    exclusive short sibling stage before adapter execution and bind canonical
    identity to those bytes. Path-sensitive operations use native extended

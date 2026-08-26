@@ -37,6 +37,7 @@ from conversion_runtime import (  # noqa: E402
     publish_owned,
     validate_target_not_source,
 )
+import knowledge_unit  # noqa: E402
 from libreoffice_pdf import (  # noqa: E402
     DEFAULT_PDF_CONVERSION,
     EXPLICITLY_UNSUPPORTED_SUFFIXES,
@@ -52,7 +53,7 @@ from libreoffice_pdf import (  # noqa: E402
 )
 
 
-VERSION = "1.0.0"
+VERSION = "2.0.0"
 CONFIG_PATH = _SCRIPTS / "config.json"
 DEFAULT_CONFIG: dict[str, object] = {"pdf_conversion": DEFAULT_PDF_CONVERSION}
 _URL_RE = re.compile(r"^[A-Za-z][A-Za-z0-9+.-]*://")
@@ -190,13 +191,19 @@ def resolve_target(args, source: str, relative_path: Path | None = None) -> Targ
         return Target("pdf", target_path, target_path.stem)
     if args.input_dir:
         relative_path = relative_path or Path(source_path.name)
-        base = _batch_root(args) / relative_path.parent / stem
+        root = _batch_root(args)
+        bundle_parent = root / relative_path.parent
     else:
         root = np.logical(args.output_dir) if args.output_dir else source_path.parent
-        base = root / stem
+        bundle_parent = root
     if args.output_mode == "bundle":
-        return Target("bundle", base, stem)
-    return Target("pdf", base.with_suffix(".pdf"), stem)
+        path = knowledge_unit.bundle_target(
+            bundle_parent,
+            stem,
+            boundary=root if args.input_dir else bundle_parent,
+        )
+        return Target("bundle", path, stem)
+    return Target("pdf", (bundle_parent / stem).with_suffix(".pdf"), stem)
 
 
 def _renamed_target(target: Target) -> Target:
@@ -262,12 +269,19 @@ def convert_one(
             result = converter.convert(snapshot, pdf_path, work.path / "libreoffice")
             expected = validate_pdf(pdf_path, converter.settings.validation)
             snapshot.verify()
+            try:
+                knowledge_unit.finalize_owned_stage(stage.path)
+            except knowledge_unit.KnowledgeUnitError as exc:
+                raise PipelineError(str(exc)) from exc
             publish_owned(
                 stage,
                 target.path,
                 args.overwrite,
-                verify_payload=lambda root: verify_validated_pdf(
-                    root / f"{target.stem}.pdf", converter.settings.validation, expected
+                verify_payload=lambda root: (
+                    knowledge_unit.validate(root),
+                    verify_validated_pdf(
+                        root / f"{target.stem}.pdf", converter.settings.validation, expected
+                    ),
                 ),
             )
         else:

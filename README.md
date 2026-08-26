@@ -11,7 +11,7 @@ claude skill add /path/to/file-processing
 
 ## Skills
 
-### markdown-conversion (v6.5.2)
+### markdown-conversion (v7.0.0)
 
 Convert local PDFs, Office documents, supported files, URLs, or directories
 through one canonical pipeline. Local PDFs use PDF Inspector as the
@@ -37,11 +37,15 @@ default output is a movable bundle:
 
 ```text
 report/
+├── AGENTS.md
+├── CLAUDE.md
 ├── report.json
 ├── report.md
 ├── src/
 │   └── report.pdf     # original local input bytes and basename
-└── assets/images/     # only when images exist
+└── assets/
+    ├── .keep          # only when there is no asset payload
+    └── images/        # only when images exist
 ```
 
 ```text
@@ -61,8 +65,8 @@ each file sequentially rather than treating the whole directory as one atomic
 transaction. Every local bundle, including each batch item, archives the exact
 user input as `src/<original-basename>` before adapter execution. Canonical
 source identity is derived from those archived bytes and rechecked before
-publication. URL bundles do not create `src/`, and Markdown-only output creates
-no source copy or other sidecar.
+publication. URL bundles carry `src/.keep`; Markdown-only output creates no
+source copy or other sidecar because it remains the legacy one-file mode.
 
 All local path-sensitive operations use extended-length native paths on
 Windows, including UNC paths, while Canonical JSON retains only ordinary
@@ -134,7 +138,7 @@ occurrences without changing the default-path cost.
 See [the skill contract](skills/markdown-conversion/SKILL.md) and
 [Canonical JSON v1 reference](skills/markdown-conversion/references/canonical-schema-v1.md).
 
-### pdf-conversion (v1.0.0)
+### pdf-conversion (v2.0.0)
 
 Convert local PDFs and supported Word, PowerPoint, or Excel files to native,
 high-fidelity multipage PDF. PDF inputs bypass LibreOffice and are copied from
@@ -155,7 +159,7 @@ not an operating-system sandbox or no-external-access guarantee.
 
 See [the PDF skill contract](skills/pdf-conversion/SKILL.md).
 
-### file-conversion (v1.0.0)
+### file-conversion (v2.0.0)
 
 Create one local bundle containing canonical Markdown/JSON, a sibling native
 PDF, the exact source snapshot, and conditional image assets:

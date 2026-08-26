@@ -36,6 +36,7 @@ from conversion_runtime import (  # noqa: E402
     new_owned_dir,
     publish_owned,
 )
+import knowledge_unit  # noqa: E402
 from libreoffice_pdf import (  # noqa: E402
     DEFAULT_PDF_CONVERSION,
     SUPPORTED_SUFFIXES,
@@ -67,7 +68,7 @@ def _load_markdown_pipeline():
 
 markdown_pipeline = _load_markdown_pipeline()
 
-VERSION = "1.0.0"
+VERSION = "2.0.0"
 CONFIG_PATH = _SCRIPTS / "config.json"
 DEFAULT_CONFIG: dict[str, object] = {
     "pdf_ocr": dict(markdown_pipeline.DEFAULT_CONFIG["pdf_ocr"]),
@@ -222,10 +223,12 @@ def resolve_target(args, source: str, relative_path: Path | None = None) -> Targ
     stem = source_path.stem or "untitled"
     if args.input_dir:
         relative_path = relative_path or Path(source_path.name)
-        path = _batch_root(args) / relative_path.parent / stem
+        root = _batch_root(args)
+        parent = root / relative_path.parent
+        path = knowledge_unit.bundle_target(parent, stem, boundary=root)
     else:
         root = np.logical(args.output_dir) if args.output_dir else source_path.parent
-        path = root / stem
+        path = knowledge_unit.bundle_target(root, stem, boundary=root)
     return Target(path, stem)
 
 
@@ -270,6 +273,7 @@ def convert_one(
             "or first convert the file to .docx in a trusted desktop environment"
         )
     target = _preflight_target(resolve_target(args, source, relative_path), source, args.overwrite, args.rename)
+    markdown_pipeline.validate_markdown_bundle_stem(target.stem)
     converter = engine or _engine(args, config)
     if Path(source).suffix.lower() != ".pdf" and isinstance(converter, LibreOfficePdfEngine):
         _ = converter.executable
@@ -283,14 +287,19 @@ def convert_one(
         converter.convert(snapshot, stage.path / pdf_name, work.path / "libreoffice")
         expected = validate_pdf(stage.path / pdf_name, converter.settings.validation)
         snapshot.verify()
+        try:
+            knowledge_unit.finalize_owned_stage(stage.path)
+        except knowledge_unit.KnowledgeUnitError as exc:
+            raise PipelineError(str(exc)) from exc
         if not stage.matches(stage.path):
             raise PipelineError(f"Owned router stage identity changed: {stage.path}")
         publish_owned(
             stage,
             target.path,
             args.overwrite,
-            verify_payload=lambda root: verify_validated_pdf(
-                root / pdf_name, converter.settings.validation, expected
+            verify_payload=lambda root: (
+                knowledge_unit.validate(root),
+                verify_validated_pdf(root / pdf_name, converter.settings.validation, expected),
             ),
         )
         return target.path, document["quality"]["status"], document["quality"]["warnings"]

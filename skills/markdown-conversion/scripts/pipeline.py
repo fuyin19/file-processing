@@ -38,6 +38,7 @@ from pathlib import Path
 from typing import Any, NoReturn
 
 import native_paths as np
+import knowledge_unit
 from conversion_runtime import ConversionError as SharedConversionError
 from conversion_runtime import SourceSnapshot, acquire_source_snapshot
 
@@ -68,7 +69,7 @@ from pdf_inspector_adapter import PdfInspectorAdapter
 from safe_url import redact_url
 
 
-VERSION = "6.5.2"
+VERSION = "7.0.0"
 DEFAULT_CONFIG: dict[str, Any] = {
     "pdf_ocr": {
         "mode": "auto",
@@ -311,13 +312,20 @@ def resolve_target(args, source: str, relative_path: Path | None = None) -> Targ
         relative_path = relative_path or Path(source).name
         parent = relative_path.parent
         root = _batch_root(args)
-        base = root / parent / stem
+        bundle_parent = root / parent
     else:
         root = np.logical(args.output_dir) if args.output_dir else (
             np.logical(Path.cwd()) if is_url(source) else np.logical(source).parent
         )
-        base = root / stem
-    path = base if args.output_mode == "bundle" else base.parent / f"{stem}.md"
+        bundle_parent = root
+    if args.output_mode == "bundle":
+        path = knowledge_unit.bundle_target(
+            bundle_parent,
+            stem,
+            boundary=root if args.input_dir else bundle_parent,
+        )
+    else:
+        path = np.logical(bundle_parent / f"{stem}.md")
     return Target(args.output_mode, path, stem)
 
 
@@ -344,6 +352,12 @@ def _preflight_target(target: Target, source: str, overwrite: bool, rename: bool
         if not overwrite:
             raise OutputCollision(f"Output already exists: {target.path}")
     return target
+
+
+def validate_markdown_bundle_stem(stem: str) -> None:
+    """Reject a generated canonical JSON name reserved by Cortex metadata."""
+    if f"{stem}.json".casefold() == "record.json":
+        raise PipelineError("Generated bundle JSON collides with reserved Cortex record.json")
 
 
 def collect_files(
@@ -925,6 +939,10 @@ def _stage_markdown_bundle_artifacts(
     )
     persisted = json.loads(np.read_text(json_path, encoding="utf-8"))
     validate_canonical(persisted, stage, validate_schema=False)
+    try:
+        knowledge_unit.finalize_owned_stage(stage)
+    except knowledge_unit.KnowledgeUnitError as exc:
+        raise PipelineError(str(exc)) from exc
     return document
 
 
@@ -993,6 +1011,8 @@ def convert_one(args, source: str, relative_path: Path | None = None) -> tuple[P
             "or first convert the file to .docx in a trusted desktop environment"
         )
     target = _preflight_target(resolve_target(args, source, relative_path), source, args.overwrite, args.rename)
+    if target.mode == "bundle":
+        validate_markdown_bundle_stem(target.stem)
     ocr_settings = getattr(args, "ocr_settings", OcrSettings(mode="off", engine="none"))
     ocr_provider = getattr(args, "ocr_provider", None)
     if target.mode == "bundle":

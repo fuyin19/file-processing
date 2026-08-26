@@ -99,8 +99,8 @@ class FakeEngine:
 def test_frontmatter_and_versions_are_coherent():
     skill = (ROOT / "skills" / "pdf-conversion" / "SKILL.md").read_text(encoding="utf-8")
     assert "name: pdf-conversion" in skill
-    assert "version: 1.0.0" in skill
-    assert pipeline.VERSION == "1.0.0"
+    assert "version: 2.0.0" in skill
+    assert pipeline.VERSION == "2.0.0"
 
 
 def test_exact_filter_argument_is_one_sorted_ascii_json_value():
@@ -252,6 +252,28 @@ def test_pdf_input_bundle_is_exact_copy_plus_source(tmp_path):
     bundle = out / "source"
     assert (bundle / "source.pdf").read_bytes() == source.read_bytes()
     assert (bundle / "src" / "source.pdf").read_bytes() == source.read_bytes()
+
+
+@pytest.mark.parametrize("stem", [".cortex", ".CoRtEx-item"])
+def test_pdf_bundle_rejects_reserved_cortex_stem_before_write(tmp_path, stem):
+    source = _pdf(tmp_path / f"{stem}.pdf")
+    output = tmp_path / "out"
+
+    result = _cli("--input", source, "--output-dir", output, "--overwrite")
+
+    assert result.returncode == 1
+    assert "reserved Cortex name" in result.stderr
+    assert not output.exists()
+
+
+def test_pdf_only_record_bundle_remains_supported(tmp_path):
+    source = _pdf(tmp_path / "record.pdf")
+    output = tmp_path / "out"
+
+    result = _cli("--input", source, "--output-dir", output)
+
+    assert result.returncode == 0, result.stderr
+    assert (output / "record/record.pdf").read_bytes() == source.read_bytes()
 
 
 def test_direct_mode_emits_exactly_one_pdf(tmp_path):

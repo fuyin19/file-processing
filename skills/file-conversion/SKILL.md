@@ -3,7 +3,7 @@ name: file-conversion
 description: |
   Route supported local PDF and Office files or directories into one canonical Markdown bundle plus a sibling native PDF, using one source snapshot and one publication transaction. Use when both machine-readable Markdown/JSON and a high-fidelity PDF are required.
 metadata:
-  version: 1.0.0
+  version: 2.0.0
 ---
 
 # Create Markdown + PDF bundles
