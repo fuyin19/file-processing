@@ -1852,7 +1852,7 @@ def test_bundle_rename_uses_deterministic_suffix_for_folder_and_files(tmp_path):
     assert 'title: "report"' in (renamed / 'report_1.md').read_text(encoding='utf-8')
 
 
-def test_bundle_overwrite_replaces_archived_source_bytes(tmp_path):
+def test_bundle_overwrite_replaces_existing_bundle_without_backup(tmp_path):
     src = tmp_path / 'report.txt'
     output = tmp_path / 'out'
     src.write_bytes(b'first version')
@@ -1863,8 +1863,8 @@ def test_bundle_overwrite_replaces_archived_source_bytes(tmp_path):
 
     assert code == 0, stderr
     assert (bundle / 'src' / 'report.txt').read_bytes() == b'second version'
-    assert not list(output.glob('.report.staging-*'))
-    assert not list(output.glob('.report.backup-*'))
+    assert not list(output.glob('.mc-stage-*'))
+    assert not list(output.glob('.mc-backup-*'))
 
 
 def test_collision_rename_preserves_dotted_logical_stem_in_both_modes(tmp_path):
@@ -3720,7 +3720,7 @@ def test_tracked_revision_docx_bundle_archives_user_original_not_accepted_snapsh
     assert (target / 'src' / source.name).read_bytes() != accepted_bytes
 
 
-def test_bundle_source_copy_oserror_cleans_stage_and_preserves_overwrite_target(
+def test_bundle_source_copy_oserror_retains_stage_and_preserves_overwrite_target(
     tmp_path, monkeypatch,
 ):
     import pipeline
@@ -3741,14 +3741,14 @@ def test_bundle_source_copy_oserror_cleans_stage_and_preserves_overwrite_target(
     with pytest.raises(OSError, match='copy failed'):
         pipeline.convert_one(
             _direct_bundle_args(source, output, overwrite=True), str(source)
-        )
+    )
 
     assert (target / 'old.txt').read_bytes() == b'old output'
-    assert not list(output.glob('.source.staging-*'))
-    assert not list(output.glob('.source.backup-*'))
+    assert len(list(output.glob('.mc-stage-*'))) == 1
+    assert not list(output.glob('.mc-backup-*'))
 
 
-def test_bundle_source_copy_hash_mismatch_cleans_stage(tmp_path, monkeypatch):
+def test_bundle_source_copy_hash_mismatch_retains_stage(tmp_path, monkeypatch):
     import pipeline
 
     source = tmp_path / 'source.txt'
@@ -3761,10 +3761,10 @@ def test_bundle_source_copy_hash_mismatch_cleans_stage(tmp_path, monkeypatch):
         pipeline.convert_one(_direct_bundle_args(source, output), str(source))
 
     assert not (output / 'source').exists()
-    assert not list(output.glob('.source.staging-*'))
+    assert len(list(output.glob('.mc-stage-*'))) == 1
 
 
-def test_bundle_validation_failure_removes_staged_source_and_preserves_target(
+def test_bundle_validation_failure_retains_staged_source_and_preserves_target(
     tmp_path, monkeypatch,
 ):
     import pipeline
@@ -3788,12 +3788,13 @@ def test_bundle_validation_failure_removes_staged_source_and_preserves_target(
         )
 
     assert (target / 'old.txt').read_bytes() == b'old output'
-    assert not list(output.glob('.source.staging-*'))
-    assert not list(output.glob('.source.backup-*'))
+    assert len(list(output.glob('.mc-stage-*'))) == 1
+    assert not list(output.glob('.mc-backup-*'))
 
 
-def test_bundle_replace_failure_rolls_back_with_staged_source_copy(tmp_path, monkeypatch):
+def test_bundle_final_replace_failure_retains_staged_source_copy(tmp_path, monkeypatch):
     import pipeline
+    import conversion_runtime
 
     source = tmp_path / 'source.txt'
     source.write_bytes(b'new source')
@@ -3802,95 +3803,23 @@ def test_bundle_replace_failure_rolls_back_with_staged_source_copy(tmp_path, mon
     target.mkdir(parents=True)
     (target / 'old.txt').write_bytes(b'old output')
     _stub_bundle_conversion(monkeypatch, pipeline, source)
-    real_replace = pipeline.np.rename_no_replace
-    calls = []
+    def fail_removal(destination):
+        raise OSError('simulated target removal failure')
 
-    def flaky(source_path, destination):
-        calls.append((Path(source_path), Path(destination)))
-        if len(calls) == 2:
-            assert (Path(source_path) / 'src' / source.name).read_bytes() == source.read_bytes()
-            raise OSError('simulated replace failure')
-        return real_replace(source_path, destination)
+    monkeypatch.setattr(conversion_runtime, '_remove_overwrite_target', fail_removal)
 
-    monkeypatch.setattr(pipeline.np, 'rename_no_replace', flaky)
-
-    with pytest.raises(OSError, match='simulated replace failure'):
+    with pytest.raises(pipeline.PipelineError, match='retained owned stage') as exc_info:
         pipeline.convert_one(
             _direct_bundle_args(source, output, overwrite=True), str(source)
         )
 
+    stages = list(output.glob('.mc-stage-*'))
+    assert len(stages) == 1
+    assert str(stages[0]) in str(exc_info.value)
+    assert 'Manual next step' in str(exc_info.value)
     assert (target / 'old.txt').read_bytes() == b'old output'
-    assert not (target / 'src').exists()
-    assert not list(output.glob('.source.staging-*'))
-    assert not list(output.glob('.source.backup-*'))
-
-
-def test_bundle_replace_failure_rolls_back_previous_target(tmp_path, monkeypatch):
-    import pipeline
-    target = tmp_path / 'target'
-    target.mkdir()
-    (target / 'old.txt').write_text('old', encoding='utf-8')
-    stage = tmp_path / 'stage'
-    stage.mkdir()
-    (stage / 'new.txt').write_text('new', encoding='utf-8')
-    real_replace = pipeline.np.rename_no_replace
-    calls = []
-
-    def flaky(source, destination):
-        calls.append((Path(source), Path(destination)))
-        if len(calls) == 2:
-            raise OSError('simulated replace failure')
-        return real_replace(source, destination)
-
-    monkeypatch.setattr(pipeline.np, 'rename_no_replace', flaky)
-    with pytest.raises(OSError, match='simulated'):
-        pipeline._publish_directory(stage, target, True)
-    assert (target / 'old.txt').read_text(encoding='utf-8') == 'old'
-    assert not (target / 'new.txt').exists()
-
-
-def test_bundle_overwrite_replaces_regular_file_target(tmp_path):
-    import pipeline
-    target = tmp_path / 'target'
-    target.write_text('old file', encoding='utf-8')
-    stage = tmp_path / 'stage'
-    stage.mkdir()
-    (stage / 'new.txt').write_text('new', encoding='utf-8')
-
-    pipeline._publish_directory(stage, target, True)
-
-    assert target.is_dir()
-    assert (target / 'new.txt').read_text(encoding='utf-8') == 'new'
-    assert not list(tmp_path.glob('.target.backup-*'))
-
-
-def test_bundle_backup_cleanup_failure_is_nonfatal_after_commit(tmp_path, monkeypatch, capsys):
-    import pipeline
-    target = tmp_path / 'target'
-    target.mkdir()
-    (target / 'old.txt').write_text('old', encoding='utf-8')
-    stage = tmp_path / 'stage'
-    stage.mkdir()
-    (stage / 'new.txt').write_text('new', encoding='utf-8')
-    real_remove_path = pipeline._remove_path
-
-    def fail_backup_cleanup(path):
-        if Path(path).name.startswith('.mc-backup-'):
-            raise PermissionError('simulated cleanup failure')
-        return real_remove_path(path)
-
-    monkeypatch.setattr(pipeline, '_remove_path', fail_backup_cleanup)
-
-    pipeline._publish_directory(stage, target, True)
-
-    assert (target / 'new.txt').read_text(encoding='utf-8') == 'new'
-    assert not (target / 'old.txt').exists()
-    backups = list(tmp_path.glob('.mc-backup-*'))
-    assert len(backups) == 1
-    assert (backups[0] / 'original' / 'old.txt').read_text(encoding='utf-8') == 'old'
-    stderr = capsys.readouterr().err
-    assert 'published' in stderr
-    assert 'could not remove backup' in stderr
+    assert (stages[0] / 'src' / source.name).read_bytes() == source.read_bytes()
+    assert not list(output.glob('.mc-backup-*'))
 
 
 def _assert_single_office_bundle_image(bundle):

@@ -8,6 +8,11 @@ metadata:
 
 # Convert local files to PDF
 
+Bundle mode requires `ANTI_ENTROPY_CORE_RUNNER` to be the absolute path to
+`anti-entropy-core/scripts/knowledge_unit_runner.py`. Direct PDF mode does not
+create a knowledge unit. A missing or invalid runner in bundle mode is a
+configuration error.
+
 Run `scripts/pipeline.py`. This command accepts only local `.pdf`, Word
 (`.doc/.docx/.docm`), PowerPoint (`.ppt/.pptx/.pptm/.pps/.ppsx`), and Excel
 (`.xls/.xlsx/.xlsm/.xlsb`) inputs. It rejects URLs, template formats, `.ppsm`,
@@ -37,5 +42,8 @@ The pipeline neither installs nor repairs LibreOffice.
 
 Every output passes a separate bounded structural validation worker. PDF input
 bypasses LibreOffice and is copied exactly from the acquired source snapshot.
-Publication uses an identity-aware no-replace move; overwrite retains the
-documented two-move caveat and is not crash-atomic.
+Publication uses a no-replace move for absent targets. Overwrite has no backup
+or automatic rollback: regular files use the OS replace operation, while
+bundle directories remove the selected target before moving the completed
+stage into place. A failed publication retains the owned stage at the reported
+path for manual handling.

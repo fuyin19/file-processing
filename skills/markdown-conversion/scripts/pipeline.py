@@ -38,9 +38,12 @@ from pathlib import Path
 from typing import Any, NoReturn
 
 import native_paths as np
+import anti_entropy_core_adapter as core
 import knowledge_unit
 from conversion_runtime import ConversionError as SharedConversionError
+from conversion_runtime import OutputCollision as SharedOutputCollision
 from conversion_runtime import SourceSnapshot, acquire_source_snapshot
+from conversion_runtime import publish_owned as shared_publish_owned
 
 from adapters import (
     ANYDOC_FORMAT_BY_EXTENSION,
@@ -110,15 +113,15 @@ class PipelineError(RuntimeError):
     pass
 
 
+def _complete_envelope_stage(stage: Path) -> None:
+    try:
+        core.stage_complete(stage)
+    except core.CoreAdapterError as exc:
+        raise PipelineError(str(exc)) from exc
+
+
 class OutputCollision(PipelineError):
     pass
-
-
-_OWNED_ENTRIES: dict[str, np.OwnedEntry] = {}
-
-
-def _owned_key(path: Path) -> str:
-    return os.path.normcase(str(np.logical(path)))
 
 
 def _run_provider_worker(request: dict[str, Any], timeout: float = PROVIDER_TIMEOUT_SECONDS) -> dict[str, Any]:
@@ -690,20 +693,16 @@ def _build_document(
 
 def _new_owned_dir(parent: Path, prefix: str) -> np.OwnedEntry:
     try:
-        entry = np.create_owned_dir(parent, prefix)
+        return np.create_owned_dir(parent, prefix)
     except RuntimeError as exc:
         raise PipelineError(str(exc)) from exc
-    _OWNED_ENTRIES[_owned_key(entry.path)] = entry
-    return entry
 
 
 def _new_owned_file(parent: Path, prefix: str, suffix: str = "") -> np.OwnedEntry:
     try:
-        entry = np.create_owned_file(parent, prefix, suffix)
+        return np.create_owned_file(parent, prefix, suffix)
     except RuntimeError as exc:
         raise PipelineError(str(exc)) from exc
-    _OWNED_ENTRIES[_owned_key(entry.path)] = entry
-    return entry
 
 
 def _copy_local_source_to_bundle(source: str, stage: Path) -> tuple[Path, np.EntryIdentity, tuple[dict[str, Any], str]]:
@@ -738,151 +737,18 @@ def _verify_archived_source(
         )
 
 
-def _cleanup_owned(entry: np.OwnedEntry, *, warning: str | None = None) -> bool:
-    try:
-        np.remove_owned(entry)
-        _OWNED_ENTRIES.pop(_owned_key(entry.path), None)
-        return True
-    except OSError as exc:
-        if warning is not None:
-            print(f"Warning: {warning} {entry.path}: {exc}", file=sys.stderr)
-        return False
-
-
-def _remove_path(path: Path) -> None:
-    """Compatibility seam: remove only an entry created by this invocation."""
-    entry = _OWNED_ENTRIES.get(_owned_key(path))
-    if entry is None:
-        raise OSError(f"Refusing to remove an entry not owned by this invocation: {path}")
-    np.remove_owned(entry)
-    _OWNED_ENTRIES.pop(_owned_key(path), None)
-
-
-def _recovery_error(target: Path, backup: np.OwnedEntry, detail: str) -> PipelineError:
-    return PipelineError(
-        f"{detail}; retained exact recovery backup at {backup.path} for target {target}"
-    )
-
-
-def _finish_backup_after_commit(target: Path, backup: np.OwnedEntry) -> None:
-    try:
-        _remove_path(backup.path)
-    except OSError as exc:
-        print(
-            f"Warning: published {target}, but could not remove backup {backup.path}: {exc}",
-            file=sys.stderr,
-        )
-        # The commit is confirmed.  Cleanup remains deliberately non-fatal and
-        # the exact path printed above is the only recovery surface.
-        return
-
-
-def _restore_old_target(
-    target: Path,
-    backup: np.OwnedEntry,
-    payload: Path,
-    old_identity: np.EntryIdentity,
-) -> bool:
-    if np.exists(target) or not old_identity.matches(payload):
-        return False
-    try:
-        np.rename_no_replace(payload, target)
-    except Exception:
-        # A wrapper or kernel boundary may report failure after the move.  The
-        # state, not the exception alone, decides whether restoration happened.
-        pass
-    return old_identity.matches(target) and not np.exists(payload)
-
-
 def _publish_owned(
     stage: np.OwnedEntry,
     target: Path,
     overwrite: bool,
-    *,
-    allow_stage_cleanup: bool,
 ) -> None:
-    """Publish one owned file/directory with exact, identity-aware rollback."""
-    target = np.logical(target)
-    if not stage.matches(stage.path):
-        raise PipelineError(f"Owned stage identity changed before publication: {stage.path}")
-    old_identity = np.EntryIdentity.capture(target) if np.exists(target) else None
-    if old_identity is not None and not overwrite:
-        raise OutputCollision(f"Output already exists: {target}")
-
-    if old_identity is None:
-        try:
-            np.rename_no_replace(stage.path, target)
-        except FileExistsError as exc:
-            if allow_stage_cleanup and stage.matches(stage.path):
-                _cleanup_owned(stage, warning="could not remove exact late-collision stage")
-            raise OutputCollision(f"Output already exists: {target}") from exc
-        except Exception:
-            if stage.matches(target) and not np.exists(stage.path):
-                _OWNED_ENTRIES.pop(_owned_key(stage.path), None)
-                return
-            raise
-        if not stage.matches(target) or np.exists(stage.path):
-            raise PipelineError(f"Could not verify published target identity: {target}")
-        _OWNED_ENTRIES.pop(_owned_key(stage.path), None)
-        return
-
-    backup = _new_owned_dir(target.parent, ".mc-backup-")
-    payload = backup.path / "original"
+    """Publish through the shared minimal overwrite implementation."""
     try:
-        try:
-            np.rename_no_replace(target, payload)
-        except Exception as move_error:
-            if old_identity.matches(payload) and not np.exists(target):
-                restored = _restore_old_target(target, backup, payload, old_identity)
-                if restored:
-                    _cleanup_owned(
-                        backup,
-                        warning=f"restored {target}, but could not remove empty backup",
-                    )
-                    raise move_error
-                raise _recovery_error(target, backup, "Old target move failed after displacement") from move_error
-            if old_identity.matches(target) and not np.exists(payload):
-                _cleanup_owned(
-                    backup,
-                    warning=f"target {target} remained in place, but could not remove empty backup",
-                )
-                raise move_error
-            raise _recovery_error(target, backup, "Old target move entered an indeterminate state") from move_error
-
-        if not old_identity.matches(payload) or np.exists(target):
-            raise _recovery_error(target, backup, "Moved old target identity could not be verified")
-
-        try:
-            np.rename_no_replace(stage.path, target)
-        except Exception as commit_error:
-            if stage.matches(target) and not np.exists(stage.path):
-                _OWNED_ENTRIES.pop(_owned_key(stage.path), None)
-                _finish_backup_after_commit(target, backup)
-                return
-            restored = _restore_old_target(target, backup, payload, old_identity)
-            if restored:
-                _cleanup_owned(
-                    backup,
-                    warning=f"restored {target}, but could not remove empty backup",
-                )
-                if allow_stage_cleanup and stage.matches(stage.path):
-                    _cleanup_owned(
-                        stage,
-                        warning="could not remove exact failed publication stage",
-                    )
-                raise commit_error
-            raise _recovery_error(target, backup, "New target commit failed and exact restoration was not verified") from commit_error
-
-        if not stage.matches(target) or np.exists(stage.path):
-            raise _recovery_error(target, backup, "New target commit identity could not be verified")
-        _OWNED_ENTRIES.pop(_owned_key(stage.path), None)
-        if not old_identity.matches(payload):
-            raise _recovery_error(target, backup, "Committed target has an unverifiable recovery payload")
-        _finish_backup_after_commit(target, backup)
-    except Exception:
-        # No broad rollback and no parent/prefix sweep.  The state-specific
-        # branches above decide whether an exact owned stage is safe to remove.
-        raise
+        shared_publish_owned(stage, target, overwrite)
+    except SharedOutputCollision as exc:
+        raise OutputCollision(str(exc)) from exc
+    except SharedConversionError as exc:
+        raise PipelineError(str(exc)) from exc
 
 
 def _publish_directory(
@@ -895,21 +761,17 @@ def _publish_directory(
     owner = stage_owner or np.OwnedEntry(
         identity.path, identity.st_dev, identity.st_ino, identity.st_mode
     )
-    _publish_owned(owner, target, overwrite, allow_stage_cleanup=stage_owner is not None)
+    _publish_owned(owner, target, overwrite)
 
 
 def _write_markdown_file(markdown: str, target: Path, overwrite: bool) -> None:
     target = np.logical(target)
     np.mkdir(target.parent, parents=True, exist_ok=True)
     stage = _new_owned_file(target.parent, ".mc-stage-", ".md")
-    try:
-        np.write_text(stage.path, markdown, encoding="utf-8", newline="\n")
-        if not stage.matches(stage.path):
-            raise PipelineError(f"Owned Markdown stage identity changed: {stage.path}")
-        _publish_owned(stage, target, overwrite, allow_stage_cleanup=True)
-    finally:
-        if stage.matches(stage.path):
-            _cleanup_owned(stage, warning="could not remove exact failed Markdown stage")
+    np.write_text(stage.path, markdown, encoding="utf-8", newline="\n")
+    if not stage.matches(stage.path):
+        raise PipelineError(f"Owned Markdown stage identity changed: {stage.path}")
+    _publish_owned(stage, target, overwrite)
 
 
 def _stage_markdown_bundle_artifacts(
@@ -939,10 +801,7 @@ def _stage_markdown_bundle_artifacts(
     )
     persisted = json.loads(np.read_text(json_path, encoding="utf-8"))
     validate_canonical(persisted, stage, validate_schema=False)
-    try:
-        knowledge_unit.finalize_owned_stage(stage)
-    except knowledge_unit.KnowledgeUnitError as exc:
-        raise PipelineError(str(exc)) from exc
+    _complete_envelope_stage(stage)
     return document
 
 
@@ -1019,45 +878,37 @@ def convert_one(args, source: str, relative_path: Path | None = None) -> tuple[P
         np.mkdir(target.path.parent, parents=True, exist_ok=True)
         stage_owner = _new_owned_dir(target.path.parent, ".mc-stage-")
         stage = stage_owner.path
-        try:
-            if is_url(source):
-                asset_dir = stage / "assets" / "images"
-                document = _build_document(
-                    source, args.timestamp, args.language_normalization, "bundle",
-                    Path(np.native(asset_dir)),
-                    identity_source=source,
-                    ocr_provider=ocr_provider,
-                    ocr_mode=ocr_settings.mode,
-                    local_adapter=local_adapter,
-                    enrich_images=getattr(args, "enrich_images", False),
-                    ocr_settings=ocr_settings,
-                )
-                document = _stage_markdown_bundle_artifacts(args, stage, target.stem, document)
-            else:
-                archived_source, archived_identity, precomputed_identity = _copy_local_source_to_bundle(
-                    source, stage
-                )
-                document = _emit_markdown_bundle_core(
-                    args,
-                    operational_source=np.native(archived_source),
-                    logical_source=source,
-                    stage=stage,
-                    target_stem=target.stem,
-                    precomputed_identity=precomputed_identity,
-                    verify_snapshot=lambda: _verify_archived_source(
-                        archived_source, archived_identity, precomputed_identity[0]["sha256"]
-                    ),
-                )
-            if not stage_owner.matches(stage):
-                raise PipelineError(f"Owned bundle stage identity changed: {stage}")
-            _publish_directory(stage, target.path, args.overwrite, stage_owner)
-        except Exception:
-            if stage_owner.matches(stage):
-                _cleanup_owned(
-                    stage_owner,
-                    warning="could not remove exact failed bundle stage",
-                )
-            raise
+        if is_url(source):
+            asset_dir = stage / "assets" / "images"
+            document = _build_document(
+                source, args.timestamp, args.language_normalization, "bundle",
+                Path(np.native(asset_dir)),
+                identity_source=source,
+                ocr_provider=ocr_provider,
+                ocr_mode=ocr_settings.mode,
+                local_adapter=local_adapter,
+                enrich_images=getattr(args, "enrich_images", False),
+                ocr_settings=ocr_settings,
+            )
+            document = _stage_markdown_bundle_artifacts(args, stage, target.stem, document)
+        else:
+            archived_source, archived_identity, precomputed_identity = _copy_local_source_to_bundle(
+                source, stage
+            )
+            document = _emit_markdown_bundle_core(
+                args,
+                operational_source=np.native(archived_source),
+                logical_source=source,
+                stage=stage,
+                target_stem=target.stem,
+                precomputed_identity=precomputed_identity,
+                verify_snapshot=lambda: _verify_archived_source(
+                    archived_source, archived_identity, precomputed_identity[0]["sha256"]
+                ),
+            )
+        if not stage_owner.matches(stage):
+            raise PipelineError(f"Owned bundle stage identity changed: {stage}")
+        _publish_directory(stage, target.path, args.overwrite, stage_owner)
     else:
         precomputed_identity = None
         operational_source = source

@@ -16,6 +16,7 @@ sys.path.insert(0, str(_SCRIPTS))
 
 import native_paths as np
 import pipeline
+import conversion_runtime
 
 
 def _long_parent(tmp_path: Path) -> Path:
@@ -93,7 +94,14 @@ def test_real_windows_long_paths_disabled_and_bundle_markdown_collision_overwrit
     assert calls == []
 
     np.write_text(source, "second", encoding="utf-8")
-    pipeline.convert_one(_args(source, output, "--overwrite"), str(source))
+    replaced, _, _ = pipeline.convert_one(_args(source, output, "--overwrite"), str(source))
+    stages = [
+        np.logical(entry.path)
+        for entry in np.scandir(output)
+        if entry.name.startswith(".mc-stage-")
+    ]
+    assert replaced == target
+    assert stages == []
     assert np.read_text(target / "src" / source.name) == "second"
 
     markdown_output = long_parent / "markdown"
@@ -215,7 +223,6 @@ def test_unc_logical_and_native_forms_remain_separate():
     ("factory", "prefix", "suffix"),
     [
         (np.create_owned_dir, ".mc-stage-", ""),
-        (np.create_owned_dir, ".mc-backup-", ""),
         (np.create_owned_file, ".mc-stage-", ".md"),
     ],
 )
@@ -255,30 +262,48 @@ def test_atomic_no_replace_preserves_late_foreign_target(tmp_path):
     assert destination.read_text(encoding="utf-8") == "foreign"
 
 
-def test_backup_collision_exhaustion_preserves_target_stage_and_collision(tmp_path, monkeypatch):
+def test_markdown_overwrite_uses_one_final_replace_without_backup(tmp_path, monkeypatch):
+    target = tmp_path / "target.md"
+    target.write_text("old", encoding="utf-8")
+    stage = np.create_owned_file(tmp_path, ".mc-stage-", ".md")
+    np.write_text(stage.path, "new", encoding="utf-8")
+    calls = []
+    real_replace = np.replace
+
+    def record_replace(source, destination):
+        calls.append((Path(source), Path(destination)))
+        real_replace(source, destination)
+
+    monkeypatch.setattr(np, "replace", record_replace)
+    pipeline._publish_owned(stage, target, True)
+
+    assert calls == [(stage.path, target)]
+    assert np.read_text(target) == "new"
+    assert not np.exists(stage.path)
+    assert not list(tmp_path.glob(".mc-backup-*"))
+
+
+def test_markdown_final_replace_failure_retains_target_and_owned_stage(tmp_path, monkeypatch):
     target = tmp_path / "target"
     target.mkdir()
     (target / "old.txt").write_text("old", encoding="utf-8")
     stage = tmp_path / "stage"
     stage.mkdir()
     (stage / "new.txt").write_text("new", encoding="utf-8")
-    collision = tmp_path / f".mc-backup-{_FixedUuid.hex}"
-    collision.mkdir()
-    (collision / "protected.txt").write_text("protected", encoding="utf-8")
-    calls = []
 
-    def fixed():
-        calls.append(1)
-        return _FixedUuid()
-
-    monkeypatch.setattr(np.uuid, "uuid4", fixed)
-    with pytest.raises(pipeline.PipelineError, match="after 32 attempts"):
+    monkeypatch.setattr(
+        conversion_runtime,
+        "_remove_overwrite_target",
+        lambda destination: (_ for _ in ()).throw(OSError("injected target removal failure")),
+    )
+    with pytest.raises(pipeline.PipelineError, match="retained owned stage") as exc_info:
         pipeline._publish_directory(stage, target, True)
 
-    assert len(calls) == 32
+    assert str(stage) in str(exc_info.value)
+    assert "Manual next step" in str(exc_info.value)
     assert (target / "old.txt").read_text(encoding="utf-8") == "old"
     assert (stage / "new.txt").read_text(encoding="utf-8") == "new"
-    assert (collision / "protected.txt").read_text(encoding="utf-8") == "protected"
+    assert not list(tmp_path.glob(".mc-backup-*"))
 
 
 def test_source_beneath_bundle_target_is_rejected_before_adapter(tmp_path, monkeypatch):
@@ -299,7 +324,7 @@ def test_source_beneath_bundle_target_is_rejected_before_adapter(tmp_path, monke
     assert source.read_text(encoding="utf-8") == "body"
 
 
-def test_late_default_collision_preserves_foreign_target_and_cleans_exact_stage(
+def test_late_default_collision_preserves_foreign_target_and_owned_stage(
     tmp_path, monkeypatch
 ):
     source = tmp_path / "source.txt"
@@ -320,7 +345,7 @@ def test_late_default_collision_preserves_foreign_target_and_cleans_exact_stage(
         pipeline.convert_one(_args(source, output), str(source))
 
     assert (target / "foreign.txt").read_text(encoding="utf-8") == "foreign"
-    assert not list(output.glob(".mc-stage-*"))
+    assert len(list(output.glob(".mc-stage-*"))) == 1
 
 
 def test_source_copy_failure_occurs_before_adapter_and_preserves_overwrite_target(
@@ -347,7 +372,7 @@ def test_source_copy_failure_occurs_before_adapter_and_preserves_overwrite_targe
         pipeline.convert_one(_args(source, output, "--overwrite"), str(source))
 
     assert (target / "old.txt").read_text(encoding="utf-8") == "old"
-    assert not list(output.glob(".mc-stage-*"))
+    assert len(list(output.glob(".mc-stage-*"))) == 1
 
 
 def test_mutating_adapter_is_detected_before_old_overwrite_target_moves(tmp_path, monkeypatch):
@@ -371,107 +396,5 @@ def test_mutating_adapter_is_detected_before_old_overwrite_target_moves(tmp_path
         pipeline.convert_one(_args(source, output, "--overwrite"), str(source))
 
     assert (target / "old.txt").read_text(encoding="utf-8") == "old"
+    assert len(list(output.glob(".mc-stage-*"))) == 1
     assert not list(output.glob(".mc-backup-*"))
-
-
-def test_overwrite_move_reported_failed_after_displacement_restores_same_old_identity(
-    tmp_path, monkeypatch
-):
-    target = tmp_path / "target"
-    target.mkdir()
-    (target / "old.txt").write_text("old", encoding="utf-8")
-    old = np.EntryIdentity.capture(target)
-    stage = tmp_path / "stage"
-    stage.mkdir()
-    (stage / "new.txt").write_text("new", encoding="utf-8")
-    real_move = np.rename_no_replace
-    calls = []
-
-    def moved_then_raised(source, destination):
-        calls.append((source, destination))
-        real_move(source, destination)
-        if len(calls) == 1:
-            raise OSError("reported after old move")
-
-    monkeypatch.setattr(np, "rename_no_replace", moved_then_raised)
-    with pytest.raises(OSError, match="reported after old move"):
-        pipeline._publish_directory(stage, target, True)
-
-    assert old.matches(target)
-    assert (target / "old.txt").read_text(encoding="utf-8") == "old"
-    assert (stage / "new.txt").read_text(encoding="utf-8") == "new"
-    assert not list(tmp_path.glob(".mc-backup-*"))
-
-
-def test_overwrite_commit_reported_failed_after_move_is_verified_as_committed(
-    tmp_path, monkeypatch
-):
-    target = tmp_path / "target"
-    target.mkdir()
-    (target / "old.txt").write_text("old", encoding="utf-8")
-    stage = tmp_path / "stage"
-    stage.mkdir()
-    (stage / "new.txt").write_text("new", encoding="utf-8")
-    real_move = np.rename_no_replace
-    calls = []
-
-    def moved_then_raised(source, destination):
-        calls.append((source, destination))
-        real_move(source, destination)
-        if len(calls) == 2:
-            raise OSError("reported after commit")
-
-    monkeypatch.setattr(np, "rename_no_replace", moved_then_raised)
-    pipeline._publish_directory(stage, target, True)
-
-    assert (target / "new.txt").read_text(encoding="utf-8") == "new"
-    assert not list(tmp_path.glob(".mc-backup-*"))
-
-
-def test_failed_commit_with_foreign_target_retains_exact_recovery_backup(tmp_path, monkeypatch):
-    target = tmp_path / "target"
-    target.mkdir()
-    (target / "old.txt").write_text("old", encoding="utf-8")
-    stage = tmp_path / "stage"
-    stage.mkdir()
-    (stage / "new.txt").write_text("new", encoding="utf-8")
-    real_move = np.rename_no_replace
-    calls = []
-
-    def raced(source, destination):
-        calls.append((source, destination))
-        if len(calls) == 2:
-            Path(destination).mkdir()
-            (Path(destination) / "foreign.txt").write_text("foreign", encoding="utf-8")
-            raise OSError("commit race")
-        return real_move(source, destination)
-
-    monkeypatch.setattr(np, "rename_no_replace", raced)
-    with pytest.raises(pipeline.PipelineError, match="retained exact recovery backup") as exc_info:
-        pipeline._publish_directory(stage, target, True)
-
-    backups = list(tmp_path.glob(".mc-backup-*"))
-    assert len(backups) == 1
-    assert str(backups[0]) in str(exc_info.value)
-    assert (backups[0] / "original" / "old.txt").read_text(encoding="utf-8") == "old"
-    assert (target / "foreign.txt").read_text(encoding="utf-8") == "foreign"
-
-
-@pytest.mark.skipif(os.name != "nt", reason="Windows junction acceptance")
-def test_overwrite_backup_cleanup_unlinks_junction_without_touching_external_target(tmp_path):
-    external = tmp_path / "external"
-    external.mkdir()
-    (external / "keep.txt").write_text("keep", encoding="utf-8")
-    target = tmp_path / "target"
-    target.mkdir()
-    junction = target / "external-link"
-    _make_junction(junction, external)
-    stage = tmp_path / "stage"
-    stage.mkdir()
-    (stage / "new.txt").write_text("new", encoding="utf-8")
-
-    pipeline._publish_directory(stage, target, True)
-
-    assert (target / "new.txt").read_text(encoding="utf-8") == "new"
-    assert (external / "keep.txt").read_text(encoding="utf-8") == "keep"
-    assert not list(tmp_path.glob(".mc-backup-*"))

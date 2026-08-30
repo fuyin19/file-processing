@@ -1,12 +1,16 @@
 ---
 name: markdown-conversion
 description: |
-  Convert local PDF and AnyDoc/MarkItDown-supported documents, supported files, URLs, or directories into a canonical JSON plus Markdown bundle, or one clean Markdown file. Use for PDF Inspector-backed PDF extraction, AnyDoc-backed local non-PDF extraction, explicit MarkItDown rollback, deterministic five-field frontmatter, Chinese language normalization, batch conversion, and transactional output handling.
+  Convert local PDF and AnyDoc/MarkItDown-supported documents, supported files, URLs, or directories into a canonical JSON plus Markdown bundle, or one clean Markdown file. Use for PDF Inspector-backed PDF extraction, AnyDoc-backed local non-PDF extraction, explicit MarkItDown rollback, deterministic five-field frontmatter, Chinese language normalization, batch conversion, and staged output handling.
 metadata:
   version: 7.0.0
 ---
 
 # Convert files to canonical JSON and Markdown
+
+Bundle mode requires `ANTI_ENTROPY_CORE_RUNNER` to be the absolute path to
+`anti-entropy-core/scripts/knowledge_unit_runner.py`. A missing or invalid
+runner is a configuration error; there is no local Envelope fallback.
 
 Use `scripts/pipeline.py`. Local PDFs use PDF Inspector's full-document
 Markdown as the authoritative result and normally route Inspector-reported
@@ -77,7 +81,7 @@ The source copy is archival output and is not listed in Canonical `assets` or
 created only when assets exist. Batch output defaults to
 `<input-dir>/_converted/` and mirrors the input hierarchy. An explicit
 `--output-dir` replaces that output root. Batch conversion handles each file as
-its own preflight and publication transaction; it is not atomic across the
+its own preflight and staged publication boundary; it is not atomic across the
 whole directory.
 
 Markdown-only mode emits exactly one `.md` file: no JSON, assets, source copy,
@@ -140,13 +144,13 @@ mode skips JSON Schema validation while retaining applicable semantic checks.
 8. In bundle mode, validate JSON Schema, references, asset containment, and
    hashes. In Markdown-only mode, skip JSON Schema and run the applicable
    semantic checks.
-9. Publish by atomic no-replace entry renames. An absent target receives the
-   verified owned stage directly. Overwrite first moves the old entry to
-   `.mc-backup-<uuid>/original`, then moves the stage to the target; a caught
-   pre-commit failure restores only when exact identities prove restoration is
-   safe. Cleanup never scans a prefix or parent and never follows a symlink or
-   junction. `--rename` keeps `_1`, `_2`, …; batch does not extend that
-   transaction across files.
+9. Publish a verified owned stage. An absent target receives a no-replace move;
+   an existing target is rejected unless `--overwrite` is explicit. Regular
+   files use the OS replace operation; bundle directories remove the selected
+   target and then move the completed stage into place. There is no backup or
+   automatic rollback. A failed publication retains the owned stage and
+   reports its exact path. `--rename` keeps `_1`, `_2`, …; batch does not
+   extend publication across files.
 
 `quality.status` is `complete`, `complete_with_warnings`, or `partial`; all
 three publish successfully. Known loss, including an OCR-required page, is
@@ -182,12 +186,9 @@ stem/slug fallback.
   UNC paths, so local input, staging, assets, validation, and publication work
   when ordinary path APIs are limited to 260 characters. Canonical locators and
   reported final paths remain ordinary logical paths.
-- Overwrite is a deliberate two-move transaction, not crash-atomic. An abrupt
-  process or machine stop can leave the old target at the target, the old entry
-  at an exact `.mc-backup-<uuid>/original` recovery path with no target, or a
-  confirmed new target plus that backup. There is no broad recovery/delete
-  route, lock, journal, or background cleanup service. A reported retained
-  backup must be inspected at its exact printed path.
+- Overwrite has no backup, rollback, or automatic recovery route. If
+  publication fails, inspect the reported owned stage and target before
+  retrying.
 
 - PDF conversion uses a behaviorally compatible PDF Inspector for headings, paragraphs, line wrapping,
   reading order, and Markdown tables. Its full-document Markdown is parsed
@@ -257,6 +258,6 @@ See `references/canonical-schema-v1.md` for the public JSON contract,
 ## Exit codes
 
 - `0` — output published, including warning or partial output.
-- `1` — input, conversion, validation, staging, write, or rollback failure.
+- `1` — input, conversion, validation, staging, write, or publication failure.
 - `2` — output collision without `--overwrite`/`--rename`; in batch, at least one
   collision and no true failure.

@@ -9,6 +9,13 @@ conversion, review, and translation skills.
 claude skill add /path/to/file-processing
 ```
 
+## Knowledge-unit Core
+
+Bundle-producing routes require `ANTI_ENTROPY_CORE_RUNNER` to name the absolute
+path to `anti-entropy-core/scripts/knowledge_unit_runner.py`. The shared runner
+validates and completes only the owned staging directory; file-processing does
+not discover a runner or fall back to a separate local Envelope implementation.
+
 ## Skills
 
 ### markdown-conversion (v7.0.0)
@@ -70,12 +77,12 @@ source copy or other sidecar because it remains the legacy one-file mode.
 
 All local path-sensitive operations use extended-length native paths on
 Windows, including UNC paths, while Canonical JSON retains only ordinary
-normalized logical locators. Publication uses exclusive short
-`.mc-stage-<uuid>` entries and atomic no-replace moves. `--overwrite` is a
-two-move transaction through `.mc-backup-<uuid>/original`; it rolls back caught
-pre-commit failures when exact identities prove that safe, but it is not
-crash-atomic. Any unverifiable recovery backup is retained and reported by its
-exact path rather than swept by name.
+normalized logical locators. Publication uses exclusive short `.mc-stage-<uuid>`
+entries. An existing target is rejected by default; `--overwrite` makes one
+replacement without a backup or automatic rollback. Regular files use the OS
+replace operation; bundle directories remove the selected target and then move
+the completed stage into place. A failed publication retains the owned stage
+and reports its exact path for manual handling.
 
 Canonical JSON v1 preserves source text and stable locators/IDs while Markdown
 defaults to simplified Chinese. Change this with

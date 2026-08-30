@@ -317,6 +317,11 @@ def rename_no_replace(source: os.PathLike[str] | str, destination: os.PathLike[s
         _rename_no_replace_posix(source_path, destination_path)
 
 
+def replace(source: os.PathLike[str] | str, destination: os.PathLike[str] | str) -> None:
+    """Perform one operating-system replacement operation."""
+    os.replace(native(source), native(destination))
+
+
 @dataclass(frozen=True)
 class EntryIdentity:
     path: Path

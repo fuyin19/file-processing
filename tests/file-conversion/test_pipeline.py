@@ -35,6 +35,7 @@ def _module(name: str, path: Path):
 
 
 pipeline = _module("file_conversion_pipeline_tests", SCRIPT)
+import conversion_runtime
 import libreoffice_pdf
 
 
@@ -215,7 +216,7 @@ def test_partial_markdown_plus_valid_pdf_publishes_flat_bundle(tmp_path, monkeyp
     assert (target / "assets/.keep").read_bytes() == b""
 
 
-def test_pdf_hard_failure_publishes_nothing_and_preserves_overwrite_target(tmp_path, monkeypatch):
+def test_pdf_hard_failure_retains_stage_and_preserves_overwrite_target(tmp_path, monkeypatch):
     source = _source(tmp_path)
     out = tmp_path / "out"
     target = out / "source"
@@ -226,9 +227,38 @@ def test_pdf_hard_failure_publishes_nothing_and_preserves_overwrite_target(tmp_p
     with pytest.raises(libreoffice_pdf.LibreOfficeError, match="invalid PDF"):
         pipeline.convert_one(
             args, str(source), pipeline.load_config(CONFIG), engine=FakeEngine(_valid_pdf(tmp_path / "valid.pdf"), fail="invalid PDF")
-        )
+    )
     assert (target / "old").read_text(encoding="utf-8") == "old"
-    assert not list(out.glob(".fc-stage-*"))
+    assert len(list(out.glob(".fc-stage-*"))) == 1
+
+
+def test_final_publish_failure_retains_router_stage_and_target(tmp_path, monkeypatch):
+    source = _source(tmp_path)
+    out = tmp_path / "out"
+    target = out / "source"
+    target.mkdir(parents=True)
+    (target / "old").write_text("old", encoding="utf-8")
+    args = _args(source, out, "--overwrite")
+    monkeypatch.setattr(pipeline.markdown_pipeline, "emit_markdown_bundle", _fake_emitter)
+    monkeypatch.setattr(
+        conversion_runtime,
+        "_remove_overwrite_target",
+        lambda target_path: (_ for _ in ()).throw(OSError("injected target removal failure")),
+    )
+
+    with pytest.raises(pipeline.ConversionError, match="retained owned stage") as exc_info:
+        pipeline.convert_one(
+            args,
+            str(source),
+            pipeline.load_config(CONFIG),
+            engine=FakeEngine(_valid_pdf(tmp_path / "valid.pdf")),
+        )
+
+    stages = list(out.glob(".fc-stage-*"))
+    assert len(stages) == 1
+    assert str(stages[0]) in str(exc_info.value)
+    assert "Manual next step" in str(exc_info.value)
+    assert (target / "old").read_text(encoding="utf-8") == "old"
 
 
 def test_collision_rename_changes_directory_and_all_stems(tmp_path, monkeypatch):

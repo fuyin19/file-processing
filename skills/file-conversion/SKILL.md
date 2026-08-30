@@ -1,12 +1,16 @@
 ---
 name: file-conversion
 description: |
-  Route supported local PDF and Office files or directories into one canonical Markdown bundle plus a sibling native PDF, using one source snapshot and one publication transaction. Use when both machine-readable Markdown/JSON and a high-fidelity PDF are required.
+  Route supported local PDF and Office files or directories into one canonical Markdown bundle plus a sibling native PDF, using one source snapshot and one staged publication boundary. Use when both machine-readable Markdown/JSON and a high-fidelity PDF are required.
 metadata:
   version: 2.0.0
 ---
 
 # Create Markdown + PDF bundles
+
+Set `ANTI_ENTROPY_CORE_RUNNER` to the absolute path to
+`anti-entropy-core/scripts/knowledge_unit_runner.py` before running this
+bundle-only route. A missing or invalid runner is a configuration error.
 
 Run `scripts/pipeline.py`. This local-only router accepts the same PDF, Word,
 PowerPoint, and Excel formats as `pdf-conversion`. Each bundle is:

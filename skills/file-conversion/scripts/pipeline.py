@@ -28,6 +28,7 @@ if __name__ == "__main__":
             _stream.reconfigure(encoding="utf-8", errors="backslashreplace")
 
 import native_paths as np  # noqa: E402
+import anti_entropy_core_adapter as core  # noqa: E402
 from conversion_runtime import (  # noqa: E402
     ConversionError,
     OutputCollision,
@@ -79,6 +80,20 @@ _URL_RE = re.compile(r"^[A-Za-z][A-Za-z0-9+.-]*://")
 
 class PipelineError(ConversionError):
     pass
+
+
+def _complete_envelope_stage(stage: Path) -> None:
+    try:
+        core.stage_complete(stage)
+    except core.CoreAdapterError as exc:
+        raise PipelineError(str(exc)) from exc
+
+
+def _validate_envelope(root: Path) -> None:
+    try:
+        core.validate(root)
+    except core.CoreAdapterError as exc:
+        raise PipelineError(str(exc)) from exc
 
 
 @dataclass(frozen=True)
@@ -287,10 +302,7 @@ def convert_one(
         converter.convert(snapshot, stage.path / pdf_name, work.path / "libreoffice")
         expected = validate_pdf(stage.path / pdf_name, converter.settings.validation)
         snapshot.verify()
-        try:
-            knowledge_unit.finalize_owned_stage(stage.path)
-        except knowledge_unit.KnowledgeUnitError as exc:
-            raise PipelineError(str(exc)) from exc
+        _complete_envelope_stage(stage.path)
         if not stage.matches(stage.path):
             raise PipelineError(f"Owned router stage identity changed: {stage.path}")
         publish_owned(
@@ -298,14 +310,12 @@ def convert_one(
             target.path,
             args.overwrite,
             verify_payload=lambda root: (
-                knowledge_unit.validate(root),
+                _validate_envelope(root),
                 verify_validated_pdf(root / pdf_name, converter.settings.validation, expected),
             ),
         )
         return target.path, document["quality"]["status"], document["quality"]["warnings"]
     finally:
-        if stage.matches(stage.path):
-            cleanup_owned(stage, warning="could not remove failed file-conversion stage")
         if work.matches(work.path):
             cleanup_owned(work, warning="could not remove private file-conversion workspace")
 

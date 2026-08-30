@@ -1,9 +1,17 @@
 # markdown-conversion troubleshooting
 
+## Core runner is not configured
+
+Bundle output delegates Envelope completion and validation to the independent
+Core. Set `ANTI_ENTROPY_CORE_RUNNER` to the absolute path to
+`anti-entropy-core/scripts/knowledge_unit_runner.py`. A missing path, relative
+path, runner failure, ABI mismatch, or validation error is reported directly;
+the conversion tools do not fall back to another Envelope implementation.
+
 ## Output already exists
 
 Exit code `2` means the target bundle directory or Markdown file already exists.
-Use `--overwrite` for transactional replacement or `--rename` for `_1`, `_2`, ….
+Use `--overwrite` for one final replacement attempt or `--rename` for `_1`, `_2`, ….
 
 Exact collision checks happen before adapters or staging. Publication also uses
 an atomic no-replace rename, so a target created after preflight is preserved
@@ -19,16 +27,14 @@ remain normalized ordinary absolute paths; a `\\?\` prefix must never appear in
 persisted output. This does not require changing the machine-wide
 `LongPathsEnabled` policy.
 
-## Retained overwrite backup
+## Overwrite publication failure
 
-Overwrite uses two atomic no-replace moves and is not crash-atomic. The old
-entry is first moved to an exact sibling `.mc-backup-<uuid>/original`; only then
-is the complete stage moved to the target. If safe restoration or cleanup
-cannot be proved, the error or warning prints that exact recovery directory and
-leaves it in place. Inspect that one path manually. There is intentionally no
-prefix sweep, broad recovery/delete command, journal, lock, or cleanup service.
-Symlinks and junctions inside an old target are removed only as leaf entries
-during confirmed post-commit cleanup; their external targets are not followed.
+Overwrite uses the operating-system replace operation for regular files. For
+bundle directories it removes the existing target and then performs a
+no-replace rename of the completed stage. There is no backup or automatic
+rollback. If publication fails, the error prints the exact owned stage path;
+inspect the stage and target before retrying. There is intentionally no prefix
+sweep, broad recovery/delete command, journal, lock, or cleanup service.
 
 ## Partial output
 

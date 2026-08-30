@@ -296,7 +296,7 @@ def test_pdf_bundle_supports_long_windows_source_and_output_paths(tmp_path):
     assert libreoffice_pdf.np.is_file(bundle / "src" / long_name)
 
 
-def test_collision_exit_two_rename_changes_stem_and_overwrite_replaces(tmp_path):
+def test_collision_exit_two_rename_and_overwrite_replaces_bundle(tmp_path):
     source = _pdf(tmp_path / "source.pdf")
     out = tmp_path / "out"
     assert _cli("--input", source, "--output-dir", out).returncode == 0
@@ -306,8 +306,10 @@ def test_collision_exit_two_rename_changes_stem_and_overwrite_replaces(tmp_path)
     assert (out / "source_1" / "source_1.pdf").is_file()
     (out / "source" / "sentinel").write_text("old", encoding="utf-8")
     replaced = _cli("--input", source, "--output-dir", out, "--overwrite")
-    assert replaced.returncode == 0
+    assert replaced.returncode == 0, replaced.stderr
     assert not (out / "source" / "sentinel").exists()
+    assert (out / "source" / "source.pdf").is_file()
+    assert not list(out.glob(".pc-stage-*"))
 
 
 def test_office_collision_is_detected_before_libreoffice_discovery(tmp_path, monkeypatch):
@@ -398,157 +400,66 @@ def test_pdf_validator_uses_one_locked_identity_pinned_stream(tmp_path, monkeypa
     assert PdfReader(source).pages
 
 
-def test_shared_overwrite_commit_failure_restores_exact_old_target(tmp_path, monkeypatch):
+def test_shared_default_collision_preserves_owned_stage(tmp_path):
     target = tmp_path / "target"
     target.mkdir()
     (target / "old.txt").write_text("old", encoding="utf-8")
     stage = conversion_runtime.new_owned_dir(tmp_path, ".test-stage-")
     (stage.path / "new.txt").write_text("new", encoding="utf-8")
-    real = conversion_runtime.np.rename_no_replace
 
-    def fail_commit(source, destination):
-        if conversion_runtime.np.paths_equal(source, stage.path) and conversion_runtime.np.paths_equal(destination, target):
-            raise OSError("injected commit failure")
-        return real(source, destination)
+    with pytest.raises(conversion_runtime.OutputCollision, match="already exists"):
+        conversion_runtime.publish_owned(stage, target, False)
 
-    monkeypatch.setattr(conversion_runtime.np, "rename_no_replace", fail_commit)
-    with pytest.raises(OSError, match="injected commit failure"):
-        conversion_runtime.publish_owned(stage, target, True)
     assert (target / "old.txt").read_text(encoding="utf-8") == "old"
-    assert not stage.path.exists()
+    assert (stage.path / "new.txt").read_text(encoding="utf-8") == "new"
     assert not list(tmp_path.glob(".conversion-backup-*"))
 
 
-def test_pdf_postcommit_mutation_rolls_back_and_restores_old_target(tmp_path, monkeypatch):
-    target = tmp_path / "target"
-    target.mkdir()
-    (target / "old.txt").write_text("old", encoding="utf-8")
-    stage = conversion_runtime.new_owned_dir(tmp_path, ".test-stage-")
-    staged_pdf = _pdf(stage.path / "document.pdf")
-    settings = libreoffice_pdf.ValidationSettings()
-    expected = libreoffice_pdf.validate_pdf(staged_pdf, settings)
-    real_rename = conversion_runtime.np.rename_no_replace
+def test_shared_overwrite_uses_one_final_replace_after_prepublication_validation(tmp_path, monkeypatch):
+    target = tmp_path / "target.pdf"
+    target.write_bytes(b"old")
+    stage = conversion_runtime.new_owned_file(tmp_path, ".test-stage-", ".pdf")
+    stage.path.write_bytes(b"new")
+    checked: list[Path] = []
+    calls: list[tuple[Path, Path]] = []
+    real_replace = conversion_runtime.np.replace
 
-    def inject_after_commit(source, destination):
-        real_rename(source, destination)
-        if conversion_runtime.np.paths_equal(source, stage.path) and conversion_runtime.np.paths_equal(destination, target):
-            (target / "document.pdf").write_bytes(b"%PDF-1.7\ninvalid\n%%EOF\n")
+    def record_replace(source, destination):
+        calls.append((Path(source), Path(destination)))
+        real_replace(source, destination)
 
-    monkeypatch.setattr(conversion_runtime.np, "rename_no_replace", inject_after_commit)
-    with pytest.raises(libreoffice_pdf.LibreOfficeError, match="PDF"):
-        conversion_runtime.publish_owned(
-            stage,
-            target,
-            True,
-            verify_payload=lambda root: libreoffice_pdf.verify_validated_pdf(
-                root / "document.pdf", settings, expected
-            ),
-        )
-    assert (target / "old.txt").read_text(encoding="utf-8") == "old"
-    assert not (target / "document.pdf").exists()
-    assert not stage.path.exists()
-    assert not list(tmp_path.glob(".conversion-backup-*"))
-
-
-def test_ambiguous_fresh_commit_mutation_is_verified_and_rolled_back(tmp_path, monkeypatch):
-    target = tmp_path / "target"
-    stage = conversion_runtime.new_owned_dir(tmp_path, ".test-stage-")
-    staged_pdf = _pdf(stage.path / "document.pdf")
-    settings = libreoffice_pdf.ValidationSettings()
-    expected = libreoffice_pdf.validate_pdf(staged_pdf, settings)
-    real_rename = conversion_runtime.np.rename_no_replace
-
-    def move_mutate_and_raise(source, destination):
-        real_rename(source, destination)
-        if conversion_runtime.np.paths_equal(source, stage.path) and conversion_runtime.np.paths_equal(destination, target):
-            published_pdf = target / "document.pdf"
-            inode = published_pdf.stat().st_ino
-            published_pdf.write_bytes(b"%PDF-1.7\ninvalid\n%%EOF\n")
-            assert published_pdf.stat().st_ino == inode
-            raise OSError("injected ambiguous commit")
-
-    monkeypatch.setattr(conversion_runtime.np, "rename_no_replace", move_mutate_and_raise)
-    with pytest.raises(libreoffice_pdf.LibreOfficeError, match="PDF"):
-        conversion_runtime.publish_owned(
-            stage,
-            target,
-            False,
-            verify_payload=lambda root: libreoffice_pdf.verify_validated_pdf(
-                root / "document.pdf", settings, expected
-            ),
-        )
-    assert not target.exists()
-    assert not stage.path.exists()
-
-
-def test_ambiguous_fresh_fileexists_mutation_is_verified_and_rolled_back(tmp_path, monkeypatch):
-    target = tmp_path / "target"
-    stage = conversion_runtime.new_owned_dir(tmp_path, ".test-stage-")
-    staged_pdf = _pdf(stage.path / "document.pdf")
-    settings = libreoffice_pdf.ValidationSettings()
-    expected = libreoffice_pdf.validate_pdf(staged_pdf, settings)
-    real_rename = conversion_runtime.np.rename_no_replace
-
-    def move_mutate_and_raise_fileexists(source, destination):
-        real_rename(source, destination)
-        if conversion_runtime.np.paths_equal(source, stage.path) and conversion_runtime.np.paths_equal(destination, target):
-            published_pdf = target / "document.pdf"
-            inode = published_pdf.stat().st_ino
-            published_pdf.write_bytes(b"%PDF-1.7\ninvalid\n%%EOF\n")
-            assert published_pdf.stat().st_ino == inode
-            raise FileExistsError("injected ambiguous FileExistsError")
-
-    monkeypatch.setattr(
-        conversion_runtime.np,
-        "rename_no_replace",
-        move_mutate_and_raise_fileexists,
+    monkeypatch.setattr(conversion_runtime.np, "replace", record_replace)
+    conversion_runtime.publish_owned(
+        stage,
+        target,
+        True,
+        verify_payload=lambda root: checked.append(root),
     )
-    with pytest.raises(libreoffice_pdf.LibreOfficeError, match="PDF"):
-        conversion_runtime.publish_owned(
-            stage,
-            target,
-            False,
-            verify_payload=lambda root: libreoffice_pdf.verify_validated_pdf(
-                root / "document.pdf", settings, expected
-            ),
-        )
-    assert not target.exists()
+
+    assert checked == [stage.path]
+    assert calls == [(stage.path, target)]
+    assert target.read_bytes() == b"new"
     assert not stage.path.exists()
-    assert conversion_runtime._owned_key(stage.path) not in conversion_runtime._OWNED_ENTRIES
+    assert not list(tmp_path.glob(".conversion-backup-*"))
 
 
-def test_ambiguous_overwrite_commit_mutation_restores_old_target(tmp_path, monkeypatch):
-    target = tmp_path / "target"
-    target.mkdir()
-    (target / "old.txt").write_text("old", encoding="utf-8")
-    stage = conversion_runtime.new_owned_dir(tmp_path, ".test-stage-")
-    staged_pdf = _pdf(stage.path / "document.pdf")
-    settings = libreoffice_pdf.ValidationSettings()
-    expected = libreoffice_pdf.validate_pdf(staged_pdf, settings)
-    real_rename = conversion_runtime.np.rename_no_replace
+def test_shared_final_replace_failure_retains_owned_stage_and_target(tmp_path, monkeypatch):
+    target = tmp_path / "target.pdf"
+    target.write_bytes(b"old")
+    stage = conversion_runtime.new_owned_file(tmp_path, ".test-stage-", ".pdf")
+    stage.path.write_bytes(b"new")
 
-    def move_mutate_and_raise(source, destination):
-        real_rename(source, destination)
-        if conversion_runtime.np.paths_equal(source, stage.path) and conversion_runtime.np.paths_equal(destination, target):
-            published_pdf = target / "document.pdf"
-            inode = published_pdf.stat().st_ino
-            published_pdf.write_bytes(b"%PDF-1.7\ninvalid\n%%EOF\n")
-            assert published_pdf.stat().st_ino == inode
-            raise OSError("injected ambiguous commit")
+    def fail_replace(source, destination):
+        raise FileExistsError("injected final replacement failure")
 
-    monkeypatch.setattr(conversion_runtime.np, "rename_no_replace", move_mutate_and_raise)
-    with pytest.raises(libreoffice_pdf.LibreOfficeError, match="PDF"):
-        conversion_runtime.publish_owned(
-            stage,
-            target,
-            True,
-            verify_payload=lambda root: libreoffice_pdf.verify_validated_pdf(
-                root / "document.pdf", settings, expected
-            ),
-        )
-    assert (target / "old.txt").read_text(encoding="utf-8") == "old"
-    assert not (target / "document.pdf").exists()
-    assert not stage.path.exists()
+    monkeypatch.setattr(conversion_runtime.np, "replace", fail_replace)
+    with pytest.raises(conversion_runtime.ConversionError, match="retained owned stage") as exc_info:
+        conversion_runtime.publish_owned(stage, target, True)
+
+    assert str(stage.path) in str(exc_info.value)
+    assert "Manual next step" in str(exc_info.value)
+    assert stage.path.read_bytes() == b"new"
+    assert target.read_bytes() == b"old"
     assert not list(tmp_path.glob(".conversion-backup-*"))
 
 
@@ -597,7 +508,7 @@ def test_malformed_encrypted_zero_page_and_over_limit_publish_nothing(tmp_path):
     assert not (out / "large").exists()
 
 
-def test_fake_provider_failure_cleans_stage_and_preserves_old_target(tmp_path, monkeypatch):
+def test_fake_provider_failure_retains_stage_and_preserves_old_target(tmp_path, monkeypatch):
     source = tmp_path / "source.docx"
     source.write_bytes(b"source")
     out = tmp_path / "out"
@@ -609,7 +520,7 @@ def test_fake_provider_failure_cleans_stage_and_preserves_old_target(tmp_path, m
     with pytest.raises(libreoffice_pdf.LibreOfficeError, match="timeout"):
         pipeline.convert_one(args, str(source), pipeline.load_config(CONFIG), engine=FakeEngine(_pdf(tmp_path / "valid.pdf")))
     assert (target / "old").read_text(encoding="utf-8") == "old"
-    assert not list(out.glob(".pc-stage-*"))
+    assert len(list(out.glob(".pc-stage-*"))) == 1
 
 
 def _copy_as(source: Path, destination: Path) -> Path:

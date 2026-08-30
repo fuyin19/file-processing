@@ -35,19 +35,10 @@ class OutputCollision(ConversionError):
     """A target already exists and neither overwrite nor rename was selected."""
 
 
-_OWNED_ENTRIES: dict[str, np.OwnedEntry] = {}
-
-
-def _owned_key(path: os.PathLike[str] | str) -> str:
-    return os.path.normcase(str(np.logical(path)))
-
-
 def new_owned_dir(parent: os.PathLike[str] | str, prefix: str) -> np.OwnedEntry:
     parent_path = np.logical(parent)
     np.mkdir(parent_path, parents=True, exist_ok=True)
-    entry = np.create_owned_dir(parent_path, prefix)
-    _OWNED_ENTRIES[_owned_key(entry.path)] = entry
-    return entry
+    return np.create_owned_dir(parent_path, prefix)
 
 
 def new_owned_file(
@@ -55,15 +46,12 @@ def new_owned_file(
 ) -> np.OwnedEntry:
     parent_path = np.logical(parent)
     np.mkdir(parent_path, parents=True, exist_ok=True)
-    entry = np.create_owned_file(parent_path, prefix, suffix)
-    _OWNED_ENTRIES[_owned_key(entry.path)] = entry
-    return entry
+    return np.create_owned_file(parent_path, prefix, suffix)
 
 
 def cleanup_owned(entry: np.OwnedEntry, *, warning: str | None = None) -> bool:
     try:
         np.remove_owned(entry)
-        _OWNED_ENTRIES.pop(_owned_key(entry.path), None)
         return True
     except OSError as exc:
         if warning:
@@ -71,43 +59,28 @@ def cleanup_owned(entry: np.OwnedEntry, *, warning: str | None = None) -> bool:
         return False
 
 
-def _remove_owned_path(path: Path) -> None:
-    entry = _OWNED_ENTRIES.get(_owned_key(path))
-    if entry is None:
-        raise OSError(f"Refusing to remove an entry not owned by this invocation: {path}")
-    np.remove_owned(entry)
-    _OWNED_ENTRIES.pop(_owned_key(path), None)
+def _remove_overwrite_target(path: Path) -> None:
+    """Remove exactly one existing target selected by an explicit overwrite.
 
-
-def _recovery_error(target: Path, backup: np.OwnedEntry, detail: str) -> ConversionError:
-    return ConversionError(
-        f"{detail}; retained exact recovery backup at {backup.path} for target {target}"
-    )
-
-
-def _restore_old_target(
-    target: Path,
-    backup: np.OwnedEntry,
-    payload: Path,
-    old_identity: np.EntryIdentity,
-) -> bool:
-    if np.exists(target) or not old_identity.matches(payload):
-        return False
-    try:
-        np.rename_no_replace(payload, target)
-    except Exception:
-        pass
-    return old_identity.matches(target) and not np.exists(payload)
-
-
-def _finish_backup_after_commit(target: Path, backup: np.OwnedEntry) -> None:
-    try:
-        _remove_owned_path(backup.path)
-    except OSError as exc:
-        print(
-            f"Warning: published {target}, but could not remove backup {backup.path}: {exc}",
-            file=sys.stderr,
-        )
+    Directory replacement is not a single portable filesystem operation.  The
+    caller has already opted into overwrite, so remove the identity-checked
+    target and then let publication perform a no-replace rename.  This keeps
+    the contract small: there is no backup, rollback, journal, or recovery
+    service.
+    """
+    expected = np.EntryIdentity.capture(path)
+    current = np.EntryIdentity.capture(path)
+    if current != expected:
+        raise ConversionError(f"Overwrite target identity changed before removal: {path}")
+    info = np.lstat(path)
+    if stat_module.S_ISLNK(info.st_mode) or np.is_reparse(info):
+        raise ConversionError(f"Refusing to overwrite a link or reparse point: {path}")
+    if stat_module.S_ISDIR(info.st_mode):
+        shutil.rmtree(np.native(path))
+    elif stat_module.S_ISREG(info.st_mode):
+        np.unlink(path)
+    else:
+        raise ConversionError(f"Refusing to overwrite a non-file target: {path}")
 
 
 def publish_owned(
@@ -115,146 +88,49 @@ def publish_owned(
     target: os.PathLike[str] | str,
     overwrite: bool,
     *,
-    allow_stage_cleanup: bool = True,
     verify_payload: Callable[[Path], None] | None = None,
 ) -> None:
-    """Publish one identity-pinned entry with the documented two-move replace.
+    """Publish one validated owned entry without a recovery subsystem.
 
-    The overwrite transaction is deliberately not described as crash-atomic.
-    Caught pre-commit failures restore only an identity-proven old target.
-    When supplied, ``verify_payload`` runs immediately before and after the
-    commit move; a caught post-commit failure rolls the owned entry back before
-    restoring any displaced target.
+    Existing targets are rejected unless ``overwrite`` is explicit.  The
+    replacement has no backup, rollback, or automatic recovery path.  Regular
+    files use the operating-system replace operation; other target shapes are
+    removed after an identity check and followed by a no-replace rename.  A
+    failed publication retains the owned stage for manual handling.
     """
     target_path = np.logical(target)
     if not stage.matches(stage.path):
         raise ConversionError(f"Owned stage identity changed before publication: {stage.path}")
-    old_identity = np.EntryIdentity.capture(target_path) if np.exists(target_path) else None
-    if old_identity is not None and not overwrite:
+    target_exists = np.exists(target_path)
+    if target_exists and not overwrite:
         raise OutputCollision(f"Output already exists: {target_path}")
 
-    if old_identity is None:
-        if verify_payload is not None:
-            verify_payload(stage.path)
-        try:
-            np.rename_no_replace(stage.path, target_path)
-        except FileExistsError as exc:
-            if not (stage.matches(target_path) and not np.exists(stage.path)):
-                if allow_stage_cleanup and stage.matches(stage.path):
-                    cleanup_owned(stage, warning="could not remove exact late-collision stage")
-                raise OutputCollision(f"Output already exists: {target_path}") from exc
-        except Exception:
-            if not (stage.matches(target_path) and not np.exists(stage.path)):
-                raise
-        if not stage.matches(target_path) or np.exists(stage.path):
-            raise ConversionError(f"Could not verify published target identity: {target_path}")
-        if verify_payload is not None:
-            try:
-                verify_payload(target_path)
-            except Exception as verification_error:
-                try:
-                    np.rename_no_replace(target_path, stage.path)
-                except Exception as rollback_error:
-                    raise ConversionError(
-                        f"Published target payload verification failed and exact rollback failed; retained target at {target_path}"
-                    ) from rollback_error
-                if not stage.matches(stage.path) or np.exists(target_path):
-                    raise ConversionError(
-                        f"Published target payload verification failed and rollback identity was not verified; retained stage at {stage.path}"
-                    ) from verification_error
-                if allow_stage_cleanup:
-                    cleanup_owned(stage, warning="could not remove failed payload stage")
-                raise verification_error
-        _OWNED_ENTRIES.pop(_owned_key(stage.path), None)
-        return
+    if verify_payload is not None:
+        verify_payload(stage.path)
 
-    backup = new_owned_dir(target_path.parent, ".conversion-backup-")
-    payload = backup.path / "original"
     try:
-        try:
-            np.rename_no_replace(target_path, payload)
-        except Exception as move_error:
-            if old_identity.matches(payload) and not np.exists(target_path):
-                if _restore_old_target(target_path, backup, payload, old_identity):
-                    cleanup_owned(backup, warning=f"restored {target_path}, but could not remove empty backup")
-                    raise move_error
-                raise _recovery_error(target_path, backup, "Old target move failed after displacement") from move_error
-            if old_identity.matches(target_path) and not np.exists(payload):
-                cleanup_owned(backup, warning=f"target {target_path} remained in place, but could not remove empty backup")
-                raise move_error
-            raise _recovery_error(target_path, backup, "Old target move entered an indeterminate state") from move_error
-
-        if not old_identity.matches(payload) or np.exists(target_path):
-            raise _recovery_error(target_path, backup, "Moved old target identity could not be verified")
-
-        if verify_payload is not None:
-            try:
-                verify_payload(stage.path)
-            except Exception as verification_error:
-                if _restore_old_target(target_path, backup, payload, old_identity):
-                    cleanup_owned(backup, warning=f"restored {target_path}, but could not remove empty backup")
-                    if allow_stage_cleanup and stage.matches(stage.path):
-                        cleanup_owned(stage, warning="could not remove failed payload stage")
-                    raise verification_error
-                raise _recovery_error(
-                    target_path,
-                    backup,
-                    "Payload verification failed and exact restoration was not verified",
-                ) from verification_error
-
-        try:
-            np.rename_no_replace(stage.path, target_path)
-        except Exception as commit_error:
-            if stage.matches(target_path) and not np.exists(stage.path):
-                pass
-            elif _restore_old_target(target_path, backup, payload, old_identity):
-                cleanup_owned(backup, warning=f"restored {target_path}, but could not remove empty backup")
-                if allow_stage_cleanup and stage.matches(stage.path):
-                    cleanup_owned(stage, warning="could not remove exact failed publication stage")
-                raise commit_error
+        if target_exists:
+            stage_info = np.lstat(stage.path)
+            target_info = np.lstat(target_path)
+            if stat_module.S_ISREG(stage_info.st_mode) and stat_module.S_ISREG(target_info.st_mode):
+                np.replace(stage.path, target_path)
             else:
-                raise _recovery_error(
-                    target_path,
-                    backup,
-                    "New target commit failed and exact restoration was not verified",
-                ) from commit_error
-
-        if not stage.matches(target_path) or np.exists(stage.path):
-            raise _recovery_error(target_path, backup, "New target commit identity could not be verified")
-        if verify_payload is not None:
-            try:
-                verify_payload(target_path)
-            except Exception as verification_error:
-                try:
-                    np.rename_no_replace(target_path, stage.path)
-                except Exception as rollback_error:
-                    raise _recovery_error(
-                        target_path,
-                        backup,
-                        "Committed payload verification failed and the new target could not be rolled back",
-                    ) from rollback_error
-                if not stage.matches(stage.path) or np.exists(target_path):
-                    raise _recovery_error(
-                        target_path,
-                        backup,
-                        "Committed payload verification failed and rollback identity was not verified",
-                    ) from verification_error
-                if _restore_old_target(target_path, backup, payload, old_identity):
-                    cleanup_owned(backup, warning=f"restored {target_path}, but could not remove empty backup")
-                    if allow_stage_cleanup and stage.matches(stage.path):
-                        cleanup_owned(stage, warning="could not remove failed payload stage")
-                    raise verification_error
-                raise _recovery_error(
-                    target_path,
-                    backup,
-                    "Committed payload verification failed and exact restoration was not verified",
-                ) from verification_error
-        _OWNED_ENTRIES.pop(_owned_key(stage.path), None)
-        if not old_identity.matches(payload):
-            raise _recovery_error(target_path, backup, "Committed target has an unverifiable recovery payload")
-        _finish_backup_after_commit(target_path, backup)
-    except Exception:
-        raise
+                _remove_overwrite_target(target_path)
+                np.rename_no_replace(stage.path, target_path)
+        else:
+            np.rename_no_replace(stage.path, target_path)
+    except FileExistsError as exc:
+        if not target_exists:
+            raise OutputCollision(f"Output already exists: {target_path}") from exc
+        raise ConversionError(
+            f"Final publication failed for {target_path}: {exc}; retained owned stage at {stage.path}. "
+            f"Manual next step: inspect {stage.path}, then manually publish or remove it before retrying."
+        ) from exc
+    except Exception as exc:
+        raise ConversionError(
+            f"Final publication failed for {target_path}: {exc}; retained owned stage at {stage.path}. "
+            f"Manual next step: inspect {stage.path}, then manually publish or remove it before retrying."
+        ) from exc
 
 
 @dataclass(frozen=True)

@@ -27,6 +27,7 @@ if __name__ == "__main__":
             _stream.reconfigure(encoding="utf-8", errors="backslashreplace")
 
 import native_paths as np  # noqa: E402
+import anti_entropy_core_adapter as core  # noqa: E402
 from conversion_runtime import (  # noqa: E402
     ConversionError,
     OutputCollision,
@@ -61,6 +62,20 @@ _URL_RE = re.compile(r"^[A-Za-z][A-Za-z0-9+.-]*://")
 
 class PipelineError(ConversionError):
     pass
+
+
+def _complete_envelope_stage(stage: Path) -> None:
+    try:
+        core.stage_complete(stage)
+    except core.CoreAdapterError as exc:
+        raise PipelineError(str(exc)) from exc
+
+
+def _validate_envelope(root: Path) -> None:
+    try:
+        core.validate(root)
+    except core.CoreAdapterError as exc:
+        raise PipelineError(str(exc)) from exc
 
 
 @dataclass(frozen=True)
@@ -253,32 +268,30 @@ def convert_one(
     if Path(source).suffix.lower() != ".pdf" and isinstance(converter, LibreOfficePdfEngine):
         _ = converter.executable
     np.mkdir(target.path.parent, parents=True, exist_ok=True)
-    stage = new_owned_dir(target.path.parent, ".pc-stage-")
+    stage = new_owned_dir(target.path.parent, ".pc-stage-") if target.mode == "bundle" else None
     # LibreOffice creates deeply nested profile state and still has MAX_PATH-
     # sensitive components on Windows.  Keep its owned per-item root short.
     work = new_owned_dir(Path(tempfile.gettempdir()), ".pcw-")
     try:
         snapshot_path = (
             stage.path / "src" / np.logical(source).name
-            if target.mode == "bundle"
+            if stage is not None
             else work.path / "snapshot" / np.logical(source).name
         )
         snapshot = acquire_source_snapshot(source, snapshot_path)
         if target.mode == "bundle":
+            assert stage is not None
             pdf_path = stage.path / f"{target.stem}.pdf"
             result = converter.convert(snapshot, pdf_path, work.path / "libreoffice")
             expected = validate_pdf(pdf_path, converter.settings.validation)
             snapshot.verify()
-            try:
-                knowledge_unit.finalize_owned_stage(stage.path)
-            except knowledge_unit.KnowledgeUnitError as exc:
-                raise PipelineError(str(exc)) from exc
+            _complete_envelope_stage(stage.path)
             publish_owned(
                 stage,
                 target.path,
                 args.overwrite,
                 verify_payload=lambda root: (
-                    knowledge_unit.validate(root),
+                    _validate_envelope(root),
                     verify_validated_pdf(
                         root / f"{target.stem}.pdf", converter.settings.validation, expected
                     ),
@@ -288,28 +301,22 @@ def convert_one(
             generated = work.path / "generated" / f"{target.stem}.pdf"
             result = converter.convert(snapshot, generated, work.path / "libreoffice")
             output_stage = new_owned_file(target.path.parent, ".pc-stage-", ".pdf")
-            try:
-                # Replace the zero-byte exclusive stage through its still-owned handle.
-                with np.open_file(generated, "rb") as incoming, np.open_file(output_stage.path, "wb") as outgoing:
-                    shutil.copyfileobj(incoming, outgoing, length=1024 * 1024)
-                    outgoing.flush()
-                    os.fsync(outgoing.fileno())
-                expected = validate_pdf(output_stage.path, converter.settings.validation)
-                publish_owned(
-                    output_stage,
-                    target.path,
-                    args.overwrite,
-                    verify_payload=lambda root: verify_validated_pdf(
-                        root, converter.settings.validation, expected
-                    ),
-                )
-            finally:
-                if output_stage.matches(output_stage.path):
-                    cleanup_owned(output_stage, warning="could not remove failed PDF stage")
+            # Replace the zero-byte exclusive stage through its still-owned handle.
+            with np.open_file(generated, "rb") as incoming, np.open_file(output_stage.path, "wb") as outgoing:
+                shutil.copyfileobj(incoming, outgoing, length=1024 * 1024)
+                outgoing.flush()
+                os.fsync(outgoing.fileno())
+            expected = validate_pdf(output_stage.path, converter.settings.validation)
+            publish_owned(
+                output_stage,
+                target.path,
+                args.overwrite,
+                verify_payload=lambda root: verify_validated_pdf(
+                    root, converter.settings.validation, expected
+                ),
+            )
         return target.path, result
     finally:
-        if stage.matches(stage.path):
-            cleanup_owned(stage, warning="could not remove failed PDF bundle stage")
         if work.matches(work.path):
             cleanup_owned(work, warning="could not remove private PDF conversion workspace")
 
