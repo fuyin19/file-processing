@@ -28,6 +28,7 @@ report/
 /file-processing:file-conversion <file-or-directory>
   [--output-dir <directory>]
   [--formats markdown,pdf]
+  [--bundle-name-mode stem|source-basename]
   [--language-normalization simplified|preserve|traditional]
   [--timestamp <ISO-date-or-aware-datetime>] [--no-frontmatter]
   [--overwrite | --rename] [--types pdf,docx,xlsx] [--no-recursive]
@@ -43,6 +44,13 @@ report/
 Omitted `--formats` means `markdown,pdf`; v1 accepts exactly that normalized
 set. Use the specialized commands for a singleton format. The timestamp is
 resolved once per invocation and passed unchanged to every Markdown bundle.
+
+Bundle naming defaults to the compatibility `stem` behavior. The explicit
+`--bundle-name-mode source-basename` mode retains the source's final extension
+in both the bundle directory and representation names: `report.docx/` contains
+`report.docx.md`, `report.docx.json`, and `report.docx.pdf`, while
+`src/report.docx` remains the exact source bytes. Use an explicit output
+directory so the bundle path cannot alias the source file.
 
 The router acquires the source once, stages the existing Markdown bundle
 emitter and PDF provider in one owned directory, then publishes that directory

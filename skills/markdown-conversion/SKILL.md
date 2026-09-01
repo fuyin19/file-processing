@@ -39,6 +39,7 @@ Markdown rendering.
 /file-processing:markdown-conversion <file-url-or-directory>
   [--output-mode bundle|markdown]
   [--output-dir <directory> | --output-path <markdown-file>]
+  [--bundle-name-mode stem|source-basename]
   [--language-normalization simplified|preserve|traditional]
   [--timestamp <ISO-date-or-aware-datetime>]
   [--no-frontmatter]
@@ -54,6 +55,14 @@ Markdown rendering.
 `bundle` is the default. `--output-path` is the compatibility interface for one
 exact Markdown file and implies `--output-mode markdown`; batch `--output-path`
 is a deprecated alias for `--output-dir`.
+
+Bundle naming defaults to the compatibility `stem` behavior. For local bundle
+inputs, explicit `--bundle-name-mode source-basename` retains the final source
+extension in both the bundle directory and representation names. For example,
+`report.docx/` contains `report.docx.md` and `report.docx.json`, while the
+archived source remains exactly `src/report.docx`. Use an explicit output
+directory so the bundle path cannot alias the source file. Markdown-only output
+keeps its existing naming behavior.
 
 ## Outputs
 

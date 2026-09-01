@@ -175,6 +175,34 @@ def test_timestamp_validation_and_alias_parsing(tmp_path):
         assert args.local_adapter == "markitdown"
 
 
+def test_bundle_name_mode_defaults_to_legacy_stem_and_preserves_nested_unicode(tmp_path):
+    inputs = tmp_path / "inputs"
+    (inputs / "nested").mkdir(parents=True)
+    source = _source(inputs / "nested")
+    source = source.rename(source.with_name("報告.final.docx"))
+    output = tmp_path / "out"
+
+    default_args = pipeline.build_parser().parse_args(
+        ["--input", str(source), "--output-dir", str(output)]
+    )
+    assert default_args.bundle_name_mode == "stem"
+    assert pipeline.resolve_target(default_args, str(source)).path == output / "報告.final"
+
+    basename_args = pipeline.build_parser().parse_args(
+        [
+            "--input-dir", str(inputs), "--output-dir", str(output),
+            "--bundle-name-mode", "source-basename",
+        ]
+    )
+    target = pipeline.resolve_target(
+        basename_args,
+        str(source),
+        source.relative_to(inputs),
+    )
+    assert target.path == output / "nested" / "報告.final.docx"
+    assert target.stem == "報告.final.docx"
+
+
 def test_config_is_superset_and_preserves_unknown_keys(tmp_path):
     config = tmp_path / "config.json"
     config.write_text(json.dumps({"unknown": {"keep": True}, "pdf_ocr": {"mode": "force"}, "pdf_conversion": {"timeout_seconds": 7}}), encoding="utf-8")
@@ -275,6 +303,33 @@ def test_collision_rename_changes_directory_and_all_stems(tmp_path, monkeypatch)
     assert (target / "source_1.json").is_file()
     assert (target / "source_1.pdf").is_file()
     assert (target / "src" / "source.docx").is_file()
+
+
+def test_source_basename_mode_keeps_same_stem_inputs_distinct(tmp_path, monkeypatch):
+    docx = _source(tmp_path).rename(tmp_path / "report.docx")
+    pdf = _valid_pdf(tmp_path / "report.pdf")
+    provider_pdf = _valid_pdf(tmp_path / "provider.pdf")
+    output = tmp_path / "out"
+    monkeypatch.setattr(pipeline.markdown_pipeline, "emit_markdown_bundle", _fake_emitter)
+
+    targets = []
+    for source in (docx, pdf):
+        args = _args(source, output, "--bundle-name-mode", "source-basename")
+        target, _, _ = pipeline.convert_one(
+            args,
+            str(source),
+            pipeline.load_config(CONFIG),
+            engine=FakeEngine(provider_pdf),
+        )
+        targets.append(target)
+
+    assert targets == [output / "report.docx", output / "report.pdf"]
+    for source, target in zip((docx, pdf), targets, strict=True):
+        basename = source.name
+        assert (target / f"{basename}.md").is_file()
+        assert (target / f"{basename}.json").is_file()
+        assert (target / f"{basename}.pdf").is_file()
+        assert (target / "src" / basename).read_bytes() == source.read_bytes()
 
 
 def test_batch_collection_layout_and_exit_precedence(tmp_path, monkeypatch):

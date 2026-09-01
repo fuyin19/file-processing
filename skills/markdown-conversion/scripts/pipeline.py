@@ -322,6 +322,11 @@ def resolve_target(args, source: str, relative_path: Path | None = None) -> Targ
         )
         bundle_parent = root
     if args.output_mode == "bundle":
+        mode = getattr(args, "bundle_name_mode", "stem")
+        if mode not in {"stem", "source-basename"}:
+            raise PipelineError(f"Unsupported bundle name mode: {mode}")
+        if mode == "source-basename":
+            stem = Path(source).name or "untitled"
         path = knowledge_unit.bundle_target(
             bundle_parent,
             stem,
@@ -1000,6 +1005,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--output-mode", choices=["bundle", "markdown"], default=None)
     parser.add_argument("--output-dir", default="")
     parser.add_argument("--output-path", default="")
+    parser.add_argument(
+        "--bundle-name-mode",
+        choices=["stem", "source-basename"],
+        default="stem",
+        help="Name local bundle directories and representations from the source stem or full basename",
+    )
     parser.add_argument("--language-normalization", choices=["simplified", "preserve", "traditional"], default="simplified")
     parser.add_argument("--no-frontmatter", action="store_true")
     parser.add_argument(

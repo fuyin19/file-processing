@@ -235,7 +235,10 @@ def collect_files(args) -> list[str]:
 
 def resolve_target(args, source: str, relative_path: Path | None = None) -> Target:
     source_path = np.logical(source)
-    stem = source_path.stem or "untitled"
+    mode = getattr(args, "bundle_name_mode", "stem")
+    if mode not in {"stem", "source-basename"}:
+        raise PipelineError(f"Unsupported bundle name mode: {mode}")
+    stem = (source_path.name if mode == "source-basename" else source_path.stem) or "untitled"
     if args.input_dir:
         relative_path = relative_path or Path(source_path.name)
         root = _batch_root(args)
@@ -368,6 +371,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--output-dir", default="")
     parser.add_argument("--output-path", default="")
     parser.add_argument("--formats", default="")
+    parser.add_argument(
+        "--bundle-name-mode",
+        choices=["stem", "source-basename"],
+        default="stem",
+        help="Name bundle directories and representations from the source stem or full basename",
+    )
     parser.add_argument("--language-normalization", choices=["simplified", "preserve", "traditional"], default="simplified")
     parser.add_argument("--no-frontmatter", action="store_true")
     parser.add_argument("--enrich-images", action="store_true")

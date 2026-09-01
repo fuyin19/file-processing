@@ -357,6 +357,35 @@ def test_resolve_target_preserves_dotted_logical_stem(tmp_path, stem):
     assert bundle.stem == stem
 
 
+def test_source_basename_bundle_targets_are_collision_safe_nested_and_unicode(tmp_path):
+    from pipeline import build_parser, resolve_target
+
+    output = tmp_path / 'out'
+    first = tmp_path / 'input' / 'nested' / '報告.final.txt'
+    second = first.with_suffix('.md')
+    first.parent.mkdir(parents=True)
+    first.write_text('First', encoding='utf-8')
+    second.write_text('Second', encoding='utf-8')
+
+    default_args = build_parser().parse_args([
+        '--input', str(first), '--output-dir', str(output), '--output-mode', 'bundle',
+    ])
+    assert default_args.bundle_name_mode == 'stem'
+    assert resolve_target(default_args, str(first)).path == output / '報告.final'
+    assert resolve_target(default_args, str(second)).path == output / '報告.final'
+
+    basename_args = build_parser().parse_args([
+        '--input-dir', str(tmp_path / 'input'), '--output-dir', str(output),
+        '--output-mode', 'bundle', '--bundle-name-mode', 'source-basename',
+    ])
+    first_target = resolve_target(basename_args, str(first), first.relative_to(tmp_path / 'input'))
+    second_target = resolve_target(basename_args, str(second), second.relative_to(tmp_path / 'input'))
+    assert first_target.path == output / 'nested' / '報告.final.txt'
+    assert first_target.stem == '報告.final.txt'
+    assert second_target.path == output / 'nested' / '報告.final.md'
+    assert second_target.stem == '報告.final.md'
+
+
 
 
 
@@ -1834,6 +1863,29 @@ def test_no_frontmatter_keeps_json_metadata(tmp_path):
     assert code == 0, stderr
     assert not (bundle / 'plain.md').read_text(encoding='utf-8').startswith('---')
     assert _load_bundle(bundle)['document']['conversion_timestamp'] == '2026-08-02'
+
+
+def test_source_basename_mode_emits_full_basename_representations_and_exact_source(tmp_path):
+    source = tmp_path / '報告.final.txt'
+    source.write_text('Source basename body', encoding='utf-8')
+    output = tmp_path / 'out'
+    result = subprocess.run(
+        SCRIPT + CONFIG_ARG + [
+            '--input', str(source),
+            '--output-dir', str(output),
+            '--bundle-name-mode', 'source-basename',
+            '--timestamp', '2026-08-02',
+        ],
+        capture_output=True,
+    )
+
+    assert result.returncode == 0, result.stderr.decode('utf-8', errors='replace')
+    bundle = output / source.name
+    assert (bundle / '報告.final.txt.md').is_file()
+    assert (bundle / '報告.final.txt.json').is_file()
+    assert (bundle / 'src' / source.name).read_bytes() == source.read_bytes()
+    canonical = json.loads((bundle / '報告.final.txt.json').read_text(encoding='utf-8'))
+    assert canonical['document']['title'] == '報告.final'
 
 
 def test_bundle_rename_uses_deterministic_suffix_for_folder_and_files(tmp_path):
