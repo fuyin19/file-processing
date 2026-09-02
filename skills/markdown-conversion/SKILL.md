@@ -19,10 +19,13 @@ garbled stays on the Inspector path when its selected-page Markdown passes a
 conservative readability gate, preserving Inspector tables and headings.
 Successful OCR replaces the corresponding Inspector page span only after
 selected-page output proves one unique complete selected-page signature.
-Inspector failure or an unprovable flagged-page span routes the whole document to
-ordered OCR. PDFium native text is never a content or structure fallback;
-PDFium is limited to OCR rasterization and lightweight bundle image-object
-export, without running its document text/layout/table pipeline. Local formats
+For `text_based`/`mixed` PDFs with usable Inspector text or tables, an unprovable
+page span preserves the body and reports `partial`; successful unplaced OCR is
+appended as a labelled page supplement. Inspector failure or alignment failure
+outside that retention path still routes the whole document to ordered OCR.
+PDFium native text is never a content or structure fallback;
+PDFium is limited to OCR rasterization, graphic geometry, and bundle image
+rendering/export, without supplying canonical body text or structure. Local formats
 supported by AnyDoc use its `to_document` model by default; URLs (including PDF
 URLs) and formats
 outside AnyDoc continue through a reused MarkItDown adapter. Pass
@@ -49,6 +52,7 @@ Markdown rendering.
   [--ocr off|auto|force] [--ocr-engine rapidocr]
   [--ocr-language ch] [--ocr-dpi 300]
   [--ocr-max-long-edge 4096] [--ocr-min-confidence 0.5]
+  [--pdf-images auto|objects|off] [--pdf-image-timeout 1000]
   [--enrich-images]
 ```
 
@@ -98,6 +102,26 @@ or other sidecars.
 Image caption text is retained in reading order; unlabelled images are omitted,
 and no broken image links are emitted. Because no JSON artifact exists, this
 mode skips JSON Schema validation while retaining applicable semantic checks.
+PDF image enhancement does not run in this mode.
+
+For local PDF bundles, `--pdf-images auto` is the default. It preserves figures
+from the composited page appearance, including vector graphics, overlaid text,
+and image fragments. A figure is inserted beside Inspector body content only
+when its full boundary and position are proved. Otherwise a page preview is
+appended under `Supplementary PDF figures`, with its physical page number and a
+possible-duplication notice. These previews are not OCR and are not counted as
+precise placements. Cross-page figures remain separate page images; inline
+image glyphs receive a page preview and a loss warning, without inventing text.
+
+`--pdf-images objects` retains the existing image-object export and unique
+neighbor-anchor placement rules, with cached matching. `--pdf-images off`
+disables PDF image enhancement. Neither changes `--ocr off|auto|force` or Office
+`--enrich-images`. Image work starts only after a usable body has completed and
+has its own `--pdf-image-timeout` budget, defaulting to 1000 seconds independently
+of the body worker's 1000 seconds. A failed or expired enhancement preserves the
+body and reports unprocessed pages; it cannot make an empty body publishable.
+The config block is `pdf_images: {"mode": "auto", "timeout_seconds": 1000}`.
+CLI values override config; timeout values must be positive and finite.
 
 ## Workflow
 
@@ -115,7 +139,7 @@ mode skips JSON Schema validation while retaining applicable semantic checks.
 3. Extract local PDFs with PDF Inspector. Before extraction, standard
    Identity-H/Identity-V CJK fonts that lack `ToUnicode` receive temporary,
    self-contained maps generated from the bundled `pdfminer.six` Adobe data;
-   the source PDF is never modified. Parse Inspector's full Markdown once so
+   the source PDF is never modified. Parse Inspector's full Markdown so
    its document-wide headings, tables, wrapping, and reading order stay intact.
    Refine Inspector's full-result OCR signal with its precise per-page layout
    classification so sparse readable pages stay on the Inspector path. When a
@@ -128,11 +152,17 @@ mode skips JSON Schema validation while retaining applicable semantic checks.
    signature. Reject partial or reordered matches and never extrapolate across
    an unmatched prefix, suffix, or inter-run gap. Place an empty selected page
    at a zero-width boundary only when ordered per-page Inspector Markdown
-   accounts for the complete global visible signature. Merge consecutive proven
-   flagged-page spans and replace the entire run, never append OCR beside
-   retained page text. If a flagged-page span cannot be proved, prefer ordered
-   all-document OCR over a guessed replacement. If OCR fails after a span is proven, remove the unusable
-   Inspector span, mark the page `ocr_required`, and never substitute PDFium
+   accounts for the complete global visible signature. For `text_based`/`mixed`
+   PDFs with usable Inspector text or tables, process proven spans individually
+   without consuming gaps; reject all pages involved in overlap or order conflicts.
+   Unproved spans preserve the body and do not expand the OCR page set. Append
+   successful unplaced OCR after image placement in a labelled page supplement;
+   report unresolved order or possible duplication as `partial`. If removing
+   proven spans would exhaust the Inspector body while some pages remain
+   unaligned, retain the original body and place all successful OCR in the
+   supplement. Other classifications retain the whole-document OCR safety
+   fallback. If OCR fails after a span is proven, remove the unusable
+   Inspector span subject to that retention guard, mark the page `ocr_required`, and never substitute PDFium
    native text. Add no custom header/footer cleanup; inherit Inspector's default
    behavior. Use AnyDoc for eligible local non-PDF formats and MarkItDown for
    all URLs, including PDF URLs, and other formats. All local Office/AnyDoc
@@ -205,17 +235,20 @@ stem/slug fallback.
   column-order, cross-page, or chrome rewrites. Healthy content therefore keeps
   Inspector's global structure instead of re-rooting headings page by page.
   Inspector nodes use a document-range locator, while OCR nodes retain exact
-  page provenance. Header/footer behavior is left to Inspector. Bundle image
-  binaries are enumerated directly from PDF image objects. Adjacent raw PDF text
-  is used only as a unique placement anchor, never as canonical content or
-  structural evidence; ambiguous image positions are reported and not inserted
-  arbitrarily.
+  page provenance. Header/footer behavior is left to Inspector. The default
+  bundle image pass checks graphic candidates on every page and renders an
+  enhanced page at most once. Inspector positioned text may associate a complete
+  figure with an existing paragraph or table; it never rewrites that content.
+  Missing positioning capability or uncertain layout uses a page supplement.
+  The `objects` mode consults adjacent raw PDF text only as a unique placement
+  anchor. Neither mode emits PDFium native text as canonical content.
 - OCR is optional and local. `auto` is the default, but its engine remains lazy:
   healthy born-digital pages do not import or initialize an OCR model. Install
   compatible `rapidocr` and `onnxruntime` packages; auto mode follows
   Inspector's full-result `pages_needing_ocr` signal after confirming it with
   Inspector's per-page layout classification. A proven flagged-page
-  Inspector span is removed even if OCR is disabled, unavailable, or empty;
+  Inspector span is removed even if OCR is disabled, unavailable, or empty,
+  subject to the unresolved-page body-retention guard above;
   `--ocr off` therefore leaves that page unrecovered and reports required OCR,
   while `--ocr force` routes every
   page to OCR. The default `ch` model recognizes Chinese and English. OCR fallback
@@ -227,7 +260,7 @@ stem/slug fallback.
 - Local PDF dependencies are capability-bound. `pypdf` supplies the common
   PDF layer; `auto/off` require PDF Inspector, while `force` does not.
   `pdfminer.six` loads only when a CID repair is needed, PDFium only for OCR
-  rasterization or bundle image export, and RapidOCR/ONNX only when OCR runs.
+  rasterization or bundle image enhancement, and RapidOCR/ONNX only when OCR runs.
   Missing route-required capabilities fail explicitly. Missing optional
   recovery or image capabilities preserve the documented warning/partial
   behavior.

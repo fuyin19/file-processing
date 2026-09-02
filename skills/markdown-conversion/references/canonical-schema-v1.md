@@ -63,6 +63,14 @@ are converted from raster coordinates back to the same PDF canvas coordinate
 system used by PDF page locators. These provenance fields do not change the ordered
 content or text-field contract.
 
+For a `text_based`/`mixed` PDF with usable Inspector body, successful OCR that
+cannot be placed safely is appended after body image placement, in physical page
+order. These real OCR nodes keep their exact page and raw text and add the open
+locator field `placement: unanchored_supplement`. The Markdown renderer supplies
+the supplement heading, page labels, and possible-duplication notice; these are
+not source nodes in Canonical JSON. `pdf_inspector_alignment_unresolved` carries
+`content_loss: true`, keeping quality `partial` even when this OCR succeeds.
+
 The page source unit's open `locator.ocr` object records the provider and
 runtime versions, model profile, language, requested/effective DPI, confidence
 threshold, raster dimensions, and filtering/merge counts. Volatile elapsed time
@@ -119,18 +127,37 @@ has `content_node_id`; an unresolved occurrence must not. Validators reject
 dangling references and duplicate occurrence identities. Optional
 `--enrich-images` adds a paragraph after a resolved image plus an
 `image_ocr_text` relationship linking the asset, image node, and OCR text node.
-PDF bundle images are exported by a lightweight PDFium image-object pass. Raw
-neighboring text may be consulted only to prove an image insertion point; it is
-not emitted and does not alter Inspector paragraphs, headings, lists, or tables.
-An image with an ambiguous position remains an asset without an invented
-reading-order placement and produces a warning.
+Local PDF bundles default to rendered figure enhancement (`--pdf-images auto`).
+The same image node and asset structures hold composited page crops or page
+previews, including painted text and vector graphics. Their open
+`source_locator` includes the physical `page`, PDF `bbox`,
+`extraction_method: pdfium_page_render`, and
+`placement: body_region|pdf_page_supplement`. These locator values are distinct
+from Office `image_occurrence` relationship placement values.
+
+`body_region` means both a complete region and its position relative to existing
+Inspector paragraphs or tables were proved. Original body values and order are
+unchanged. A `pdf_page_supplement` preserves the full visible page when a complete
+region or precise position cannot be established. These image nodes follow the
+body and any unplaced OCR supplement in ascending physical page order, with at
+most one page preview per page. The renderer supplies the `Supplementary PDF
+figures` heading, page labels, and possible-duplication notice; these labels are
+not source nodes or OCR text. A page preview may coexist with precise regions on
+that page and must not be counted as a precise placement.
+
+`--pdf-images objects` keeps image-object export and the existing unique raw
+neighbor-anchor rule, with cached matching. Ambiguous objects remain assets
+without an invented reading-order position. `--pdf-images off` disables image
+enhancement. Neither mode adds PDFium body text, changes OCR routing, or alters
+Inspector structure. Matching indexes and volatile image timings are not public
+Canonical fields.
 
 ## Quality and publication
 
 - `complete`: no warning and no known loss.
 - `complete_with_warnings`: confidence/limitation warning without known omitted
   semantic content.
-- `partial`: known omitted or quarantined source content, while artifacts remain
+- `partial`: known omitted/quarantined content or unresolved PDF order/duplication, while artifacts remain
   valid and at least one usable content node exists.
 
 All three states publish with exit code `0`. In bundle mode, invalid schema/
@@ -138,6 +165,13 @@ serialization, duplicate IDs, broken references, asset verification failure,
 no usable content, or transactional publication failure prevents publication. Markdown-only emits
 no Canonical JSON artifact and therefore skips JSON Schema validation while
 retaining applicable semantic checks.
+
+PDF image enhancement begins only after the Inspector/OCR result passes the
+usable-body gate. Images cannot turn an otherwise empty or unreadable PDF into
+a successful body conversion. An enhancement timeout or failure retains the
+completed body and records the unprocessed range as a loss. A successful page
+supplement alone is a placement warning; a known unrecovered inline image glyph
+is a loss even when its page preview is retained.
 
 `outputs` records the rendered Markdown path/hash and all published asset
 paths/hashes. JSON does not record its own hash, avoiding a circular digest.

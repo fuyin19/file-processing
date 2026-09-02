@@ -9,6 +9,7 @@ from __future__ import annotations
 import importlib.metadata
 import os
 import tempfile
+import time
 import unicodedata
 from collections import Counter
 from pathlib import Path
@@ -315,6 +316,24 @@ def _value(item: Any, name: str, default: Any = None) -> Any:
     return getattr(item, name, default)
 
 
+def _has_inspector_body(
+    content: list[dict[str, Any]], tables: list[dict[str, Any]]
+) -> bool:
+    """Count only real Inspector text or nonempty tables, never OCR placeholders."""
+    tables_by_id = {table["table_id"]: table for table in tables}
+    for node in content:
+        if node.get("source_locator", {}).get("extraction_method") != "pdf-inspector":
+            continue
+        if node.get("type") in {"heading", "paragraph", "list_item", "code"}:
+            if str(node.get("text") or "").strip():
+                return True
+        elif node.get("type") == "table":
+            table = tables_by_id.get(node.get("table_id"), {})
+            if any(str(cell).strip() for row in table.get("raw_rows", []) for cell in row):
+                return True
+    return False
+
+
 def _visible_signature(value: str) -> tuple[str, list[int]]:
     """Return a formatting-insensitive signature plus raw-character offsets."""
     characters: list[str] = []
@@ -562,7 +581,9 @@ def _replace_with_ocr_placeholders(
     result = markdown
     for raw_start, raw_end, items in sorted(
         replacements,
-        key=lambda item: (item[0], item[1]),
+        # Empty pages can share one proven boundary. Insert later pages first
+        # so the final Markdown retains their physical page order.
+        key=lambda item: (item[0], item[1], item[2][0][0] if item[2] else 0),
         reverse=True,
     ):
         placeholders = "\n\n".join(
@@ -739,6 +760,10 @@ def _extract_pdf_image_support(
     document_id: str,
     asset_dir: Path,
     units_by_page: dict[int, dict[str, Any]],
+    *,
+    max_assets: int | None = None,
+    max_bytes: int | None = None,
+    deadline: float | None = None,
 ) -> dict[str, Any]:
     """Extract bundle images without running PDFium's document parser.
 
@@ -752,8 +777,11 @@ def _extract_pdf_image_support(
     content: list[dict[str, Any]] = []
     warnings: list[dict[str, Any]] = []
     document = pdfium.PdfDocument(source)
+    exported_bytes = 0
     try:
         for page_index in range(len(document)):
+            if deadline is not None and time.monotonic() >= deadline:
+                raise TimeoutError("PDF object image budget expired")
             page_number = page_index + 1
             unit = units_by_page.get(page_number)
             if unit is None:
@@ -799,6 +827,10 @@ def _extract_pdf_image_support(
                     if obj.type != pdfium.raw.FPDF_PAGEOBJ_IMAGE:
                         continue
 
+                    if max_assets is not None and len(assets) >= max_assets:
+                        raise ValueError("PDF object image asset count limit exceeded")
+                    if deadline is not None and time.monotonic() >= deadline:
+                        raise TimeoutError("PDF object image budget expired")
                     image_ordinal += 1
                     try:
                         bbox = [round(float(value), 3) for value in obj.get_bounds()]
@@ -818,6 +850,10 @@ def _extract_pdf_image_support(
                         target = asset_dir / filename
                         try:
                             _extract_image(obj, target)
+                            exported_bytes += target.stat().st_size
+                            if max_bytes is not None and exported_bytes > max_bytes:
+                                target.unlink(missing_ok=True)
+                                raise MemoryError("PDF object image byte limit exceeded")
                             record = {
                                 "asset_id": asset_id,
                                 "type": "image",
@@ -842,6 +878,8 @@ def _extract_pdf_image_support(
                         except Exception:
                             target.unlink(missing_ok=True)
                             raise
+                    except MemoryError:
+                        raise
                     except Exception as exc:
                         warnings.append(
                             _warning(
@@ -973,6 +1011,7 @@ class PdfInspectorAdapter:
         inspector=None,
         fallback_adapter=None,
         ocr_runner=None,
+        image_mode: str = "objects",
     ):
         self.ocr_provider = ocr_provider
         self.ocr_mode = ocr_mode or "off"
@@ -981,6 +1020,7 @@ class PdfInspectorAdapter:
         # chrome, and page structure are never used as fallback content.
         self.fallback_adapter = fallback_adapter
         self.ocr_runner = ocr_runner
+        self.image_mode = image_mode
 
     def extract(
         self,
@@ -1003,6 +1043,8 @@ class PdfInspectorAdapter:
         repair_error: Exception | None = None
         inspector_error: Exception | None = None
         alignment_ocr_fallback = False
+        preserve_inspector = False
+        unresolved_pages: set[int] = set()
         cid_retained_pages: set[int] = set()
         required_pages: set[int]
         if self.ocr_mode == "force":
@@ -1031,6 +1073,14 @@ class PdfInspectorAdapter:
                     if reported_pages > 0:
                         total_pages = reported_pages
                     global_markdown = str(_value(processed, "markdown", "") or "")
+                    if _value(processed, "pdf_type") in {"text_based", "mixed"}:
+                        original_content, original_tables = _remap_inspector_document(
+                            global_markdown, document_id, mode,
+                            {"id": "pending"}, total_pages, {},
+                        )
+                        preserve_inspector = _has_inspector_body(
+                            original_content, original_tables
+                        )
                     required_pages = {
                         int(page)
                         for page in (_value(processed, "pages_needing_ocr", []) or [])
@@ -1132,7 +1182,10 @@ class PdfInspectorAdapter:
                     page_spans: dict[int, tuple[int, int]] = {}
                     alignment_failed = False
                     empty_page_positions: dict[int, int] | None = None
-                    if required_pages == set(range(1, total_pages + 1)):
+                    if (
+                        not preserve_inspector
+                        and required_pages == set(range(1, total_pages + 1))
+                    ):
                         run_spans[(1, total_pages)] = (0, len(global_markdown))
                     else:
                         previous_page_start = 0
@@ -1185,11 +1238,13 @@ class PdfInspectorAdapter:
                                             except Exception:
                                                 empty_page_positions = {}
                                     raw_position = empty_page_positions.get(page)
-                                    if raw_position is None or (
+                                    if raw_position is None or (not preserve_inspector and (
                                         raw_position < previous_page_start
                                         or raw_position < previous_page_end
-                                    ):
+                                    )):
                                         alignment_failed = True
+                                        if preserve_inspector:
+                                            continue
                                         break
                                     page_spans[page] = (
                                         raw_position,
@@ -1206,6 +1261,8 @@ class PdfInspectorAdapter:
                                 alignment = None
                             if alignment is None:
                                 alignment_failed = True
+                                if preserve_inspector:
+                                    continue
                                 break
                             raw_page_start = _raw_alignment_start(
                                 global_markdown, alignment
@@ -1214,21 +1271,43 @@ class PdfInspectorAdapter:
                                 global_markdown, alignment
                             )
                             if (
-                                raw_page_start >= raw_page_end
-                                or raw_page_start < previous_page_start
-                                or raw_page_end < previous_page_end
+                                not 0 <= raw_page_start < raw_page_end <= len(global_markdown)
+                                or (not preserve_inspector and (
+                                    raw_page_start < previous_page_start
+                                    or raw_page_end < previous_page_end
+                                ))
                             ):
                                 alignment_failed = True
+                                if preserve_inspector:
+                                    continue
                                 break
                             page_spans[page] = (raw_page_start, raw_page_end)
                             previous_page_start = raw_page_start
                             previous_page_end = raw_page_end
 
+                    if preserve_inspector:
+                        # Reject every page involved in an overlap or reversed
+                        # order; accepting the first candidate would be arbitrary.
+                        candidates = sorted(page_spans.items())
+                        conflicting_pages: set[int] = set()
+                        for index, (page, (_, raw_end)) in enumerate(candidates):
+                            for later_page, (later_start, _) in candidates[index + 1:]:
+                                if raw_end > later_start:
+                                    conflicting_pages.update((page, later_page))
+                        for page in conflicting_pages:
+                            del page_spans[page]
+                        unresolved_pages = required_pages - set(page_spans)
+                        # Separate page spans must never consume healthy text
+                        # between matches, even when their page numbers adjoin.
+                        run_spans = {
+                            (page, page): span for page, span in page_spans.items()
+                        }
+
                     runs = _consecutive_runs(set(page_spans))
                     previous_run_end = 0
                     for run in (
                         runs
-                        if not alignment_failed and not run_spans
+                        if not preserve_inspector and not alignment_failed and not run_spans
                         else ()
                     ):
                         start, end = run
@@ -1244,7 +1323,7 @@ class PdfInspectorAdapter:
                         run_spans[run] = (raw_start, raw_end)
                         previous_run_end = raw_end
 
-                    if alignment_failed:
+                    if alignment_failed and not preserve_inspector:
                         # A misplaced OCR block is worse than the slower but
                         # deterministic all-OCR path.
                         alignment_ocr_fallback = True
@@ -1306,7 +1385,9 @@ class PdfInspectorAdapter:
 
         support: dict[str, Any] | None = None
         try:
-            if self.fallback_adapter is not None:
+            if self.image_mode == "off":
+                pass
+            elif self.fallback_adapter is not None:
                 # Explicit injection is retained as a narrow test/extension seam.
                 support = self.fallback_adapter.extract(
                     source,
@@ -1398,6 +1479,7 @@ class PdfInspectorAdapter:
                 unit["status"] = "ocr_required"
 
         ocr_placeholders: dict[str, dict[str, Any]] = {}
+        supplement_pages = set(unresolved_pages)
         replacements: list[tuple[int, int, list[tuple[int, str]]]] = []
         if global_markdown.strip():
             for (start, end), (raw_start, raw_end) in sorted(run_spans.items()):
@@ -1424,6 +1506,16 @@ class PdfInspectorAdapter:
                 total_pages,
                 ocr_placeholders,
             )
+            if unresolved_pages and not _has_inspector_body(content, tables):
+                # OCR placeholders do not prove any Inspector body survived.
+                # Keep the original body rather than erase a text-based PDF
+                # whose unresolved page may be represented anywhere in it.
+                content, tables = _remap_inspector_document(
+                    global_markdown, document_id, mode,
+                    document_unit, total_pages, {},
+                )
+                supplement_pages = set(ocr_nodes_by_page)
+                unresolved_pages.update(required_pages)
         else:
             content = [ocr_nodes_by_page[page] for page in sorted(ocr_nodes_by_page)]
             tables = []
@@ -1433,12 +1525,13 @@ class PdfInspectorAdapter:
             page = _page_number(node.get("source_locator", {}))
             if page is not None:
                 support_nodes_by_page.setdefault(page, []).append(node)
-        for page, support_content in sorted(support_nodes_by_page.items()):
-            content, ambiguous_images = _merge_support_images(
-                content,
-                support_content,
-                units_by_page[page],
-            )
+        image_ambiguities = {}
+        if support_nodes_by_page:
+            from pdf_images import merge_cached
+
+            content, image_stats = merge_cached(content, support_nodes_by_page, units_by_page)
+            image_ambiguities = image_stats["unpositioned_by_page"]
+        for page, ambiguous_images in sorted(image_ambiguities.items()):
             if ambiguous_images:
                 unit = units_by_page[page]
                 unit["warnings"].append(
@@ -1451,6 +1544,23 @@ class PdfInspectorAdapter:
                 )
                 if unit["status"] == "complete":
                     unit["status"] = "warning"
+
+        # Image anchors are resolved only against the body, before unplaced OCR
+        # adds potentially duplicate strings to the content sequence.
+        for page in sorted(supplement_pages & set(ocr_nodes_by_page)):
+            node = ocr_nodes_by_page[page]
+            node["source_locator"]["placement"] = "unanchored_supplement"
+            content.append(node)
+        for page in sorted(unresolved_pages):
+            unit = units_by_page[page]
+            unit["warnings"].append(_warning(
+                "pdf_inspector_alignment_unresolved",
+                f"Page {page} has unresolved Inspector placement; retained body or supplementary OCR may duplicate content",
+                True,
+                unit["id"],
+            ))
+            if unit["status"] == "complete":
+                unit["status"] = "warning"
 
         document_warnings: list[dict[str, Any]] = []
         if inspector_error is not None:

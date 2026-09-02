@@ -212,9 +212,28 @@ def render_markdown(document: dict[str, Any], include_frontmatter: bool = True, 
     tables = {item["table_id"]: item for item in document.get("tables", [])}
     assets = {item["asset_id"]: item for item in document.get("assets", [])}
     lines: list[str] = []
+    supplement_started = False
+    figure_supplement_started = False
     for node in document.get("content", []):
         kind = node["type"]
         text = str(node.get("normalized_text", node.get("text", ""))).strip()
+        locator = node.get("source_locator", {})
+        if locator.get("placement") == "unanchored_supplement":
+            if not supplement_started:
+                lines.extend([
+                    "## Supplementary OCR (unplaced)",
+                    "> original position unresolved; may duplicate the body",
+                ])
+                supplement_started = True
+            lines.append(f"### PDF page {locator['page']}")
+        if locator.get("placement") == "pdf_page_supplement":
+            if not figure_supplement_started:
+                lines.extend([
+                    "## Supplementary PDF figures",
+                    "> Page previews preserve figures whose exact position is unresolved; they may repeat body text.",
+                ])
+                figure_supplement_started = True
+            lines.append(f"### PDF page {locator['page']}")
         if kind == "heading" and text:
             lines.append(f"{'#' * max(1, min(int(node.get('level', 1)), 6))} {text}")
         elif kind == "paragraph" and text:

@@ -24,6 +24,7 @@ from collections import Counter
 import datetime
 import importlib.metadata
 import json
+import math
 import mimetypes
 import os
 import re
@@ -31,6 +32,7 @@ import shutil  # compatibility seam; native_paths performs the actual copy
 import subprocess
 import sys
 import tempfile
+import time
 import urllib.parse
 from dataclasses import dataclass
 from dataclasses import asdict
@@ -81,7 +83,8 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "dpi": 300.0,
         "max_long_edge": 4096,
         "min_confidence": 0.5,
-    }
+    },
+    "pdf_images": {"mode": "auto", "timeout_seconds": 1000.0},
 }
 CONFIG_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "config.json")
 SUPPORTED_EXTENSIONS = set(ANYDOC_FORMAT_BY_EXTENSION) | {
@@ -107,6 +110,7 @@ _rfc3339_datetime_re = re.compile(
 )
 PROVIDER_TIMEOUT_SECONDS = 1000.0
 PROVIDER_WORKER = Path(__file__).with_name("provider_worker.py")
+PDF_IMAGE_RESULT_LIMIT = 80 * 1024 * 1024
 
 
 class PipelineError(RuntimeError):
@@ -126,13 +130,22 @@ class OutputCollision(PipelineError):
 
 def _run_provider_worker(request: dict[str, Any], timeout: float = PROVIDER_TIMEOUT_SECONDS) -> dict[str, Any]:
     """Run native parsing/OCR outside the publishing process with a hard deadline."""
-    with tempfile.TemporaryDirectory(prefix=".conversion-worker-") as directory:
+    image_settings = request.get("pdf_images") if request.get("adapter") == "pdf_inspector" else None
+    enhance = bool(request.get("asset_dir") and image_settings and image_settings["mode"] != "off")
+    image_parent = Path(request["asset_dir"]).parent if enhance else None
+    if image_parent is not None:
+        np.mkdir(image_parent, parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(prefix=".conversion-worker-", dir=np.native(image_parent) if image_parent else None) as directory:
         root = Path(directory)
         request_path = root / "request.json"
         result_path = root / "result.json"
+        fallback_path = root / "body-fallback.json"
+        if enhance:
+            request = {**request, "image_fallback_path": str(fallback_path)}
         np.write_text(request_path, json.dumps(request, ensure_ascii=False), encoding="utf-8")
         environment = dict(os.environ)
         environment.update({"OMP_NUM_THREADS": "1", "OPENBLAS_NUM_THREADS": "1", "MKL_NUM_THREADS": "1"})
+        body_started = time.monotonic()
         try:
             completed = subprocess.run(
                 [sys.executable, "-I", str(PROVIDER_WORKER), "--request", str(request_path), "--result", str(result_path)],
@@ -144,8 +157,24 @@ def _run_provider_worker(request: dict[str, Any], timeout: float = PROVIDER_TIME
             )
         except subprocess.TimeoutExpired as exc:
             raise PipelineError(f"Native conversion worker exceeded {timeout:g} seconds") from exc
+        body_seconds = time.monotonic() - body_started
+        image_seconds = 0.0
+        accepted_image_dir = None
         if not np.is_file(result_path):
             raise PipelineError(f"Native conversion worker exited {completed.returncode} without a result")
+        if enhance and completed.returncode == 0:
+            candidate_path = root / "image-result.json"
+            image_dir = root / "images"
+            settings = {**image_settings, "document_id": request["document_id"]}
+            image_started = time.monotonic()
+            accepted = _run_pdf_image_worker(result_path, candidate_path, image_dir, request["source"], settings)
+            image_seconds = time.monotonic() - image_started
+            if accepted:
+                accepted_image_dir = image_dir
+                result_path = candidate_path
+            else:
+                result_path = fallback_path
+        load_started = time.monotonic()
         try:
             envelope = json.loads(np.read_text(result_path, encoding="utf-8"))
         except (OSError, UnicodeError, json.JSONDecodeError) as exc:
@@ -157,7 +186,66 @@ def _run_provider_worker(request: dict[str, Any], timeout: float = PROVIDER_TIME
         result = envelope.get("result")
         if not isinstance(result, dict):
             raise PipelineError("Native conversion worker result is not an object")
+        if accepted_image_dir is not None and result.get("assets"):
+            # Common selected-result loading is complete. Promote the worker's
+            # prevalidated files without a second asset walk or hashing pass.
+            np.rename_no_replace(accepted_image_dir, Path(request["asset_dir"]))
+        if request.get("adapter") == "pdf_inspector":
+            timings = {"body_seconds": round(body_seconds, 6), "image_seconds": round(image_seconds, 6),
+                       "result_load_seconds": round(time.monotonic() - load_started, 6)}
+            print("[PDF stages] " + json.dumps(timings, ensure_ascii=True), file=sys.stderr)
+            metrics_log = result.get("_image_metrics_log")
+            if isinstance(metrics_log, str):
+                print("[PDF image stages] " + metrics_log[:4000], file=sys.stderr)
         return result
+
+
+def _run_pdf_image_worker(
+    body_path: Path,
+    result_path: Path,
+    image_dir: Path,
+    source: str,
+    settings: dict[str, Any],
+) -> bool:
+    """Select an image result using only bounded process and identity checks.
+
+    The absolute deadline includes launch, native work, validation and writing.
+    The shared supervisor uses a Windows Job so timeout also kills children.
+    """
+    from libreoffice_pdf import _run_job_process
+
+    deadline = time.monotonic() + float(settings["timeout_seconds"])
+    with np.open_file(result_path, "xb"):
+        pass
+    result_identity = np.EntryIdentity.capture(result_path)
+    np.mkdir(image_dir)
+    image_identity = np.EntryIdentity.capture(image_dir)
+    environment = dict(os.environ)
+    environment.update({"OMP_NUM_THREADS": "1", "OPENBLAS_NUM_THREADS": "1", "MKL_NUM_THREADS": "1"})
+    command = [
+        sys.executable, "-I", str(PROVIDER_WORKER),
+        "--image-body", str(body_path), "--image-source", source,
+        "--image-dir", str(image_dir), "--image-mode", settings["mode"],
+        "--image-document-id", settings["document_id"],
+        "--image-deadline", str(deadline), "--result", str(result_path),
+    ]
+    try:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return False
+        completed = _run_job_process(
+            command, cwd=body_path.parent, environment=environment,
+            timeout=remaining, diagnostic_limit=4096,
+        )
+        return (
+            completed.returncode == 0
+            and time.monotonic() <= deadline
+            and result_identity.matches(result_path)
+            and image_identity.matches(image_dir)
+            and 0 < np.lstat(result_path).st_size <= PDF_IMAGE_RESULT_LIMIT
+        )
+    except (OSError, RuntimeError, subprocess.SubprocessError):
+        return False
 
 
 @dataclass(frozen=True)
@@ -252,6 +340,28 @@ def resolve_ocr_settings(args, config: dict[str, Any]) -> OcrSettings:
     if settings.mode != "off" and settings.engine != "rapidocr":
         die(f"Unsupported OCR engine: {settings.engine}")
     return settings
+
+
+def resolve_pdf_image_settings(args, config: dict[str, Any]) -> dict[str, Any]:
+    raw = config.get("pdf_images", {})
+    if not isinstance(raw, dict):
+        die("config pdf_images must be an object")
+    values = {**DEFAULT_CONFIG["pdf_images"], **raw}
+    for key, value in (("mode", getattr(args, "pdf_images", None)),
+                       ("timeout_seconds", getattr(args, "pdf_image_timeout", None))):
+        if value is not None:
+            values[key] = value
+    if values["mode"] not in ("auto", "objects", "off"):
+        die("PDF image mode must be auto, objects, or off")
+    if isinstance(values["timeout_seconds"], bool):
+        die("PDF image timeout must be a positive finite number")
+    try:
+        timeout = float(values["timeout_seconds"])
+    except (TypeError, ValueError):
+        die("PDF image timeout must be a positive finite number")
+    if not math.isfinite(timeout) or timeout <= 0:
+        die("PDF image timeout must be a positive finite number")
+    return {"mode": values["mode"], "timeout_seconds": timeout}
 
 
 def create_ocr_provider(settings: OcrSettings):
@@ -469,6 +579,7 @@ def _extract(
     ocr_mode: str = "off",
     local_adapter: str = "anydoc",
     precomputed_identity: tuple[dict[str, Any], str] | None = None,
+    pdf_image_settings: dict[str, Any] | None = None,
 ) -> tuple[dict[str, Any], dict[str, Any], str]:
     identity_source = identity_source or source
     if is_url(source):
@@ -510,6 +621,7 @@ def _extract(
                 "asset_dir": str(asset_dir) if asset_dir is not None else "",
                 "ocr_mode": ocr_mode,
                 "ocr_settings": asdict(settings),
+                "pdf_images": pdf_image_settings or dict(DEFAULT_CONFIG["pdf_images"]),
             })
         else:
             result = PdfInspectorAdapter(ocr_provider, ocr_mode=ocr_mode).extract(
@@ -648,6 +760,7 @@ def _build_document(
     enrich_images: bool = False,
     ocr_settings: OcrSettings | None = None,
     precomputed_identity: tuple[dict[str, Any], str] | None = None,
+    pdf_image_settings: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     identity_source = identity_source or source
     extracted, source_record, document_id = _extract(
@@ -659,6 +772,7 @@ def _build_document(
         ocr_mode,
         local_adapter,
         precomputed_identity,
+        pdf_image_settings,
     )
     if enrich_images:
         _enrich_office_images(
@@ -786,6 +900,7 @@ def _stage_markdown_bundle_artifacts(
     document: dict[str, Any],
 ) -> dict[str, Any]:
     """Render and validate one complete Markdown bundle inside an owned stage."""
+    stage_started = time.monotonic()
     markdown_name = f"{target_stem}.md"
     json_name = f"{target_stem}.json"
     markdown = render_markdown(document, not args.no_frontmatter, "bundle")
@@ -807,6 +922,8 @@ def _stage_markdown_bundle_artifacts(
     persisted = json.loads(np.read_text(json_path, encoding="utf-8"))
     validate_canonical(persisted, stage, validate_schema=False)
     _complete_envelope_stage(stage)
+    if document.get("adapter", {}).get("name") == "pdf-inspector":
+        print(f"[PDF publication preparation] {time.monotonic() - stage_started:.6f} seconds", file=sys.stderr)
     return document
 
 
@@ -838,6 +955,7 @@ def _emit_markdown_bundle_core(
         enrich_images=getattr(args, "enrich_images", False),
         ocr_settings=ocr_settings,
         precomputed_identity=precomputed_identity,
+        pdf_image_settings=getattr(args, "pdf_image_settings", None),
     )
     verify_snapshot()
     return _stage_markdown_bundle_artifacts(args, stage, target_stem, document)
@@ -1034,6 +1152,10 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="PDF OCR policy; defaults to config pdf_ocr.mode (auto)",
     )
+    parser.add_argument("--pdf-images", choices=["auto", "objects", "off"], default=None,
+                        help="PDF bundle images: complete regions/page previews, legacy objects, or off (default: auto)")
+    parser.add_argument("--pdf-image-timeout", type=float, default=None,
+                        help="Hard time budget for optional PDF images, separate from body/OCR (default: 1000 seconds)")
     parser.add_argument("--ocr-engine", choices=["rapidocr"], default=None)
     parser.add_argument("--ocr-language", default=None)
     parser.add_argument("--ocr-dpi", type=float, default=None)
@@ -1052,6 +1174,7 @@ def main() -> int:
         CONFIG_PATH = str(np.logical(args.config))
     config = load_config()
     args.ocr_settings = resolve_ocr_settings(args, config)
+    args.pdf_image_settings = resolve_pdf_image_settings(args, config)
     args.ocr_provider = create_ocr_provider(args.ocr_settings)
     precheck(args)
     args.timestamp = resolve_timestamp(args.timestamp)

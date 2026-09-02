@@ -73,6 +73,7 @@ VERSION = "2.0.0"
 CONFIG_PATH = _SCRIPTS / "config.json"
 DEFAULT_CONFIG: dict[str, object] = {
     "pdf_ocr": dict(markdown_pipeline.DEFAULT_CONFIG["pdf_ocr"]),
+    "pdf_images": dict(markdown_pipeline.DEFAULT_CONFIG["pdf_images"]),
     "pdf_conversion": DEFAULT_PDF_CONVERSION,
 }
 _URL_RE = re.compile(r"^[A-Za-z][A-Za-z0-9+.-]*://")
@@ -130,6 +131,10 @@ def load_config(path: Path | None = None) -> dict[str, object]:
     if not isinstance(ocr, dict):
         die("config pdf_ocr must be an object")
     result["pdf_ocr"] = {**DEFAULT_CONFIG["pdf_ocr"], **ocr}  # type: ignore[dict-item]
+    images = raw.get("pdf_images", {})
+    if not isinstance(images, dict):
+        die("config pdf_images must be an object")
+    result["pdf_images"] = {**DEFAULT_CONFIG["pdf_images"], **images}
     try:
         return merge_pdf_conversion_config(result)
     except LibreOfficeError as exc:
@@ -390,6 +395,8 @@ def build_parser() -> argparse.ArgumentParser:
         dest="local_adapter", choices=["anydoc", "markitdown"], default="anydoc",
     )
     parser.add_argument("--ocr", choices=["off", "auto", "force"], default=None)
+    parser.add_argument("--pdf-images", choices=["auto", "objects", "off"], default=None)
+    parser.add_argument("--pdf-image-timeout", type=float, default=None)
     parser.add_argument("--ocr-engine", choices=["rapidocr"], default=None)
     parser.add_argument("--ocr-language", default=None)
     parser.add_argument("--ocr-dpi", type=float, default=None)
@@ -409,6 +416,7 @@ def main() -> int:
     # Resolve once for the whole invocation, before any per-item work.
     args.timestamp = markdown_pipeline.resolve_timestamp(args.timestamp)
     args.ocr_settings = markdown_pipeline.resolve_ocr_settings(args, config)
+    args.pdf_image_settings = markdown_pipeline.resolve_pdf_image_settings(args, config)
     args.ocr_provider = markdown_pipeline.create_ocr_provider(args.ocr_settings)
     args.output_mode = "bundle"
     if args.input_dir:

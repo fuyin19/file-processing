@@ -2303,7 +2303,7 @@ def test_product_sparse_readable_pdf_is_not_deleted_by_full_result_ocr_signal(
     )
 
 
-def _processed_result(markdown, page_count, *, ocr_pages=(), reasons=None):
+def _processed_result(markdown, page_count, *, ocr_pages=(), reasons=None, pdf_type=None):
     reason_items = []
     for page, values in (reasons or {}).items():
         reason_items.append(type('Reason', (), {
@@ -2315,7 +2315,297 @@ def _processed_result(markdown, page_count, *, ocr_pages=(), reasons=None):
         'page_count': page_count,
         'pages_needing_ocr': list(ocr_pages),
         'ocr_reasons_by_page': reason_items,
+        'pdf_type': pdf_type,
     })()
+
+
+@pytest.mark.parametrize('page_count', [3, 859])
+@pytest.mark.parametrize('pdf_type', ['text_based', 'mixed'])
+def test_pdf_inspector_unaligned_text_off_retains_body(
+    monkeypatch, tmp_path, page_count, pdf_type
+):
+    import pdf_inspector_adapter as module
+    from canonical import quality_from_warnings
+
+    source = tmp_path / 'text-prospectus.pdf'
+    source.write_bytes(b'%PDF fake')
+    monkeypatch.setattr(module, '_pdf_page_count', lambda _: page_count)
+    monkeypatch.setattr(module, 'repair_standard_cid_tounicode', lambda *_: (0, []))
+    calls = []
+
+    def process(_source, pages=None):
+        calls.append(pages)
+        return _processed_result(
+            '# Prospectus\n\nHealthy English body.\n\n'
+            '| Item | Value |\n| --- | --- |\n| Revenue | 100 |'
+            if pages is None else 'Unmatched selected-page CID text.',
+            page_count, ocr_pages=(2,), pdf_type=pdf_type,
+        )
+
+    result = module.PdfInspectorAdapter(
+        inspector=type('Inspector', (), {'process_pdf': staticmethod(process)})(),
+        ocr_mode='off',
+        ocr_runner=lambda *_: pytest.fail('off must never invoke OCR'),
+    ).extract(str(source), 'sha256:' + 'a' * 64, 'preserve')
+
+    assert [node['type'] for node in result['content']] == ['heading', 'paragraph', 'table']
+    assert result['content'][1]['text'] == 'Healthy English body.'
+    assert result['tables'][0]['raw_rows'][1] == ['Revenue', '100']
+    pages = [unit for unit in result['source_units'] if unit['type'] == 'page']
+    assert [unit['index'] for unit in pages if unit['status'] == 'ocr_required'] == [2]
+    assert quality_from_warnings(result['warnings']) == 'partial'
+    assert any(w['code'] == 'pdf_inspector_alignment_unresolved' and w['content_loss']
+               for w in result['warnings'])
+    assert calls == [None, [2]]
+
+
+def _extract_pdf_alignment_case(
+    monkeypatch, tmp_path, markdown, selected, *, ocr_mode='auto',
+    pdf_type='text_based', total_pages=5, refined_pages=None, page_markdown=None,
+    ocr_results=None, support=None,
+):
+    import pdf_inspector_adapter as module
+
+    source = tmp_path / 'alignment.pdf'
+    source.write_bytes(b'%PDF fake')
+    monkeypatch.setattr(module, '_pdf_page_count', lambda _: total_pages)
+    monkeypatch.setattr(module, 'repair_standard_cid_tounicode', lambda *_: (0, []))
+    calls, requested = [], []
+
+    def process(_source, pages=None):
+        calls.append(pages)
+        value = markdown if pages is None else selected[pages[0]]
+        if isinstance(value, Exception):
+            raise value
+        return _processed_result(value, total_pages, ocr_pages=selected, pdf_type=pdf_type)
+
+    def extract_pages(_source, pages=None):
+        return {'pages': [{
+            'page': page,
+            'markdown': (page_markdown or {}).get(page + 1, ''),
+            'needs_ocr': page + 1 in (refined_pages if refined_pages is not None else selected),
+        } for page in pages]}
+
+    def run_ocr(_source, pages, _provider):
+        assert ocr_mode != 'off'
+        requested.append(set(pages))
+        return ocr_results if ocr_results is not None else {
+            page: ([{'text': f'Recovered page {page}', 'bbox': [1, 2, 30, 40],
+                     'confidence': 0.99}], None, None) for page in pages
+        }
+
+    methods = {'process_pdf': staticmethod(process)}
+    if refined_pages is not None or page_markdown is not None:
+        methods['extract_pages_markdown'] = staticmethod(extract_pages)
+    result = module.PdfInspectorAdapter(
+        inspector=type('Inspector', (), methods)(), ocr_mode=ocr_mode,
+        ocr_runner=run_ocr, fallback_adapter=support,
+    ).extract(str(source), 'sha256:' + 'a' * 64, 'preserve')
+    return result, calls, requested
+
+
+def _pdf_alignment_document(result):
+    from canonical import quality_from_warnings
+
+    document = _fake_bundle_document('a' * 64)
+    document.update({key: result[key] for key in (
+        'source_units', 'content', 'tables', 'assets', 'relationships', 'adapter'
+    )})
+    document['source'].update({
+        'file_name': 'alignment.pdf', 'locator': 'alignment.pdf', 'hash_basis': 'source_bytes',
+    })
+    document['document'] = {
+        'document_id': 'sha256:' + 'a' * 64, 'title': 'Alignment regression',
+        'conversion_timestamp': '2026-09-02T12:00:00+08:00', 'language_normalization': 'preserve',
+    }
+    document['quality'] = {'status': quality_from_warnings(result['warnings']), 'warnings': result['warnings']}
+    document['outputs'] = {'mode': 'markdown', 'markdown': {'path': 'alignment.md', 'sha256': '0' * 64}, 'assets': []}
+    return document
+
+
+@pytest.mark.parametrize('ocr_mode', ['off', 'auto'])
+def test_pdf_inspector_partial_alignment_preserves_gaps_and_refined_page_set(
+    monkeypatch, tmp_path, ocr_mode
+):
+    from canonical import render_markdown, validate_canonical
+
+    # An earlier unaligned page must not prevent later independently proven
+    # pages from being processed; adjoining page numbers do not prove the gap.
+    result, calls, requested = _extract_pdf_alignment_case(
+        monkeypatch, tmp_path,
+        '# Prospectus\n\nSTALE SECOND\n\nHealthy gap between matches.\n\n'
+        'STALE THIRD\n\nHealthy final paragraph.',
+        {1: 'No matching page one.', 2: 'STALE SECOND', 3: 'STALE THIRD', 4: 'Readable short page'},
+        refined_pages={1, 2, 3}, ocr_mode=ocr_mode,
+    )
+    assert calls == [None, [1], [2], [3]]
+    assert requested == ([] if ocr_mode == 'off' else [{1, 2, 3}])
+    texts = [node.get('text', '') for node in result['content']]
+    assert 'Healthy gap between matches.' in texts
+    assert 'Healthy final paragraph.' in texts
+    assert 'STALE SECOND' not in texts and 'STALE THIRD' not in texts
+    assert not any(w['code'] == 'pdf_inspector_alignment_ocr_fallback' for w in result['warnings'])
+    document = _pdf_alignment_document(result)
+    validate_canonical(json.loads(json.dumps(document)))
+    assert document['quality']['status'] == 'partial'
+    markdown = render_markdown(document)
+    assert len(_frontmatter_lines(markdown)) == 5
+    if ocr_mode == 'auto':
+        assert texts == ['Prospectus', 'Recovered page 2', 'Healthy gap between matches.',
+                         'Recovered page 3', 'Healthy final paragraph.', 'Recovered page 1']
+        supplement = result['content'][-1]
+        assert supplement['source_locator']['page'] == 1
+        assert supplement['source_locator']['extraction_method'] == 'ocr'
+        assert supplement['source_locator']['placement'] == 'unanchored_supplement'
+        assert supplement['raw_text'] == supplement['text'] == 'Recovered page 1'
+        assert '## Supplementary OCR (unplaced)' in markdown
+        assert 'original position unresolved; may duplicate the body' in markdown
+        assert '### PDF page 1' in markdown
+        assert markdown.index('Healthy final paragraph.') < markdown.index('## Supplementary OCR')
+        assert not any('Supplementary OCR' in node.get('raw_text', '') for node in result['content'])
+        assert all('placement' not in node['source_locator'] for node in result['content'][:-1])
+    else:
+        assert 'Supplementary OCR' not in markdown
+        assert [u['index'] for u in result['source_units'] if u['status'] == 'ocr_required'] == [1, 2, 3]
+
+
+@pytest.mark.parametrize('markdown,selected', [
+    ('Intro\n\nRepeated marker\n\nTail', {1: 'Repeated marker', 2: 'Repeated marker'}),
+    ('Intro\n\nRepeated marker\n\nRepeated marker\n\nTail', {1: 'Repeated marker', 2: 'Unmatched'}),
+    ('Intro\n\nAlpha beta gamma delta\n\nTail', {1: 'Alpha beta gamma', 2: 'beta gamma delta'}),
+    ('Intro\n\nSecond page\n\nFirst page\n\nTail', {1: 'First page', 2: 'Second page'}),
+])
+def test_pdf_inspector_conflicting_pages_are_all_unplaced(monkeypatch, tmp_path, markdown, selected):
+    from canonical import render_markdown
+
+    result, calls, requested = _extract_pdf_alignment_case(monkeypatch, tmp_path, markdown, selected)
+    assert calls == [None, [1], [2]]
+    assert requested == [{1, 2}]
+    body = [node for node in result['content'] if node['source_locator']['extraction_method'] == 'pdf-inspector']
+    body_document = _pdf_alignment_document({**result, 'content': body})
+    assert render_markdown(body_document, False).strip() == markdown
+    supplements = [node for node in result['content'] if node['source_locator'].get('placement')]
+    assert [node['source_locator']['page'] for node in supplements] == [1, 2]
+    assert len([w for w in result['warnings'] if w['code'] == 'pdf_inspector_alignment_unresolved']) == 2
+
+
+@pytest.mark.parametrize('ocr_mode', ['off', 'auto'])
+@pytest.mark.parametrize('original', ['Only Inspector body.', '| Name | Value |\n| --- | --- |\n| Revenue | 100 |'])
+def test_pdf_inspector_all_required_guard_retains_real_body(monkeypatch, tmp_path, ocr_mode, original):
+    from canonical import render_markdown, validate_canonical
+
+    result, calls, requested = _extract_pdf_alignment_case(
+        monkeypatch, tmp_path, original,
+        {1: original, 2: 'Unmatched second page'}, total_pages=2, ocr_mode=ocr_mode,
+    )
+    # Even when every page is flagged, prove each span separately. Removing
+    # page one's span would leave only OCR placeholders, so the guard restores it.
+    assert calls == [None, [1], [2]]
+    assert requested == ([] if ocr_mode == 'off' else [{1, 2}])
+    document = _pdf_alignment_document(result)
+    validate_canonical(document)
+    markdown = render_markdown(document, False)
+    assert markdown.startswith(original)
+    assert document['quality']['status'] == 'partial'
+    if ocr_mode == 'auto':
+        assert [node['source_locator']['page'] for node in result['content']
+                if node['source_locator'].get('placement')] == [1, 2]
+
+
+@pytest.mark.parametrize('proven_empty', [False, True])
+def test_pdf_inspector_empty_selected_page_requires_complete_boundary_proof(monkeypatch, tmp_path, proven_empty):
+    result, calls, requested = _extract_pdf_alignment_case(
+        monkeypatch, tmp_path, 'Healthy first page.\n\nHealthy last page.', {2: ''},
+        total_pages=3,
+        page_markdown={1: 'Healthy first page.', 2: '', 3: 'Healthy last page.' if proven_empty else 'Different tail'},
+    )
+    assert requested == [{2}]
+    assert calls == [None, [2]]
+    texts = [node.get('text') for node in result['content']]
+    assert texts == (['Healthy first page.', 'Recovered page 2', 'Healthy last page.']
+                     if proven_empty else ['Healthy first page.', 'Healthy last page.', 'Recovered page 2'])
+    recovered = next(node for node in result['content'] if node['text'] == 'Recovered page 2')
+    assert bool(recovered['source_locator'].get('placement')) is not proven_empty
+
+
+@pytest.mark.parametrize('failure,code', [
+    ((None, 'ocr_failed', 'OCR failed'), 'ocr_failed'),
+    ((None, 'ocr_unavailable', 'OCR unavailable'), 'ocr_unavailable'),
+    (([], None, None), 'ocr_incomplete_result'),
+])
+def test_pdf_inspector_unaligned_ocr_failure_preserves_body(monkeypatch, tmp_path, failure, code):
+    result, calls, requested = _extract_pdf_alignment_case(
+        monkeypatch, tmp_path, 'Healthy English body.', {2: RuntimeError('selected failure')},
+        ocr_results={2: failure},
+    )
+    assert requested == [{2}] and calls == [None, [2]]
+    assert [node['text'] for node in result['content']] == ['Healthy English body.']
+    assert {w['code'] for w in result['warnings']} >= {code, 'ocr_required', 'pdf_inspector_alignment_unresolved'}
+    assert [u['index'] for u in result['source_units'] if u['status'] == 'ocr_required'] == [2]
+
+
+def test_pdf_inspector_adjacent_empty_pages_keep_physical_order(monkeypatch, tmp_path):
+    result, _, requested = _extract_pdf_alignment_case(
+        monkeypatch, tmp_path, 'Healthy first page.\n\nHealthy last page.',
+        {2: '', 3: ''}, total_pages=4,
+        page_markdown={1: 'Healthy first page.', 2: '', 3: '', 4: 'Healthy last page.'},
+    )
+    assert requested == [{2, 3}]
+    assert [node['text'] for node in result['content']] == [
+        'Healthy first page.', 'Recovered page 2', 'Recovered page 3', 'Healthy last page.',
+    ]
+
+
+@pytest.mark.parametrize('pdf_type', ['scanned', 'image_based', None])
+def test_pdf_inspector_unclassified_or_scanned_stays_conservative(monkeypatch, tmp_path, pdf_type):
+    result, _, requested = _extract_pdf_alignment_case(
+        monkeypatch, tmp_path, 'Untrusted apparent body.', {2: 'Different selected text'},
+        pdf_type=pdf_type, total_pages=3,
+    )
+    assert requested == [{1, 2, 3}]
+    assert [node['text'] for node in result['content']] == [f'Recovered page {page}' for page in (1, 2, 3)]
+    assert all('placement' not in node['source_locator'] for node in result['content'])
+
+
+@pytest.mark.parametrize('original', ['', '```\n\n```', '| | |\n| --- | --- |\n| | |'])
+def test_pdf_inspector_empty_body_does_not_enable_retention(monkeypatch, tmp_path, original):
+    result, _, requested = _extract_pdf_alignment_case(
+        monkeypatch, tmp_path, original, {2: 'Different selected text'}, total_pages=3,
+    )
+    assert requested == [{1, 2, 3}]
+    assert all(node['source_locator']['extraction_method'] == 'ocr' for node in result['content'])
+    assert all('placement' not in node['source_locator'] for node in result['content'])
+
+
+def test_pdf_inspector_truly_empty_off_document_still_fails_validation(monkeypatch, tmp_path):
+    from canonical import CanonicalValidationError, validate_canonical
+
+    result, _, requested = _extract_pdf_alignment_case(
+        monkeypatch, tmp_path, '', {2: ''}, total_pages=3, ocr_mode='off',
+    )
+    assert requested == []
+    with pytest.raises(CanonicalValidationError, match='no usable content'):
+        validate_canonical(_pdf_alignment_document(result))
+
+
+def test_pdf_inspector_supplement_does_not_contaminate_body_image_anchors(monkeypatch, tmp_path):
+    class ImageSupport:
+        def extract(self, *_):
+            return {'content': [
+                {'type': 'paragraph', 'raw_text': 'Unique preceding body anchor.', 'source_locator': {'page': 1}},
+                {'id': 'pending', 'type': 'image', 'asset_id': 'asset-0000000000000001', 'source_locator': {'page': 1}},
+                {'type': 'paragraph', 'raw_text': 'Unique following body anchor.', 'source_locator': {'page': 1}},
+            ], 'assets': [], 'warnings': []}
+
+    result, _, requested = _extract_pdf_alignment_case(
+        monkeypatch, tmp_path, 'Unique preceding body anchor.\n\nUnique following body anchor.',
+        {2: 'Unmatched selected page'}, support=ImageSupport(),
+        ocr_results={2: ([{'text': 'Unique preceding body anchor.'}], None, None)},
+    )
+    assert requested == [{2}]
+    assert [node['type'] for node in result['content']] == ['paragraph', 'image', 'paragraph', 'paragraph']
+    assert result['content'][-1]['source_locator']['placement'] == 'unanchored_supplement'
+    assert not any(w['code'] == 'pdf_image_position_ambiguous' for w in result['warnings'])
 
 
 def test_pdf_inspector_healthy_page_is_authoritative(monkeypatch, tmp_path):
@@ -3684,7 +3974,8 @@ def test_pdf_without_any_usable_content_fails_without_publication(tmp_path):
     assert not bundle.exists()
 
 
-def test_pdf_embedded_image_is_published_and_referenced(tmp_path):
+@pytest.mark.parametrize('pdf_images', ['objects', 'auto'])
+def test_pdf_embedded_image_is_published_and_referenced(tmp_path, pdf_images):
     from PIL import Image
     image = tmp_path / 'pixel.png'
     Image.new('RGB', (20, 20), 'red').save(image)
@@ -3698,7 +3989,9 @@ def test_pdf_embedded_image_is_published_and_referenced(tmp_path):
             c.drawString(72, 620 - index * 12, f'After image line {index}')
 
     _make_pdf(pdf, draw)
-    code, _, stderr, bundle = _run_pipeline_bundle(pdf, tmp_path / 'out')
+    code, _, stderr, bundle = _run_pipeline_bundle(
+        pdf, tmp_path / 'out', extra_args=['--pdf-images', pdf_images]
+    )
     assert code == 0, stderr
     data = _load_bundle(bundle)
     assert len(data['assets']) == 1
@@ -3708,7 +4001,23 @@ def test_pdf_embedded_image_is_published_and_referenced(tmp_path):
     )
     assert all(f'Before image line {index}' in visible_text for index in range(8))
     assert all(f'After image line {index}' in visible_text for index in range(8))
-    assert [node['type'] for node in data['content']][1] == 'image'
+    if pdf_images == 'objects':
+        assert [node['type'] for node in data['content']][1] == 'image'
+    else:
+        # The last Before baseline is 676, inside the image's y=640..680
+        # bounds. Auto must preserve the complete page when precise placement
+        # would cut through mapped prose; objects retains its legacy anchors.
+        node = data['content'][-1]
+        assert node['type'] == 'image'
+        locator = node['source_locator']
+        assert locator['placement'] == 'pdf_page_supplement'
+        assert locator['extraction_method'] == 'pdfium_page_render'
+        assert locator['page'] == 1
+        assert locator['bbox'] == [0, 0, 612, 792]
+        page_unit = next(unit for unit in data['source_units'] if unit['type'] == 'page')
+        assert locator['source_unit_id'] == page_unit['id']
+        assert any(warning['code'] == 'pdf_images_page_supplement'
+                   and not warning['content_loss'] for warning in data['quality']['warnings'])
     asset = bundle / data['assets'][0]['path']
     assert asset.exists()
     import hashlib

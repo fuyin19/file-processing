@@ -36,6 +36,7 @@ report/
   [--ocr off|auto|force] [--ocr-engine rapidocr]
   [--ocr-language ch] [--ocr-dpi 300]
   [--ocr-max-long-edge 4096] [--ocr-min-confidence 0.5]
+  [--pdf-images auto|objects|off] [--pdf-image-timeout 1000]
   [--enrich-images]
   [--libreoffice-path <program-directory-or-soffice.com>]
   [--config <config.json>] [--version]
@@ -44,6 +45,14 @@ report/
 Omitted `--formats` means `markdown,pdf`; v1 accepts exactly that normalized
 set. Use the specialized commands for a singleton format. The timestamp is
 resolved once per invocation and passed unchanged to every Markdown bundle.
+
+Local PDFs inherit Markdown conversion's image settings: `auto` preserves
+complete rendered figures and uses labelled page supplements when placement is
+uncertain, `objects` retains the previous image-object path, and `off` disables
+image enhancement. The independent image budget defaults to 1000 seconds;
+`--pdf-image-timeout` overrides `pdf_images.timeout_seconds` in config. Image
+failure or timeout preserves an already usable body with loss warnings. These
+settings do not change PDF OCR routing, Office image OCR, or the sibling PDF.
 
 Bundle naming defaults to the compatibility `stem` behavior. The explicit
 `--bundle-name-mode source-basename` mode retains the source's final extension
