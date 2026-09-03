@@ -194,6 +194,91 @@ def test_anydoc_word_revisions_use_accepted_snapshot_without_mutating_source(tmp
     assert len(warnings) == 1 and warnings[0]["content_loss"] is True
 
 
+def _write_capacity_docx_fixture(path, document_xml, *, reverse_auxiliary_members=False):
+    auxiliary_members = [
+        ("[Content_Types].xml", (
+            '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">'
+            '<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>'
+            '<Default Extension="png" ContentType="image/png"/>'
+            '<Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/>'
+            '<Override PartName="/word/header1.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.header+xml"/>'
+            '</Types>'
+        ).encode()),
+        ("_rels/.rels", (
+            '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
+            '<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/>'
+            '</Relationships>'
+        ).encode()),
+        ("word/_rels/document.xml.rels", (
+            '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
+            '<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/header" Target="header1.xml"/>'
+            '</Relationships>'
+        ).encode()),
+        ("word/header1.xml", (
+            '<w:hdr xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">'
+            '<w:p><w:r><w:t>Header</w:t></w:r></w:p></w:hdr>'
+        ).encode()),
+        ("word/media/image1.png", b"\x89PNG\r\n\x1a\n\x00\xffbinary media"),
+    ]
+    if reverse_auxiliary_members:
+        auxiliary_members.reverse()
+    with zipfile.ZipFile(path, "w") as package:
+        for index, (name, payload) in enumerate([
+            ("word/document.xml", document_xml.encode()), *auxiliary_members
+        ]):
+            info = zipfile.ZipInfo(name, date_time=(2024, 1, 2, 3, 4, 2 * index))
+            info.compress_type = zipfile.ZIP_DEFLATED if index % 2 else zipfile.ZIP_STORED
+            package.writestr(info, payload)
+
+
+@pytest.mark.parametrize("reverse_auxiliary_members", [False, True], ids=["forward-members", "reversed-members"])
+def test_docx_sharding_preserves_multiple_members_and_ordered_body(tmp_path, monkeypatch, reverse_auxiliary_members):
+    import io
+    from xml.etree import ElementTree
+    import docx_sharding
+
+    monkeypatch.setattr(docx_sharding, "TARGET_NODES", 8)
+    expected_text = [f"Paragraph {index}" for index in range(1, 7)]
+    paragraphs = ''.join(f'<w:p><w:r><w:t>{text}</w:t></w:r></w:p>' for text in expected_text)
+    source = tmp_path / "capacity.docx"
+    _write_capacity_docx_fixture(
+        source,
+        f'<w:document xmlns:w="{docx_sharding.WORD_NS}"><w:body>{paragraphs}</w:body></w:document>',
+        reverse_auxiliary_members=reverse_auxiliary_members,
+    )
+    original = source.read_bytes()
+    with zipfile.ZipFile(io.BytesIO(original)) as package:
+        assert package.testzip() is None
+        names = package.namelist()
+        payloads = {name: package.read(name) for name in names}
+        metadata = {info.filename: (info.compress_type, info.date_time) for info in package.infolist()}
+
+    shards = docx_sharding.shard_docx_bytes(original)
+
+    assert len(shards) == 3
+    covered = []
+    actual_text = []
+    for first, last, shard_bytes in shards:
+        with zipfile.ZipFile(io.BytesIO(shard_bytes)) as shard:
+            assert shard.testzip() is None
+            assert shard.namelist() == names
+            for info in shard.infolist():
+                assert (info.compress_type, info.date_time) == metadata[info.filename]
+                if info.filename != "word/document.xml":
+                    assert shard.read(info.filename) == payloads[info.filename]
+            root = ElementTree.fromstring(shard.read("word/document.xml"))
+        body = root.find(f"{{{docx_sharding.WORD_NS}}}body")
+        assert body is not None
+        texts = [''.join(block.itertext()) for block in body]
+        assert texts == expected_text[first - 1:last]
+        assert len(texts) == last - first + 1
+        covered.extend(range(first, last + 1))
+        actual_text.extend(texts)
+    assert covered == list(range(1, 7))
+    assert actual_text == expected_text
+    assert source.read_bytes() == original
+
+
 def test_only_typed_max_xml_nodes_uses_ordered_docx_capacity_recovery(tmp_path, fake_anydoc, monkeypatch):
     import io
     from xml.etree import ElementTree
@@ -211,12 +296,12 @@ def test_only_typed_max_xml_nodes_uses_ordered_docx_capacity_recovery(tmp_path, 
             f'<w:p><w:r><w:t>Paragraph {index}</w:t></w:r></w:p>' for index in range(2, 7)
         )
     )
-    with zipfile.ZipFile(source, "w") as package:
-        package.writestr(
-            "word/document.xml",
-            '<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">'
-            f'<w:body>{paragraphs}</w:body></w:document>',
-        )
+    _write_capacity_docx_fixture(
+        source,
+        '<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">'
+        f'<w:body>{paragraphs}</w:body></w:document>',
+    )
+    original = source.read_bytes()
 
     calls = []
 
@@ -235,8 +320,9 @@ def test_only_typed_max_xml_nodes_uses_ordered_docx_capacity_recovery(tmp_path, 
 
     fake_anydoc._ANYDOC.to_document = convert
     result = fake_anydoc.AnyDocAdapter().extract(
-        str(source), "sha256:" + hashlib.sha256(source.read_bytes()).hexdigest(), "preserve", tmp_path / "assets"
+        str(source), "sha256:" + hashlib.sha256(original).hexdigest(), "preserve", tmp_path / "assets"
     )
+    assert source.read_bytes() == original
     assert [item["text"] for item in result["content"]] == [f"Paragraph {index}" for index in range(1, 7)]
     assert len(calls) == 4
     fallback = [item for item in result["warnings"] if item["code"] == "adapter_fallback_used"]

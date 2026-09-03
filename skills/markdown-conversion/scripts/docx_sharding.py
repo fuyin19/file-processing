@@ -1,7 +1,7 @@
 """Bounded structural DOCX sharding for an upstream max_xml_nodes capacity limit."""
 from __future__ import annotations
 
-from copy import deepcopy
+from copy import copy, deepcopy
 import io
 from xml.etree import ElementTree
 import zipfile
@@ -74,7 +74,10 @@ def shard_docx_bytes(raw: bytes) -> list[tuple[int, int, bytes]]:
             with zipfile.ZipFile(output, "w") as shard:
                 for info in package.infolist():
                     payload = document_xml if info.filename == "word/document.xml" else package.read(info.filename)
-                    shard.writestr(info, payload)
+                    # writestr mutates ZipInfo; keep the source offsets valid for later shards.
+                    shard_info = copy(info)
+                    shard_info.header_offset = 0
+                    shard.writestr(shard_info, payload)
             shards.append((first_index, last_index, output.getvalue()))
             covered.extend(range(first_index, last_index + 1))
         if covered != list(range(1, len(blocks) + 1)):
