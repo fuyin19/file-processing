@@ -19,9 +19,10 @@ _SCRIPTS = Path(__file__).resolve().parent
 _SKILLS = _SCRIPTS.parents[1]
 _SHARED = _SKILLS / "_shared" / "scripts"
 _MARKDOWN = _SKILLS / "markdown-conversion" / "scripts"
-for _path in (str(_SHARED), str(_MARKDOWN)):
-    if _path not in sys.path:
-        sys.path.insert(0, _path)
+for _path in (str(_SHARED), str(_MARKDOWN), str(_SCRIPTS)):
+    if _path in sys.path:
+        sys.path.remove(_path)
+    sys.path.insert(0, _path)
 if __name__ == "__main__":
     for _stream in (sys.stdout, sys.stderr):
         if hasattr(_stream, "reconfigure"):
@@ -69,7 +70,7 @@ def _load_markdown_pipeline():
 
 markdown_pipeline = _load_markdown_pipeline()
 
-VERSION = "2.0.0"
+VERSION = "2.0.1"
 CONFIG_PATH = _SCRIPTS / "config.json"
 DEFAULT_CONFIG: dict[str, object] = {
     "pdf_ocr": dict(markdown_pipeline.DEFAULT_CONFIG["pdf_ocr"]),
@@ -408,11 +409,21 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main() -> int:
     args = build_parser().parse_args()
-    config = load_config(np.logical(args.config) if args.config else None)
     if args.version:
+        config = load_config(np.logical(args.config) if args.config else None)
         show_version(config, args.libreoffice_path)
         return 0
     precheck(args)
+    try:
+        with core.operation(skill_entrypoint=Path(__file__).absolute(), skill_id="file-conversion"):
+            return _run(args)
+    except core.CoreAdapterError as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        return 1
+
+
+def _run(args) -> int:
+    config = load_config(np.logical(args.config) if args.config else None)
     # Resolve once for the whole invocation, before any per-item work.
     args.timestamp = markdown_pipeline.resolve_timestamp(args.timestamp)
     args.ocr_settings = markdown_pipeline.resolve_ocr_settings(args, config)

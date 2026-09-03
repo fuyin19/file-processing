@@ -3,15 +3,28 @@ name: pdf-conversion
 description: |
   Convert supported local PDF and Office files or directories to one native, high-fidelity multipage PDF per input using an identity-bound source snapshot and a private LibreOffice process. Use for PDF-preserving copy/validation and Word, PowerPoint, or Excel PDF export.
 metadata:
-  version: 2.0.0
+  version: 2.0.1
 ---
 
 # Convert local files to PDF
 
-Bundle mode requires `ANTI_ENTROPY_CORE_RUNNER` to be the absolute path to
-`anti-entropy-core/scripts/knowledge_unit_runner.py`. Direct PDF mode does not
-create a knowledge unit. A missing or invalid runner in bundle mode is a
-configuration error.
+Bundle routes require the independently installed `anti-entropy-core` skill,
+exactly Core `1.2.1` with ABI `anti-entropy-core.runner/v1`. By default the
+pipeline selects only `anti-entropy-core/scripts/knowledge_unit_runner.py`
+under the same skills root as this skill. `ANTI_ENTROPY_CORE_RUNNER` is an
+optional absolute-path override for a different installation root; an explicit
+empty, invalid, nonordinary, ABI-mismatched or version-mismatched value fails
+without fallback. Preflight happens before config creation, providers or stages;
+one invocation keeps the same runner. Update Core and consumer skills together.
+
+Each conversion skill carries a local standard-library Core client. Other
+`_shared` runtime and sibling Markdown implementation dependencies still
+require the existing complete file-processing layout: this release does not
+make the complete conversion skills independently runnable. Core completes
+only caller-owned disposable stages; conversion and publication remain here.
+
+Direct PDF mode and help/version do not require Core.
+
 
 Run `scripts/pipeline.py`. This command accepts only local `.pdf`, Word
 (`.doc/.docx/.docm`), PowerPoint (`.ppt/.pptx/.pptm/.pps/.ppsx`), and Excel

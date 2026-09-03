@@ -3,14 +3,28 @@ name: markdown-conversion
 description: |
   Convert local PDF and AnyDoc/MarkItDown-supported documents, supported files, URLs, or directories into a canonical JSON plus Markdown bundle, or one clean Markdown file. Use for PDF Inspector-backed PDF extraction, AnyDoc-backed local non-PDF extraction, explicit MarkItDown rollback, deterministic five-field frontmatter, Chinese language normalization, batch conversion, and staged output handling.
 metadata:
-  version: 7.0.0
+  version: 7.0.1
 ---
 
 # Convert files to canonical JSON and Markdown
 
-Bundle mode requires `ANTI_ENTROPY_CORE_RUNNER` to be the absolute path to
-`anti-entropy-core/scripts/knowledge_unit_runner.py`. A missing or invalid
-runner is a configuration error; there is no local Envelope fallback.
+Bundle routes require the independently installed `anti-entropy-core` skill,
+exactly Core `1.2.1` with ABI `anti-entropy-core.runner/v1`. By default the
+pipeline selects only `anti-entropy-core/scripts/knowledge_unit_runner.py`
+under the same skills root as this skill. `ANTI_ENTROPY_CORE_RUNNER` is an
+optional absolute-path override for a different installation root; an explicit
+empty, invalid, nonordinary, ABI-mismatched or version-mismatched value fails
+without fallback. Preflight happens before config creation, providers or stages;
+one invocation keeps the same runner. Update Core and consumer skills together.
+
+Each conversion skill carries a local standard-library Core client. Other
+`_shared` runtime and sibling Markdown implementation dependencies still
+require the existing complete file-processing layout: this release does not
+make the complete conversion skills independently runnable. Core completes
+only caller-owned disposable stages; conversion and publication remain here.
+
+Direct Markdown mode and help/version do not require Core.
+
 
 Use `scripts/pipeline.py`. Local PDFs use PDF Inspector's full-document
 Markdown as the authoritative result and normally route Inspector-reported
@@ -284,7 +298,7 @@ stem/slug fallback.
   rerun the full tests and benchmark after upgrades.
 - The authoritative AnyDoc upstream is `firecrawl/anydoc`; `fuyin19/anydoc` is
   a mirror. Referencing GitHub does not update an installed wheel.
-- v7.0.0 does not emit RAG chunks, change Canonical schema 1.0, or claim page,
+- v7.0.1 does not emit RAG chunks, change Canonical schema 1.0, or claim page,
   slide, sheet, rich-style, formula, or external-image fidelity beyond the
   AnyDoc model and documented warnings.
 - URL input, including a PDF URL, is downloaded through a public-network-only,

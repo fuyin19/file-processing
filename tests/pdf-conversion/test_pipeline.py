@@ -99,8 +99,8 @@ class FakeEngine:
 def test_frontmatter_and_versions_are_coherent():
     skill = (ROOT / "skills" / "pdf-conversion" / "SKILL.md").read_text(encoding="utf-8")
     assert "name: pdf-conversion" in skill
-    assert "version: 2.0.0" in skill
-    assert pipeline.VERSION == "2.0.0"
+    assert "version: 2.0.1" in skill
+    assert pipeline.VERSION == "2.0.1"
 
 
 def test_exact_filter_argument_is_one_sorted_ascii_json_value():

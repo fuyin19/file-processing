@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import os
 import sys
 
 import pytest
@@ -17,7 +18,7 @@ import anti_entropy_core_adapter as core
 import knowledge_unit
 
 
-ACTUAL_CORE_RUNNER = ROOT.parent / "anti-entropy-core" / "scripts" / "knowledge_unit_runner.py"
+ACTUAL_CORE_RUNNER = os.environ.get("FILE_PROCESSING_REAL_CORE_RUNNER", "")
 
 
 def test_explicit_core_runner_exposes_all_required_routes(tmp_path):
@@ -51,12 +52,12 @@ def test_explicit_core_runner_exposes_all_required_routes(tmp_path):
     assert core.repair(stage).command == "repair"
 
 
-@pytest.mark.skipif(not ACTUAL_CORE_RUNNER.is_file(), reason="sibling anti-entropy-core is unavailable")
 def test_actual_core_completes_and_validates_a_bundle_stage(tmp_path, monkeypatch):
+    assert ACTUAL_CORE_RUNNER, "Set FILE_PROCESSING_REAL_CORE_RUNNER to the current Core Candidate runner"
     stage = tmp_path / "actual-core-unit"
     stage.mkdir()
     (stage / "memo.md").write_text("body\n", encoding="utf-8")
-    monkeypatch.setenv(core.RUNNER_ENV, str(ACTUAL_CORE_RUNNER.resolve()))
+    monkeypatch.setenv(core.RUNNER_ENV, str(Path(ACTUAL_CORE_RUNNER).absolute()))
 
     assert core.capabilities().abi == core.EXPECTED_ABI
     completed = core.stage_complete(stage)
@@ -91,7 +92,7 @@ def test_core_adapter_sends_only_the_command_and_absolute_request(tmp_path, monk
         "import json, sys\n"
         "incoming = json.loads(sys.stdin.readline())\n"
         "print(json.dumps({'abi': 'anti-entropy-core.runner/v1', 'status': 'ok', 'exit_code': 0, "
-        "'command': incoming['command'], 'data': {'incoming': incoming}, 'issues': []}))\n",
+        "'command': incoming['command'], 'data': {'incoming': incoming, 'version': '1.2.1'}, 'issues': []}))\n",
         encoding="utf-8",
     )
     stage = tmp_path / "stage"
@@ -109,9 +110,10 @@ def test_core_adapter_sends_only_the_command_and_absolute_request(tmp_path, monk
 def test_core_adapter_distinguishes_runner_failure_from_result_failure(tmp_path, monkeypatch):
     line_error = tmp_path / "line_error_core.py"
     line_error.write_text(
-        "import json\n"
+        "import json, sys\n"
+        "incoming = json.loads(sys.stdin.readline())\n"
         "print(json.dumps({'abi': 'anti-entropy-core.runner/v1', 'status': 'error', 'exit_code': 1, "
-        "'command': 'validate', 'data': {}, 'issues': [{'message': 'invalid'}]}))\n",
+        "'command': incoming['command'], 'data': {}, 'issues': [{'message': 'invalid'}]}))\n",
         encoding="utf-8",
     )
     monkeypatch.setenv(core.RUNNER_ENV, str(line_error))

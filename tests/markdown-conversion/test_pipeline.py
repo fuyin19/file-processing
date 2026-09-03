@@ -1,5 +1,5 @@
 """
-Tests for pipeline.py (v7.0.0 canonical conversion architecture).
+Tests for pipeline.py (v7.0.1 canonical conversion architecture).
 
 Run from project root: pytest scripts/test_pipeline.py -v
 
@@ -773,7 +773,7 @@ def test_version_flag():
     assert 'Dependencies:' in stdout
     # Should show pip install names (not import names)
     assert 'opencc-python-reimplemented' in stdout
-    assert 'markdown-conversion v7.0.0' in stdout
+    assert 'markdown-conversion v7.0.1' in stdout
     assert 'rapidocr:' in stdout
     assert 'onnxruntime:' in stdout
     assert 'ruamel.yaml:' not in stdout
@@ -815,7 +815,7 @@ def test_pipeline_direct_isolated_entry_ignores_hostile_python_environment(tmp_p
     )
 
     assert result.returncode == 0, result.stderr.decode('utf-8', errors='replace')
-    assert b'markdown-conversion v7.0.0' in result.stdout
+    assert b'markdown-conversion v7.0.1' in result.stdout
     assert b'hostile' not in result.stdout + result.stderr
 
 
@@ -991,7 +991,7 @@ def test_safe_url_rejects_private_network_resolution(monkeypatch):
     monkeypatch.setattr(
         safe_url.socket,
         'getaddrinfo',
-        lambda *args, **kwargs: [(safe_url.socket.AF_INET, safe_url.socket.SOCK_STREAM, 6, '', ('127.0.0.1', 80))],
+        lambda *args, **kwargs: [(safe_url.socket.AF_INET, safe_url.socket.SOCK_STREAM, 6, '', ('127.0.1.1', 80))],
     )
     with pytest.raises(RuntimeError, match='non-public'):
         safe_url._endpoint('http://example.test/report')
@@ -1003,7 +1003,7 @@ def test_safe_url_revalidates_redirect_and_redacts_secrets(monkeypatch):
     monkeypatch.setattr(
         safe_url,
         '_request',
-        lambda value, deadline: (302, {'location': 'http://127.0.0.1/internal?token=secret'}, b''),
+        lambda value, deadline: (302, {'location': 'http://127.0.1.1/internal?token=secret'}, b''),
     )
     with pytest.raises(RuntimeError, match='non-public'):
         safe_url.download_url('https://example.com/start?api_key=secret')

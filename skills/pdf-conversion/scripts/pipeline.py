@@ -18,9 +18,10 @@ from typing import Any, NoReturn
 _SCRIPTS = Path(__file__).resolve().parent
 _SHARED = _SCRIPTS.parents[1] / "_shared" / "scripts"
 _MARKDOWN = _SCRIPTS.parents[1] / "markdown-conversion" / "scripts"
-for _path in (str(_SHARED), str(_MARKDOWN)):
-    if _path not in sys.path:
-        sys.path.insert(0, _path)
+for _path in (str(_SHARED), str(_MARKDOWN), str(_SCRIPTS)):
+    if _path in sys.path:
+        sys.path.remove(_path)
+    sys.path.insert(0, _path)
 if __name__ == "__main__":
     for _stream in (sys.stdout, sys.stderr):
         if hasattr(_stream, "reconfigure"):
@@ -54,7 +55,7 @@ from libreoffice_pdf import (  # noqa: E402
 )
 
 
-VERSION = "2.0.0"
+VERSION = "2.0.1"
 CONFIG_PATH = _SCRIPTS / "config.json"
 DEFAULT_CONFIG: dict[str, object] = {"pdf_conversion": DEFAULT_PDF_CONVERSION}
 _URL_RE = re.compile(r"^[A-Za-z][A-Za-z0-9+.-]*://")
@@ -374,11 +375,23 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main() -> int:
     args = build_parser().parse_args()
-    config = load_config(np.logical(args.config) if args.config else None)
     if args.version:
+        config = load_config(np.logical(args.config) if args.config else None)
         show_version(config, args.libreoffice_path)
         return 0
     precheck(args)
+    if args.output_mode != "bundle":
+        return _run(args)
+    try:
+        with core.operation(skill_entrypoint=Path(__file__).absolute(), skill_id="pdf-conversion"):
+            return _run(args)
+    except core.CoreAdapterError as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        return 1
+
+
+def _run(args) -> int:
+    config = load_config(np.logical(args.config) if args.config else None)
     if args.input_dir:
         return run_batch(args, config)
     try:

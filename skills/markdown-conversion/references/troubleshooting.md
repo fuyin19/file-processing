@@ -1,12 +1,26 @@
 # markdown-conversion troubleshooting
 
-## Core runner is not configured
+## Core runner configuration or version mismatch
 
-Bundle output delegates Envelope completion and validation to the independent
-Core. Set `ANTI_ENTROPY_CORE_RUNNER` to the absolute path to
-`anti-entropy-core/scripts/knowledge_unit_runner.py`. A missing path, relative
-path, runner failure, ABI mismatch, or validation error is reported directly;
-the conversion tools do not fall back to another Envelope implementation.
+Bundle routes require the independently installed `anti-entropy-core` skill,
+exactly Core `1.2.1` with ABI `anti-entropy-core.runner/v1`. By default the
+pipeline selects only `anti-entropy-core/scripts/knowledge_unit_runner.py`
+under the same skills root as this skill. `ANTI_ENTROPY_CORE_RUNNER` is an
+optional absolute-path override for a different installation root; an explicit
+empty, invalid, nonordinary, ABI-mismatched or version-mismatched value fails
+without fallback. Preflight happens before config creation, providers or stages;
+one invocation keeps the same runner. Update Core and consumer skills together.
+
+Each conversion skill carries a local standard-library Core client. Other
+`_shared` runtime and sibling Markdown implementation dependencies still
+require the existing complete file-processing layout: this release does not
+make the complete conversion skills independently runnable. Core completes
+only caller-owned disposable stages; conversion and publication remain here.
+
+Diagnostics identify the selected path, known actual values and required ABI/
+version. Install Core 1.2.1 beside the consumer skills, or correct the explicit
+override; update the matching consumer release when upgrading Core. There is
+no search of other skills roots, PATH lookup, download or automatic update.
 
 ## Output already exists
 
@@ -174,7 +188,7 @@ Canonical content.
 
 ## PDF structure behavior
 
-The v7.0.0 PDF path parses Inspector's full-document headings, paragraphs, lists,
+The v7.0.1 PDF path parses Inspector's full-document headings, paragraphs, lists,
 tables, line wrapping, and reading order, avoiding page-local heading
 re-rooting. It does
 not apply PDFium native-text corrections for columns, cross-page joins, table

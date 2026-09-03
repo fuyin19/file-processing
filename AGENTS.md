@@ -10,7 +10,7 @@ copy of this content there.
 
 ## Project Purpose
 
-`file-processing` is a Claude Code plugin (v7.0.0) that packages five
+`file-processing` is a Claude Code plugin (v7.0.1) that packages five
 file-processing skills as `/file-processing:<name>` commands. It serves
 developers working inside Claude Code who need repeatable, script-backed
 document workflows — convert, review, and translate — where deterministic
@@ -25,7 +25,7 @@ structure-safety and testability are prioritized over feature breadth.
 
 The five skills:
 
-- **markdown-conversion** (v7.0.0) — Convert local PDFs, AnyDoc-eligible
+- **markdown-conversion** (v7.0.1) — Convert local PDFs, AnyDoc-eligible
   non-PDF documents, remaining supported files, URLs, or directories through one
   canonical model. Local PDFs use a behaviorally compatible PDF Inspector as the
   authoritative text and structure source; RapidOCR recovers only routed pages,
@@ -41,13 +41,13 @@ The five skills:
   Markdown file. Canonical output preserves raw/cleaned/normalized text, uses
   exact five-field YAML frontmatter, defaults Chinese normalization to
   simplified, and publishes transactionally.
-- **pdf-conversion** (v2.0.0) — Convert supported local PDF and Office inputs
+- **pdf-conversion** (v2.0.1) — Convert supported local PDF and Office inputs
   into a native multipage PDF. PDF sources bypass LibreOffice; Office sources
   use one private, deadline-bounded x64 LibreOffice process per item with an
   exact family export filter and a separate bounded structural validation
   worker. Default bundles contain the exact envelope, `<stem>.pdf`, and `src/<original>`; direct
   mode emits exactly one PDF.
-- **file-conversion** (v2.0.0) — Route one acquired local source snapshot into
+- **file-conversion** (v2.0.1) — Route one acquired local source snapshot into
   the existing canonical Markdown bundle emitter plus the native PDF provider,
   then publish both in one bundle transaction. Hard failure publishes nothing;
   an existing publishable loss-aware Markdown partial plus a valid PDF remains
@@ -191,19 +191,28 @@ python skills/translate/scripts/translate_pipeline.py qa --source <file> --trans
 Default bundle output is one exact base envelope: root `AGENTS.md` and
 `CLAUDE.md`, one or more same-stem representation files with distinct
 case-folded extensions, and mandatory `assets/` and `src/`. The two navigation
-files are build-time-vendored `knowledge-unit-navigation/v1` resources;
+files are supplied by the independent anti-entropy Core 1.2.1 authority;
 `CLAUDE.md` is exactly `@AGENTS.md` plus LF. Empty support directories contain
 only a zero-byte `.keep`; payload and marker never coexist. `src/` has at most
 one direct ordinary source file. Validators are read-only and reject links,
 reparse points, nonregular entries, unsafe or case-fold-colliding names, empty
 nested asset directories, and instruction-control files below the root guide
-pair. Direct Markdown/PDF modes remain exactly one file. This repository owns
-its implementation independently; compatibility with Cortex is by exact
-resource bytes and conformance tests, not a cross-repository runtime import.
+pair. Direct Markdown/PDF modes remain exactly one file. Envelope authority is accessed only through the isolated JSONL Core runner
+with exact ABI `anti-entropy-core.runner/v1` and version `1.2.1`; consumers do
+not import Core implementation. Bundle pipeline entrypoints select the single
+`anti-entropy-core` sibling under their own skills root unless an explicit
+`ANTI_ENTROPY_CORE_RUNNER` overrides it. Invalid explicit configuration fails
+without fallback, before config/provider/stage writes. Each top-level operation
+binds one preflighted runner and restores its context on exit.
 
 ### Skill Structure
 
-The plugin lives in `skills/` with one subdirectory per public skill plus the internal `skills/_shared/` runtime. Each public skill has a `SKILL.md` defining the `/file-processing:<name>` command and workflow. All five skills are script-backed. `content-review` and `translate` additionally keep sub-agent prompt templates in `references/subagent-prompts.md`.
+The plugin lives in `skills/` with one subdirectory per public skill plus the internal `skills/_shared/` runtime. Each public skill has a `SKILL.md` defining the `/file-processing:<name>` command and workflow. Each bundle skill includes its own generated Core thin client, maintained at
+`skills/_shared/scripts/anti_entropy_core_adapter.py` and synchronized by
+`python tools/sync_core_clients.py` (`--check` verifies byte parity). Runtime
+Core imports use that skill-local copy. Other `_shared` and sibling Markdown
+runtime dependencies remain; complete independent conversion is not provided
+by this Core-only release. All five skills are script-backed. `content-review` and `translate` additionally keep sub-agent prompt templates in `references/subagent-prompts.md`.
 
 ### Pipeline Flow (pdf-conversion and file-conversion)
 

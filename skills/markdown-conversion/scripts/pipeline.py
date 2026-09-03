@@ -6,13 +6,14 @@ import os as _bootstrap_os
 import sys as _bootstrap_sys
 
 _SCRIPTS_DIR = _bootstrap_os.path.dirname(_bootstrap_os.path.realpath(__file__))
-if _SCRIPTS_DIR not in _bootstrap_sys.path:
-    _bootstrap_sys.path.insert(0, _SCRIPTS_DIR)
 _SHARED_SCRIPTS_DIR = _bootstrap_os.path.realpath(
     _bootstrap_os.path.join(_SCRIPTS_DIR, "..", "..", "_shared", "scripts")
 )
 if _SHARED_SCRIPTS_DIR not in _bootstrap_sys.path:
     _bootstrap_sys.path.insert(0, _SHARED_SCRIPTS_DIR)
+if _SCRIPTS_DIR in _bootstrap_sys.path:
+    _bootstrap_sys.path.remove(_SCRIPTS_DIR)
+_bootstrap_sys.path.insert(0, _SCRIPTS_DIR)
 if __name__ == "__main__":
     for _stream in (_bootstrap_sys.stdout, _bootstrap_sys.stderr):
         if hasattr(_stream, "reconfigure"):
@@ -74,7 +75,7 @@ from pdf_inspector_adapter import PdfInspectorAdapter
 from safe_url import redact_url
 
 
-VERSION = "7.0.0"
+VERSION = "7.0.1"
 DEFAULT_CONFIG: dict[str, Any] = {
     "pdf_ocr": {
         "mode": "auto",
@@ -1165,18 +1166,29 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main() -> int:
-    global CONFIG_PATH
     args = build_parser().parse_args()
     if args.version:
         show_version()
         return 0
+    precheck(args)
+    if args.output_mode != "bundle":
+        return _run(args)
+    try:
+        with core.operation(skill_entrypoint=Path(__file__).absolute(), skill_id="markdown-conversion"):
+            return _run(args)
+    except core.CoreAdapterError as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        return 1
+
+
+def _run(args) -> int:
+    global CONFIG_PATH
     if args.config:
         CONFIG_PATH = str(np.logical(args.config))
     config = load_config()
     args.ocr_settings = resolve_ocr_settings(args, config)
     args.pdf_image_settings = resolve_pdf_image_settings(args, config)
     args.ocr_provider = create_ocr_provider(args.ocr_settings)
-    precheck(args)
     args.timestamp = resolve_timestamp(args.timestamp)
     if args.input_dir:
         return run_batch(args)

@@ -11,14 +11,29 @@ claude skill add /path/to/file-processing
 
 ## Knowledge-unit Core
 
-Bundle-producing routes require `ANTI_ENTROPY_CORE_RUNNER` to name the absolute
-path to `anti-entropy-core/scripts/knowledge_unit_runner.py`. The shared runner
-validates and completes only the owned staging directory; file-processing does
-not discover a runner or fall back to a separate local Envelope implementation.
+Bundle routes require the independently installed `anti-entropy-core` skill,
+exactly Core `1.2.1` with ABI `anti-entropy-core.runner/v1`. By default the
+pipeline selects only `anti-entropy-core/scripts/knowledge_unit_runner.py`
+under the same skills root as this skill. `ANTI_ENTROPY_CORE_RUNNER` is an
+optional absolute-path override for a different installation root; an explicit
+empty, invalid, nonordinary, ABI-mismatched or version-mismatched value fails
+without fallback. Preflight happens before config creation, providers or stages;
+one invocation keeps the same runner. Update Core and consumer skills together.
+
+Each conversion skill carries a local standard-library Core client. Other
+`_shared` runtime and sibling Markdown implementation dependencies still
+require the existing complete file-processing layout: this release does not
+make the complete conversion skills independently runnable. Core completes
+only caller-owned disposable stages; conversion and publication remain here.
+
+The maintained thin client is `skills/_shared/scripts/anti_entropy_core_adapter.py`.
+Run `python tools/sync_core_clients.py` after editing it; run the read-only
+`python tools/sync_core_clients.py --check` to verify all three installed copies.
+Direct Markdown/PDF output, help and version do not acquire a Core dependency.
 
 ## Skills
 
-### markdown-conversion (v7.0.0)
+### markdown-conversion (v7.0.1)
 
 Convert local PDFs, Office documents, supported files, URLs, or directories
 through one canonical pipeline. Local PDFs use PDF Inspector as the
@@ -145,7 +160,7 @@ occurrences without changing the default-path cost.
 See [the skill contract](skills/markdown-conversion/SKILL.md) and
 [Canonical JSON v1 reference](skills/markdown-conversion/references/canonical-schema-v1.md).
 
-### pdf-conversion (v2.0.0)
+### pdf-conversion (v2.0.1)
 
 Convert local PDFs and supported Word, PowerPoint, or Excel files to native,
 high-fidelity multipage PDF. PDF inputs bypass LibreOffice and are copied from
@@ -166,7 +181,7 @@ not an operating-system sandbox or no-external-access guarantee.
 
 See [the PDF skill contract](skills/pdf-conversion/SKILL.md).
 
-### file-conversion (v2.0.0)
+### file-conversion (v2.0.1)
 
 Create one local bundle containing canonical Markdown/JSON, a sibling native
 PDF, the exact source snapshot, and conditional image assets:

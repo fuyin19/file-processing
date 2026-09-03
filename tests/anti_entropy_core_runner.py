@@ -116,7 +116,7 @@ def main() -> int:
     except (KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
         return _failure("unknown", str(exc))
     if command == "capabilities":
-        return _emit(command, data={"commands": ["capabilities", "inspect", "validate", "repair", "stage.complete"]})
+        return _emit(command, data={"version": "1.2.1", "commands": ["capabilities", "inspect", "validate", "repair", "stage.complete"]})
     try:
         path = _path(request)
         private = request.get("private_root_files", [])

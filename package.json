@@ -1,5 +1,5 @@
 {
   "name": "file-processing",
-  "version": "7.0.0",
+  "version": "7.0.1",
   "description": "File processing skills for Claude Code — convert to Markdown/PDF, review content, and translate."
 }

@@ -3,14 +3,26 @@ name: file-conversion
 description: |
   Route supported local PDF and Office files or directories into one canonical Markdown bundle plus a sibling native PDF, using one source snapshot and one staged publication boundary. Use when both machine-readable Markdown/JSON and a high-fidelity PDF are required.
 metadata:
-  version: 2.0.0
+  version: 2.0.1
 ---
 
 # Create Markdown + PDF bundles
 
-Set `ANTI_ENTROPY_CORE_RUNNER` to the absolute path to
-`anti-entropy-core/scripts/knowledge_unit_runner.py` before running this
-bundle-only route. A missing or invalid runner is a configuration error.
+Bundle routes require the independently installed `anti-entropy-core` skill,
+exactly Core `1.2.1` with ABI `anti-entropy-core.runner/v1`. By default the
+pipeline selects only `anti-entropy-core/scripts/knowledge_unit_runner.py`
+under the same skills root as this skill. `ANTI_ENTROPY_CORE_RUNNER` is an
+optional absolute-path override for a different installation root; an explicit
+empty, invalid, nonordinary, ABI-mismatched or version-mismatched value fails
+without fallback. Preflight happens before config creation, providers or stages;
+one invocation keeps the same runner. Update Core and consumer skills together.
+
+Each conversion skill carries a local standard-library Core client. Other
+`_shared` runtime and sibling Markdown implementation dependencies still
+require the existing complete file-processing layout: this release does not
+make the complete conversion skills independently runnable. Core completes
+only caller-owned disposable stages; conversion and publication remain here.
+
 
 Run `scripts/pipeline.py`. This local-only router accepts the same PDF, Word,
 PowerPoint, and Excel formats as `pdf-conversion`. Each bundle is:
