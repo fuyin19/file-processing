@@ -1,5 +1,5 @@
 """
-Tests for pipeline.py (v7.0.2 canonical conversion architecture).
+Tests for pipeline.py (v7.1.0 canonical conversion architecture).
 
 Run from project root: pytest scripts/test_pipeline.py -v
 
@@ -54,6 +54,36 @@ def test_convert_chinese_simplified_unchanged():
     from pipeline import convert_chinese
     result = convert_chinese('欢迎')
     assert result == '欢迎'
+
+
+def test_owned_empty_anydoc_image_directory_is_removed_without_touching_assets(tmp_path):
+    import pipeline  # noqa: F401 - initializes the bound carrier layout
+    from adapters import _remove_owned_empty_image_dir
+    images = tmp_path / 'stage' / 'assets' / 'images'
+    images.mkdir(parents=True)
+    _remove_owned_empty_image_dir(images)
+    assert not images.exists()
+    assert images.parent.is_dir()
+
+
+def test_owned_nonempty_anydoc_image_directory_is_preserved(tmp_path):
+    import pipeline  # noqa: F401 - initializes the bound carrier layout
+    from adapters import _remove_owned_empty_image_dir
+    images = tmp_path / 'stage' / 'assets' / 'images'
+    images.mkdir(parents=True)
+    payload = images / 'kept.png'
+    payload.write_bytes(b'payload')
+    _remove_owned_empty_image_dir(images)
+    assert payload.read_bytes() == b'payload'
+
+
+def test_anydoc_image_cleanup_ignores_unowned_layout(tmp_path):
+    import pipeline  # noqa: F401 - initializes the bound carrier layout
+    from adapters import _remove_owned_empty_image_dir
+    images = tmp_path / 'other' / 'images'
+    images.mkdir(parents=True)
+    _remove_owned_empty_image_dir(images)
+    assert images.is_dir()
 
 
 def test_convert_chinese_mixed_all_converted():
@@ -874,7 +904,7 @@ def test_version_flag():
     assert 'Dependencies:' in stdout
     # Should show pip install names (not import names)
     assert 'opencc-python-reimplemented' in stdout
-    assert 'markdown-conversion v7.0.2' in stdout
+    assert 'markdown-conversion v7.1.0' in stdout
     assert 'rapidocr:' in stdout
     assert 'onnxruntime:' in stdout
     assert 'ruamel.yaml:' not in stdout
@@ -916,7 +946,7 @@ def test_pipeline_direct_isolated_entry_ignores_hostile_python_environment(tmp_p
     )
 
     assert result.returncode == 0, result.stderr.decode('utf-8', errors='replace')
-    assert b'markdown-conversion v7.0.2' in result.stdout
+    assert b'markdown-conversion v7.1.0' in result.stdout
     assert b'hostile' not in result.stdout + result.stderr
 
 

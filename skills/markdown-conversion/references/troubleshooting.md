@@ -206,7 +206,7 @@ Canonical content.
 
 ## PDF structure behavior
 
-The v7.0.2 PDF path parses Inspector's full-document headings, paragraphs, lists,
+The v7.1.0 PDF path parses Inspector's full-document headings, paragraphs, lists,
 tables, line wrapping, and reading order, avoiding page-local heading
 re-rooting. It does
 not apply PDFium native-text corrections for columns, cross-page joins, table

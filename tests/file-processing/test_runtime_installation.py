@@ -130,13 +130,31 @@ def test_carrier_is_discoverable_complete_and_has_no_conversion_cli():
     assert skill.is_file()
     text = skill.read_text(encoding="utf-8")
     assert "name: file-processing" in text
-    assert "version: 1.0.0" in text
+    assert "version: 1.1.0" in text
     assert "read-only" in text.lower()
     assert {path.name for path in (carrier / "scripts").iterdir() if path.is_file()} == CARRIER_FILES
     assert not (carrier / "scripts" / "pipeline.py").exists()
     assert not (ROOT / "skills" / "_shared").exists()
-    assert json.loads((ROOT / "package.json").read_text(encoding="utf-8"))["version"] == "7.1.1"
-    assert json.loads((ROOT / ".claude-plugin" / "plugin.json").read_text(encoding="utf-8"))["version"] == "7.1.1"
+    assert json.loads((ROOT / "package.json").read_text(encoding="utf-8"))["version"] == "7.2.0"
+    assert json.loads((ROOT / ".claude-plugin" / "plugin.json").read_text(encoding="utf-8"))["version"] == "7.2.0"
+
+
+@pytest.mark.parametrize("skill", ["markdown-conversion", "file-conversion"])
+def test_private_preflight_reports_missing_carrier_as_installation_error(
+    tmp_path: Path, skill: str,
+) -> None:
+    script = tmp_path / "skills" / skill / "scripts" / "pipeline.py"
+    script.parent.mkdir(parents=True)
+    shutil.copyfile(ROOT / "skills" / skill / "scripts" / "pipeline.py", script)
+    result = _run(
+        [sys.executable, "-I", "-B", script, "--runtime-preflight-json", "--required-suffix", ".pdf"],
+        tmp_path,
+    )
+    assert result.returncode == 1 and result.stderr == ""
+    assert json.loads(result.stdout) == {
+        "schema_version": 1, "status": "error", "scope": "installation",
+        "code": "conversion_runtime_unavailable",
+    }
 
 
 def test_relocated_isolated_help_is_read_only_and_ignores_cwd_decoys(

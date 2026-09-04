@@ -50,6 +50,24 @@ def _cli(*args: object, timeout: float = 180) -> subprocess.CompletedProcess[str
     )
 
 
+def test_private_runtime_preflight_is_suffix_scoped_and_machine_readable() -> None:
+    for suffix in (".pdf", ".docx"):
+        result = _cli("--runtime-preflight-json", "--required-suffix", suffix, timeout=30)
+        assert result.returncode == 0 and result.stderr == ""
+        assert json.loads(result.stdout) == {
+            "schema_version": 1, "status": "ok", "scope": "ready", "code": "runtime_ready",
+        }
+
+
+def test_private_runtime_preflight_rejects_missing_suffix_without_work() -> None:
+    result = _cli("--runtime-preflight-json", timeout=30)
+    assert result.returncode == 1 and result.stderr == ""
+    assert json.loads(result.stdout) == {
+        "schema_version": 1, "status": "error", "scope": "protocol",
+        "code": "runtime_preflight_suffix_invalid",
+    }
+
+
 def _source(tmp_path: Path, suffix: str = ".docx") -> Path:
     fixture = ROOT / "tests" / "markdown-conversion" / "fixtures" / "anydoc" / "text.docx"
     path = tmp_path / f"source{suffix}"
@@ -99,10 +117,10 @@ def _fake_emitter(args, snapshot, stage, stem, *, status="complete", warnings=No
 
 def test_skill_frontmatter_and_project_versions():
     skill = (ROOT / "skills" / "file-conversion" / "SKILL.md").read_text(encoding="utf-8")
-    assert "name: file-conversion" in skill and "version: 2.0.2" in skill
-    assert pipeline.VERSION == "2.0.2"
-    assert json.loads((ROOT / "package.json").read_text(encoding="utf-8"))["version"] == "7.1.1"
-    assert json.loads((ROOT / ".claude-plugin" / "plugin.json").read_text(encoding="utf-8"))["version"] == "7.1.1"
+    assert "name: file-conversion" in skill and "version: 2.1.0" in skill
+    assert pipeline.VERSION == "2.1.0"
+    assert json.loads((ROOT / "package.json").read_text(encoding="utf-8"))["version"] == "7.2.0"
+    assert json.loads((ROOT / ".claude-plugin" / "plugin.json").read_text(encoding="utf-8"))["version"] == "7.2.0"
     assert (ROOT / "CLAUDE.md").read_text(encoding="utf-8").strip() == "@AGENTS.md"
 
 

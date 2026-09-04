@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib as _bootstrap_hashlib
 import importlib.util as _bootstrap_importlib
+import json as _bootstrap_json
 import os as _bootstrap_os
 import stat as _bootstrap_stat
 import sys as _bootstrap_sys
@@ -26,6 +27,14 @@ if __name__ == "__main__":
 
 
 def _bootstrap_fail(path: str, reason: str) -> "NoReturn":
+    if "--runtime-preflight-json" in _bootstrap_sys.argv[1:]:
+        print(_bootstrap_json.dumps({
+            "schema_version": 1,
+            "status": "error",
+            "scope": "installation",
+            "code": "conversion_runtime_unavailable",
+        }, sort_keys=True, separators=(",", ":")))
+        raise SystemExit(1)
     print(
         f"ERROR: {_BOOTSTRAP_SKILL_ID}: incomplete unified file-processing installation; "
         f"skills root: {_BOOTSTRAP_SKILLS_ROOT}; required path: {path}; "
@@ -205,7 +214,7 @@ _RUNTIME_LAYOUT.verify_module(
     expected=_MARKDOWN / "pipeline.py",
 )
 
-VERSION = "2.0.2"
+VERSION = "2.1.0"
 DEFAULT_CONFIG: dict[str, object] = {
     "pdf_ocr": dict(markdown_pipeline.DEFAULT_CONFIG["pdf_ocr"]),
     "pdf_images": dict(markdown_pipeline.DEFAULT_CONFIG["pdf_images"]),
@@ -520,6 +529,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Create one canonical Markdown + native PDF bundle per local input")
     parser.add_argument("--config", type=Path, default=None)
     parser.add_argument("--version", action="store_true")
+    parser.add_argument("--runtime-preflight-json", action="store_true", help=argparse.SUPPRESS)
+    parser.add_argument("--required-suffix", action="append", default=[], help=argparse.SUPPRESS)
     parser.add_argument("--input")
     parser.add_argument("--input-dir")
     parser.add_argument("--output-dir", default="")
@@ -555,8 +566,42 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _runtime_preflight(args: argparse.Namespace) -> int:
+    def emit(status: str, scope: str, code: str) -> int:
+        print(json.dumps({
+            "schema_version": 1, "status": status, "scope": scope, "code": code,
+        }, sort_keys=True, separators=(",", ":")))
+        return 0 if status == "ok" else 75 if scope == "python_environment" else 1
+
+    try:
+        config = load_config(args.config)
+    except Exception:
+        return emit("error", "config", "conversion_config_invalid")
+    suffixes = {str(value).casefold() for value in args.required_suffix}
+    if not suffixes or any(not value.startswith(".") for value in suffixes):
+        return emit("error", "protocol", "runtime_preflight_suffix_invalid")
+    office = suffixes - {".pdf"}
+    try:
+        if ".pdf" in suffixes:
+            __import__("pypdf")
+        if office:
+            markdown_pipeline.anydoc_capability_check()
+    except (ImportError, RuntimeError):
+        return emit("error", "python_environment", "conversion_python_dependency_unavailable")
+    if office:
+        raw = config.get("pdf_conversion", {})
+        configured = str(raw.get("libreoffice_path") or "") if isinstance(raw, dict) else ""
+        try:
+            resolve_libreoffice(args.libreoffice_path, configured)
+        except LibreOfficeError:
+            return emit("error", "host_tool", "libreoffice_unavailable")
+    return emit("ok", "ready", "runtime_ready")
+
+
 def main() -> int:
     args = build_parser().parse_args()
+    if args.runtime_preflight_json:
+        return _runtime_preflight(args)
     if args.version:
         config = load_config(args.config)
         show_version(config, args.libreoffice_path)

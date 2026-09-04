@@ -2,7 +2,7 @@
 name: file-processing
 description: Inspect and explain the shared local runtime used by the markdown-conversion, pdf-conversion, and file-conversion skills. Use when diagnosing an incomplete or relocated unified file-processing installation; this is a read-only runtime carrier, not a conversion command.
 metadata:
-  version: 1.0.0
+  version: 1.1.0
 ---
 
 # File-processing shared runtime
@@ -25,7 +25,7 @@ The supported layout places every dependency under one skills root:
 Derive the skills root from this file's parent directory. Inspect that root
 without copying, repairing, installing, or running a conversion:
 
-1. Confirm this SKILL.md reports version 1.0.0.
+1. Confirm this SKILL.md reports version 1.1.0.
 2. Confirm scripts/ contains ordinary, non-link files named
    runtime_layout.py, native_paths.py, conversion_runtime.py,
    libreoffice_pdf.py, pdf_validation_worker.py, and

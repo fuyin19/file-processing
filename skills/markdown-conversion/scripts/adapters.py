@@ -5,6 +5,7 @@ import importlib.metadata
 import hashlib
 import io
 import re
+import stat
 import tempfile
 import zipfile
 from pathlib import Path
@@ -1330,7 +1331,29 @@ def _reconcile_anydoc_ooxml_images(
             unit_id,
             True,
         ))
+    _remove_owned_empty_image_dir(asset_dir)
     return assets, content, relationships
+
+
+def _remove_owned_empty_image_dir(asset_dir: Path) -> None:
+    """Remove only the converter-owned empty ``assets/images`` leaf."""
+    if asset_dir.name != "images" or asset_dir.parent.name != "assets":
+        return
+    stage = asset_dir.parent.parent
+    try:
+        resolved_stage = stage.resolve(strict=True)
+        resolved_images = asset_dir.resolve(strict=True)
+        resolved_images.relative_to(resolved_stage)
+        for node in (stage, asset_dir.parent, asset_dir):
+            info = node.lstat()
+            if stat.S_ISLNK(info.st_mode) or bool(getattr(info, "st_file_attributes", 0) & 0x400):
+                raise RuntimeError("AnyDoc image directory contains a linked path")
+            if not stat.S_ISDIR(info.st_mode):
+                raise RuntimeError("AnyDoc image directory is not an ordinary directory")
+    except FileNotFoundError:
+        return
+    if next(asset_dir.iterdir(), None) is None:
+        asset_dir.rmdir()
 
 
 def _safe_asset_extension(media_type: str) -> str | None:

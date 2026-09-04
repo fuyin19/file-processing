@@ -37,7 +37,7 @@ remain in the conversion skills.
 
 ## Shared runtime carrier
 
-skills/file-processing is a normal discoverable skill at version 1.0.0. It
+skills/file-processing is a normal discoverable skill at version 1.1.0. It
 provides the conversion runtime and read-only installation diagnosis guidance,
 without adding a unified conversion CLI.
 
@@ -60,7 +60,7 @@ This release does not change the persistent configuration behavior of
 
 ## Skills
 
-### markdown-conversion (v7.0.2)
+### markdown-conversion (v7.1.0)
 
 Convert local PDFs, Office documents, supported files, URLs, or directories
 through one canonical pipeline. Local PDFs use PDF Inspector as the
@@ -208,7 +208,7 @@ not an operating-system sandbox or no-external-access guarantee.
 
 See [the PDF skill contract](skills/pdf-conversion/SKILL.md).
 
-### file-conversion (v2.0.2)
+### file-conversion (v2.1.0)
 
 Create one local bundle containing canonical Markdown/JSON, a sibling native
 PDF, the exact source snapshot, and conditional image assets:
