@@ -15,7 +15,7 @@ The three conversion skills bind shared runtime only from the ordinary sibling
 file-processing skill under their own skills root. markdown-conversion requires
 that carrier; pdf-conversion requires the carrier plus sibling
 markdown-conversion; and bundle-only file-conversion requires both plus Core.
-Missing, linked, reparsed, or escaping dependencies fail before config,
+Missing, linked, reparsed, or escaping dependencies fail before explicit config loading,
 provider, stage, or output writes, with guidance to restore the complete
 unified installation. There is no cwd, checkout, PYTHONPATH, or cross-root
 fallback.
@@ -41,9 +41,26 @@ skills/file-processing is a normal discoverable skill at version 1.0.0. It
 provides the conversion runtime and read-only installation diagnosis guidance,
 without adding a unified conversion CLI.
 
+## Conversion configuration
+
+`markdown-conversion`, `pdf-conversion`, and `file-conversion` have no implicit
+persistent config. Without `--config`, each call uses a fresh independent copy
+of its built-in defaults in memory and does not read or create a fixed config
+file. With `--config`, the normalized relative or absolute path must already be
+an ordinary regular non-link/reparse file containing strict UTF-8 JSON with an
+object root. Partial known blocks merge over defaults, unknown keys remain
+available, and CLI flags take precedence. Invalid explicit config fails with no
+fallback or config/output write. A config may live inside or outside the skill
+directory, though a stable path outside the installed skill is recommended for
+upgrade durability. Explicit config is also validated by `--version`; `--help`
+and an omitted config do no config-file read or creation.
+
+This release does not change the persistent configuration behavior of
+`content-review` or `translate`.
+
 ## Skills
 
-### markdown-conversion (v7.0.1)
+### markdown-conversion (v7.0.2)
 
 Convert local PDFs, Office documents, supported files, URLs, or directories
 through one canonical pipeline. Local PDFs use PDF Inspector as the
@@ -170,7 +187,7 @@ occurrences without changing the default-path cost.
 See [the skill contract](skills/markdown-conversion/SKILL.md) and
 [Canonical JSON v1 reference](skills/markdown-conversion/references/canonical-schema-v1.md).
 
-### pdf-conversion (v2.0.1)
+### pdf-conversion (v2.0.2)
 
 Convert local PDFs and supported Word, PowerPoint, or Excel files to native,
 high-fidelity multipage PDF. PDF inputs bypass LibreOffice and are copied from
@@ -191,7 +208,7 @@ not an operating-system sandbox or no-external-access guarantee.
 
 See [the PDF skill contract](skills/pdf-conversion/SKILL.md).
 
-### file-conversion (v2.0.1)
+### file-conversion (v2.0.2)
 
 Create one local bundle containing canonical Markdown/JSON, a sibling native
 PDF, the exact source snapshot, and conditional image assets:

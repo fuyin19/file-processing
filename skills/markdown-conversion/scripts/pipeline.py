@@ -120,6 +120,7 @@ _RUNTIME_LAYOUT = _runtime_layout.bootstrap(
 
 import argparse
 from collections import Counter
+import copy
 import datetime
 import importlib.metadata
 import json
@@ -128,6 +129,7 @@ import mimetypes
 import os
 import re
 import shutil  # compatibility seam; native_paths performs the actual copy
+import stat
 import subprocess
 import sys
 import tempfile
@@ -190,7 +192,7 @@ from pdf_inspector_adapter import PdfInspectorAdapter
 from safe_url import redact_url
 
 
-VERSION = "7.0.1"
+VERSION = "7.0.2"
 DEFAULT_CONFIG: dict[str, Any] = {
     "pdf_ocr": {
         "mode": "auto",
@@ -202,7 +204,6 @@ DEFAULT_CONFIG: dict[str, Any] = {
     },
     "pdf_images": {"mode": "auto", "timeout_seconds": 1000.0},
 }
-CONFIG_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "config.json")
 SUPPORTED_EXTENSIONS = set(ANYDOC_FORMAT_BY_EXTENSION) | {
     ".pdf",
     ".html", ".csv", ".json", ".jsonl", ".xml", ".epub", ".md",
@@ -376,6 +377,10 @@ def die(message: str) -> NoReturn:
     raise SystemExit(1)
 
 
+def _reject_non_json_constant(value: str) -> NoReturn:
+    raise ValueError(f"non-JSON numeric constant {value}")
+
+
 def is_url(value: str) -> bool:
     return value.lower().startswith(("http://", "https://"))
 
@@ -417,19 +422,39 @@ def resolve_timestamp(value: str) -> str:
     return value
 
 
-def load_config() -> dict[str, Any]:
-    if not np.exists(CONFIG_PATH):
-        np.write_text(CONFIG_PATH, json.dumps(DEFAULT_CONFIG, indent=2) + "\n", encoding="utf-8")
-        return dict(DEFAULT_CONFIG)
+def _read_explicit_config(path: Path) -> dict[str, Any]:
     try:
-        value = json.loads(np.read_text(CONFIG_PATH, encoding="utf-8"))
-    except (json.JSONDecodeError, OSError) as exc:
-        print(f"Warning: config.json parse error ({exc}), using defaults", file=sys.stderr)
-        return dict(DEFAULT_CONFIG)
-    result = dict(DEFAULT_CONFIG)
+        selected = np.logical(path)
+        info = np.lstat(selected)
+    except (OSError, TypeError, ValueError) as exc:
+        die(f"Could not access config path: {exc}")
+    if stat.S_ISLNK(info.st_mode) or np.is_reparse(info) or not stat.S_ISREG(info.st_mode):
+        die(f"Config path is not an ordinary regular non-link/reparse file: {selected}")
+    try:
+        value = json.loads(
+            np.read_text(selected, encoding="utf-8"),
+            parse_constant=_reject_non_json_constant,
+        )
+    except (OSError, UnicodeError, json.JSONDecodeError, ValueError) as exc:
+        die(f"Could not read config as strict UTF-8 JSON: {exc}")
+    if not isinstance(value, dict):
+        die("config root must be an object")
+    return value
+
+
+def load_config(path: Path | None = None) -> dict[str, Any]:
+    result = copy.deepcopy(DEFAULT_CONFIG)
+    if path is None:
+        return result
+    value = _read_explicit_config(path)
     for key, item in value.items():
         if isinstance(item, dict) and isinstance(DEFAULT_CONFIG.get(key), dict):
-            result[key] = {**DEFAULT_CONFIG[key], **item}
+            try:
+                result[key] = {**result[key], **item}
+            except (TypeError, ValueError) as exc:
+                die(f"Could not merge config block {key}: {exc}")
+        elif isinstance(DEFAULT_CONFIG.get(key), dict):
+            die(f"config {key} must be an object")
         else:
             result[key] = item
     return result
@@ -1232,7 +1257,7 @@ def show_version() -> None:
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Unified PDF/Office canonical document conversion pipeline")
-    parser.add_argument("--config", default="")
+    parser.add_argument("--config", type=Path, default=None)
     parser.add_argument("--version", action="store_true")
     parser.add_argument("--input")
     parser.add_argument("--input-dir")
@@ -1283,6 +1308,7 @@ def build_parser() -> argparse.ArgumentParser:
 def main() -> int:
     args = build_parser().parse_args()
     if args.version:
+        load_config(args.config)
         show_version()
         return 0
     precheck(args)
@@ -1297,10 +1323,7 @@ def main() -> int:
 
 
 def _run(args) -> int:
-    global CONFIG_PATH
-    if args.config:
-        CONFIG_PATH = str(np.logical(args.config))
-    config = load_config()
+    config = load_config(args.config)
     args.ocr_settings = resolve_ocr_settings(args, config)
     args.pdf_image_settings = resolve_pdf_image_settings(args, config)
     args.ocr_provider = create_ocr_provider(args.ocr_settings)

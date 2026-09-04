@@ -10,7 +10,7 @@ copy of this content there.
 
 ## Project Purpose
 
-`file-processing` is a Claude Code plugin (v7.1.0) that packages five
+`file-processing` is a Claude Code plugin (v7.1.1) that packages five
 workflow skills as `/file-processing:<name>` commands plus one ordinary shared-runtime carrier skill. It serves
 developers working inside Claude Code who need repeatable, script-backed
 document workflows — convert, review, and translate — where deterministic
@@ -25,7 +25,7 @@ structure-safety and testability are prioritized over feature breadth.
 
 The five workflow skills:
 
-- **markdown-conversion** (v7.0.1) — Convert local PDFs, AnyDoc-eligible
+- **markdown-conversion** (v7.0.2) — Convert local PDFs, AnyDoc-eligible
   non-PDF documents, remaining supported files, URLs, or directories through one
   canonical model. Local PDFs use a behaviorally compatible PDF Inspector as the
   authoritative text and structure source; RapidOCR recovers only routed pages,
@@ -41,13 +41,13 @@ The five workflow skills:
   Markdown file. Canonical output preserves raw/cleaned/normalized text, uses
   exact five-field YAML frontmatter, defaults Chinese normalization to
   simplified, and publishes transactionally.
-- **pdf-conversion** (v2.0.1) — Convert supported local PDF and Office inputs
+- **pdf-conversion** (v2.0.2) — Convert supported local PDF and Office inputs
   into a native multipage PDF. PDF sources bypass LibreOffice; Office sources
   use one private, deadline-bounded x64 LibreOffice process per item with an
   exact family export filter and a separate bounded structural validation
   worker. Default bundles contain the exact envelope, `<stem>.pdf`, and `src/<original>`; direct
   mode emits exactly one PDF.
-- **file-conversion** (v2.0.1) — Route one acquired local source snapshot into
+- **file-conversion** (v2.0.2) — Route one acquired local source snapshot into
   the existing canonical Markdown bundle emitter plus the native PDF provider,
   then publish both in one bundle transaction. Hard failure publishes nothing;
   an existing publishable loss-aware Markdown partial plus a valid PDF remains
@@ -124,7 +124,10 @@ python -m pytest tests/markdown-conversion/test_pipeline.py -k "markitdown or oo
 
 All test files use the same pattern: `sys.path` includes the skill's `scripts/` dir, and integration tests run the pipeline as a subprocess via `SCRIPT = [sys.executable, <pipeline.py path>]`.
 
-**Test config isolation**: All test suites pass `--config tests/<skill>/fixtures/test_config.json` via `CONFIG_ARG` to avoid touching the real `config.json` (which may contain API keys or local settings). When adding subprocess-based tests, always use `CONFIG_ARG` from the test file.
+**Test config isolation**: Explicit-config tests for the three conversion
+workflows use a pre-existing fixture through `CONFIG_ARG`. Omitted-config tests
+must omit `--config` and prove any sentinel `scripts/config.json` is unread and
+unchanged. Content-review and translate retain their existing fixture pattern.
 
 ### Running Pipelines Directly
 
@@ -320,23 +323,43 @@ Anti-skip levers (both skills): (1) narrow per-cell/per-chunk mandates; (2) prom
 
 ### Cross-Skill Patterns
 
-- **Config merge**: `load_config()` reads `scripts/config.json`, auto-creates with defaults if missing, merges partial configs with `DEFAULT_CONFIG`
+- **Config merge**: file-, markdown-, and pdf-conversion use a fresh independent
+  in-memory default when `--config` is omitted. An explicit existing config is
+  strict UTF-8 JSON with an object root; partial known blocks merge over defaults
+  and unknown keys remain available. Content-review and translate are unchanged.
 - **Dependency management**: `content-review` and `translate` may install
   MarkItDown on demand; `markdown-conversion` never mutates the active
   environment and only accepts dependencies that pass its behavioral capability
   checks
 - **Gate-based error handling**: Each step validates output and calls `die()` on failure
 - **Code block/frontmatter protection**: Used by the translate pipeline
-- **Path resolution**: `config.json` is resolved relative to the pipeline script's directory (not CWD), unless overridden by `--config`.
+- **Path resolution**: file-, markdown-, and pdf-conversion normalize an explicit
+  relative or absolute `--config` path against the current working directory and
+  require an existing ordinary regular non-link/reparse leaf. They do not select
+  a fixed config path when the option is omitted.
 
 ## Configuration
 
-Each skill stores its own `scripts/config.json` (gitignored):
-- `skills/markdown-conversion/scripts/config.json` — `pdf_ocr` defaults: `mode` (`auto`), `engine` (`rapidocr`), `language` (`ch`), `dpi` (`300.0`), `max_long_edge` (`4096`), and `min_confidence` (`0.5`); single-file bundle output defaults beside the source and batch output defaults to `<input-dir>/_converted`
-- `skills/pdf-conversion/scripts/config.json` — `pdf_conversion` defaults: empty `libreoffice_path` (auto-discovery), `timeout_seconds` (`1000`), and validation limits of 1 GiB / 60 seconds / 2 GiB job memory
-- `skills/file-conversion/scripts/config.json` — the unchanged Markdown `pdf_ocr` block plus the same `pdf_conversion` block; one resolved config feeds both stages
-- `skills/content-review/scripts/config.json` — `chunk_lines` (400), `max_chunks` (20), `max_cells` (60)
-- `skills/translate/scripts/config.json` — `default_target_language` (zh), `chunk_lines` (300), `max_chunks` (30), `max_terms` (800), `max_terms_per_chunk_prompt` (120), `max_reference_passages_per_term` (5), `max_workspace_mb` (100)
+The three conversion workflows package no persistent config. Omitted `--config`
+uses built-in in-memory defaults and performs no config-file read or creation.
+An explicit config may be inside or outside the skill directory; a stable path
+outside the installed skill is recommended so upgrades do not replace it.
+
+- `markdown-conversion` defaults include `pdf_ocr` mode `auto`, engine
+  `rapidocr`, language `ch`, DPI `300.0`, maximum long edge `4096`, confidence
+  `0.5`, and the documented `pdf_images` block.
+- `pdf-conversion` defaults include empty `libreoffice_path` auto-discovery,
+  timeout `1000`, and validation limits of 1 GiB / 60 seconds / 2 GiB job memory.
+- `file-conversion` combines those Markdown and PDF defaults; one resolved
+  in-memory or explicit config feeds both stages.
+
+Content-review and translate are unchanged and retain their existing
+`scripts/config.json` behavior:
+
+- `content-review`: `chunk_lines` (400), `max_chunks` (20), `max_cells` (60).
+- `translate`: `default_target_language` (zh), `chunk_lines` (300),
+  `max_chunks` (30), `max_terms` (800), `max_terms_per_chunk_prompt` (120),
+  `max_reference_passages_per_term` (5), and `max_workspace_mb` (100).
 
 ## Permissions
 

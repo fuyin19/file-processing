@@ -3,7 +3,7 @@ name: pdf-conversion
 description: |
   Convert supported local PDF and Office files or directories to one native, high-fidelity multipage PDF per input using an identity-bound source snapshot and a private LibreOffice process. Use for PDF-preserving copy/validation and Word, PowerPoint, or Excel PDF export.
 metadata:
-  version: 2.0.1
+  version: 2.0.2
 ---
 
 # Convert local files to PDF
@@ -21,8 +21,9 @@ anti-entropy-core.runner/v1. By default the pipeline selects only
 anti-entropy-core/scripts/knowledge_unit_runner.py under the same skills root.
 ANTI_ENTROPY_CORE_RUNNER is an optional absolute-path override for a different
 installation root; an explicit empty, invalid, nonordinary, ABI-mismatched or
-version-mismatched value fails without fallback. Preflight happens before
-config creation, providers or stages; one invocation keeps the same runner.
+version-mismatched value fails without fallback. Bundle Core preflight happens
+before explicit config loading, providers or stages; conversion never creates a
+config file, and one invocation keeps the same runner.
 Each conversion skill carries a local standard-library Core client. Core
 completes only caller-owned disposable stages; conversion and publication
 remain in the conversion skills.
@@ -46,6 +47,18 @@ encrypted/password-prompt inputs, and unsupported file types.
   [--libreoffice-path <program-directory-or-soffice.com>]
   [--config <config.json>] [--version]
 ```
+
+Omitting `--config` uses a fresh independent copy of the built-in defaults in
+memory and does not read or create any fixed config file. An explicit config
+path may be relative or absolute and may be inside or outside the skill
+directory; a stable path outside the installed skill is recommended across
+upgrades. The explicit path must already name an ordinary regular non-link/
+reparse file containing strict UTF-8 JSON with an object root. Invalid paths,
+content, `pdf_conversion`, or its `validation` block fail with exit code `1`,
+without fallback or a config write. Partial blocks merge over defaults, unknown
+keys are preserved, and CLI values take precedence. `--version` validates an
+explicit config by the same loader contract; omission and `--help` perform no
+config-file read or creation.
 
 `bundle` is the default and writes `<stem>/<stem>.pdf` plus
 `<stem>/src/<original-basename>`. For one input, an `--output-path` ending in

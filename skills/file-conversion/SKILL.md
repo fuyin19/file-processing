@@ -3,7 +3,7 @@ name: file-conversion
 description: |
   Route supported local PDF and Office files or directories into one canonical Markdown bundle plus a sibling native PDF, using one source snapshot and one staged publication boundary. Use when both machine-readable Markdown/JSON and a high-fidelity PDF are required.
 metadata:
-  version: 2.0.1
+  version: 2.0.2
 ---
 
 # Create Markdown + PDF bundles
@@ -21,8 +21,9 @@ anti-entropy-core.runner/v1. By default the pipeline selects only
 anti-entropy-core/scripts/knowledge_unit_runner.py under the same skills root.
 ANTI_ENTROPY_CORE_RUNNER is an optional absolute-path override for a different
 installation root; an explicit empty, invalid, nonordinary, ABI-mismatched or
-version-mismatched value fails without fallback. Preflight happens before
-config creation, providers or stages; one invocation keeps the same runner.
+version-mismatched value fails without fallback. Bundle Core preflight happens
+before explicit config loading, providers or stages; conversion never creates a
+config file, and one invocation keeps the same runner.
 Each conversion skill carries a local standard-library Core client. Core
 completes only caller-owned disposable stages; conversion and publication
 remain in the conversion skills.
@@ -58,6 +59,18 @@ report/
   [--libreoffice-path <program-directory-or-soffice.com>]
   [--config <config.json>] [--version]
 ```
+
+Omitting `--config` uses a fresh independent copy of the combined built-in
+Markdown and PDF defaults in memory and does not read or create any fixed config
+file. An explicit config path may be relative or absolute and may be inside or
+outside the skill directory; a stable path outside the installed skill is
+recommended across upgrades. The explicit path must already name an ordinary
+regular non-link/reparse file containing strict UTF-8 JSON with an object root.
+Invalid paths, content, or known `pdf_ocr`, `pdf_images`, `pdf_conversion`, and
+`validation` blocks fail with exit code `1`, without fallback or a config write.
+Partial blocks merge over defaults, unknown keys are preserved, and CLI values
+take precedence. `--version` validates an explicit config by the same loader
+contract; omission and `--help` perform no config-file read or creation.
 
 Omitted `--formats` means `markdown,pdf`; v1 accepts exactly that normalized
 set. Use the specialized commands for a singleton format. The timestamp is

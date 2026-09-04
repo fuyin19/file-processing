@@ -99,9 +99,10 @@ def _fake_emitter(args, snapshot, stage, stem, *, status="complete", warnings=No
 
 def test_skill_frontmatter_and_project_versions():
     skill = (ROOT / "skills" / "file-conversion" / "SKILL.md").read_text(encoding="utf-8")
-    assert "name: file-conversion" in skill and "version: 2.0.1" in skill
-    assert json.loads((ROOT / "package.json").read_text(encoding="utf-8"))["version"] == "7.1.0"
-    assert json.loads((ROOT / ".claude-plugin" / "plugin.json").read_text(encoding="utf-8"))["version"] == "7.1.0"
+    assert "name: file-conversion" in skill and "version: 2.0.2" in skill
+    assert pipeline.VERSION == "2.0.2"
+    assert json.loads((ROOT / "package.json").read_text(encoding="utf-8"))["version"] == "7.1.1"
+    assert json.loads((ROOT / ".claude-plugin" / "plugin.json").read_text(encoding="utf-8"))["version"] == "7.1.1"
     assert (ROOT / "CLAUDE.md").read_text(encoding="utf-8").strip() == "@AGENTS.md"
 
 
@@ -203,15 +204,139 @@ def test_bundle_name_mode_defaults_to_legacy_stem_and_preserves_nested_unicode(t
     assert target.stem == "報告.final.docx"
 
 
-def test_config_is_superset_and_preserves_unknown_keys(tmp_path):
+def test_load_config_omitted_uses_independent_memory_defaults_without_path_io(
+    tmp_path, monkeypatch
+):
+    sentinel = tmp_path / "config.json"
+    sentinel.write_bytes(b"sentinel must remain unread")
+    before = sentinel.read_bytes()
+
+    def unexpected(*_args, **_kwargs):
+        raise AssertionError("omitted config must not call a config path API")
+
+    monkeypatch.setattr(pipeline.np, "logical", unexpected)
+    monkeypatch.setattr(pipeline.np, "lstat", unexpected)
+    monkeypatch.setattr(pipeline.np, "read_text", unexpected)
+    first = pipeline.load_config()
+    first["pdf_ocr"]["mode"] = "force"
+    first["pdf_images"]["timeout_seconds"] = 1
+    first["pdf_conversion"]["validation"]["timeout_seconds"] = 1
+    second = pipeline.load_config()
+
+    assert second == pipeline.DEFAULT_CONFIG
+    assert second is not pipeline.DEFAULT_CONFIG
+    for block in ("pdf_ocr", "pdf_images", "pdf_conversion"):
+        assert second[block] is not pipeline.DEFAULT_CONFIG[block]
+    assert (
+        second["pdf_conversion"]["validation"]
+        is not pipeline.DEFAULT_CONFIG["pdf_conversion"]["validation"]
+    )
+    assert sentinel.read_bytes() == before
+
+
+def test_config_is_superset_and_preserves_unknown_keys(tmp_path, monkeypatch):
     config = tmp_path / "config.json"
     config.write_text(json.dumps({"unknown": {"keep": True}, "pdf_ocr": {"mode": "force"}, "pdf_conversion": {"timeout_seconds": 7}}), encoding="utf-8")
-    loaded = pipeline.load_config(config)
+    monkeypatch.chdir(tmp_path)
+    loaded = pipeline.load_config(Path("config.json"))
     assert loaded["unknown"] == {"keep": True}
     assert loaded["pdf_ocr"]["mode"] == "force"
     assert loaded["pdf_ocr"]["dpi"] == 300.0
     assert loaded["pdf_conversion"]["timeout_seconds"] == 7
     assert loaded["pdf_conversion"]["validation"]["max_pdf_bytes"] == 1073741824
+
+
+@pytest.mark.parametrize(
+    ("payload", "message"),
+    [
+        (b"\xff", "strict UTF-8 JSON"),
+        (b"{bad json", "strict UTF-8 JSON"),
+        (b'{"value": -Infinity}', "strict UTF-8 JSON"),
+        (b'"value"', "config root must be an object"),
+        (b'{"pdf_ocr": []}', "config pdf_ocr must be an object"),
+        (b'{"pdf_images": []}', "config pdf_images must be an object"),
+        (b'{"pdf_conversion": []}', "config pdf_conversion must be an object"),
+        (
+            b'{"pdf_conversion": {"validation": []}}',
+            "config pdf_conversion.validation must be an object",
+        ),
+    ],
+)
+def test_load_config_rejects_invalid_explicit_content(tmp_path, capsys, payload, message):
+    config = tmp_path / "config.json"
+    config.write_bytes(payload)
+
+    with pytest.raises(SystemExit) as exc_info:
+        pipeline.load_config(config)
+
+    assert exc_info.value.code == 1
+    assert message in capsys.readouterr().err
+    assert config.read_bytes() == payload
+
+
+@pytest.mark.parametrize("kind", ["missing", "directory", "empty"])
+def test_load_config_rejects_invalid_explicit_path(tmp_path, monkeypatch, capsys, kind):
+    if kind == "missing":
+        selected = tmp_path / "missing.json"
+    elif kind == "directory":
+        selected = tmp_path / "directory"
+        selected.mkdir()
+    else:
+        monkeypatch.chdir(tmp_path)
+        selected = pipeline.build_parser().parse_args(["--config", ""]).config
+
+    with pytest.raises(SystemExit) as exc_info:
+        pipeline.load_config(selected)
+
+    assert exc_info.value.code == 1
+    assert "ERROR:" in capsys.readouterr().err
+    assert not (tmp_path / "missing.json").exists()
+
+
+def test_load_config_rejects_link_leaf(tmp_path):
+    target = tmp_path / "target.json"
+    target.write_text("{}", encoding="utf-8")
+    link = tmp_path / "link.json"
+    try:
+        link.symlink_to(target)
+    except (OSError, NotImplementedError) as exc:
+        pytest.skip(f"file symlinks unavailable: {exc}")
+    with pytest.raises(SystemExit) as link_error:
+        pipeline.load_config(link)
+    assert link_error.value.code == 1
+
+
+def test_load_config_converts_read_error_to_clean_exit(tmp_path, monkeypatch, capsys):
+    target = tmp_path / "target.json"
+    target.write_text("{}", encoding="utf-8")
+    monkeypatch.setattr(
+        pipeline.np,
+        "read_text",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("denied")),
+    )
+    with pytest.raises(SystemExit) as read_error:
+        pipeline.load_config(target)
+    assert read_error.value.code == 1
+    assert "ERROR:" in capsys.readouterr().err
+
+
+def test_batch_run_loads_omitted_config_once_and_passes_none_unchanged(tmp_path, monkeypatch):
+    inputs = tmp_path / "inputs"
+    inputs.mkdir()
+    args = pipeline.build_parser().parse_args(["--input-dir", str(inputs), "--ocr", "off"])
+    pipeline.precheck(args)
+    original = pipeline.load_config
+    calls = []
+
+    def observed(path=None):
+        calls.append(path)
+        return original(path)
+
+    monkeypatch.setattr(pipeline, "load_config", observed)
+    monkeypatch.setattr(pipeline, "run_batch", lambda _args, _config: 0)
+
+    assert pipeline._run(args) == 0
+    assert calls == [None]
 
 
 def test_timestamp_is_resolved_once_for_batch(monkeypatch, tmp_path):

@@ -90,6 +90,40 @@ def _tree_snapshot(root: Path) -> tuple[tuple[str, str, str], ...]:
     return tuple(rows)
 
 
+VERSION_CONFIG_DRIVER = r"""
+import importlib.util, pathlib, sys
+sys.dont_write_bytecode = True
+for stream in (sys.stdout, sys.stderr):
+    if hasattr(stream, "reconfigure"):
+        stream.reconfigure(encoding="utf-8", errors="backslashreplace")
+pipeline_path = pathlib.Path(sys.argv[1])
+expected_arg = sys.argv[2]
+expected_probe = sys.argv[3]
+cli = sys.argv[4:]
+spec = importlib.util.spec_from_file_location("version_config_pipeline", pipeline_path)
+assert spec and spec.loader
+module = importlib.util.module_from_spec(spec)
+sys.modules[spec.name] = module
+spec.loader.exec_module(module)
+original = module.load_config
+calls = []
+def observed(path=None):
+    actual = "<none>" if path is None else str(path)
+    assert actual == expected_arg, (actual, expected_arg)
+    calls.append(actual)
+    loaded = original(path)
+    if expected_probe != "<none>":
+        assert loaded.get("probe") == expected_probe
+    return loaded
+module.load_config = observed
+module.show_version = lambda *args: print("VERSION_OK")
+sys.argv = [str(pipeline_path), *cli]
+code = module.main()
+assert calls == [expected_arg]
+raise SystemExit(code)
+"""
+
+
 def test_carrier_is_discoverable_complete_and_has_no_conversion_cli():
     carrier = ROOT / "skills" / "file-processing"
     skill = carrier / "SKILL.md"
@@ -101,8 +135,8 @@ def test_carrier_is_discoverable_complete_and_has_no_conversion_cli():
     assert {path.name for path in (carrier / "scripts").iterdir() if path.is_file()} == CARRIER_FILES
     assert not (carrier / "scripts" / "pipeline.py").exists()
     assert not (ROOT / "skills" / "_shared").exists()
-    assert json.loads((ROOT / "package.json").read_text(encoding="utf-8"))["version"] == "7.1.0"
-    assert json.loads((ROOT / ".claude-plugin" / "plugin.json").read_text(encoding="utf-8"))["version"] == "7.1.0"
+    assert json.loads((ROOT / "package.json").read_text(encoding="utf-8"))["version"] == "7.1.1"
+    assert json.loads((ROOT / ".claude-plugin" / "plugin.json").read_text(encoding="utf-8"))["version"] == "7.1.1"
 
 
 def test_relocated_isolated_help_is_read_only_and_ignores_cwd_decoys(
@@ -123,6 +157,11 @@ def test_relocated_isolated_help_is_read_only_and_ignores_cwd_decoys(
         + ").write_text('loaded', encoding='utf-8')\n",
         encoding="utf-8",
     )
+    sentinels = {}
+    for skill in WORKFLOWS:
+        sentinel = installation / skill / "scripts" / "config.json"
+        sentinel.write_bytes(b"\xffhelp sentinel must remain unread")
+        sentinels[skill] = sentinel
     before = _tree_snapshot(installation)
     for skill in WORKFLOWS:
         script = installation / skill / "scripts" / "pipeline.py"
@@ -132,8 +171,148 @@ def test_relocated_isolated_help_is_read_only_and_ignores_cwd_decoys(
         assert result.stderr == ""
     assert _tree_snapshot(installation) == before
     assert not marker.exists()
-    assert not list(installation.rglob("config.json"))
+    assert all(
+        sentinel.read_bytes() == b"\xffhelp sentinel must remain unread"
+        for sentinel in sentinels.values()
+    )
     assert not list(tmp_path.glob(".*-stage-*"))
+
+
+@pytest.mark.parametrize("skill", WORKFLOWS)
+def test_relocated_version_omits_config_io_and_ignores_fixed_sentinel(
+    installation: Path, tmp_path: Path, skill: str
+):
+    script = installation / skill / "scripts" / "pipeline.py"
+    sentinel = script.with_name("config.json")
+    sentinel.write_bytes(b"\xfffixed sentinel must remain unread")
+    before = _tree_snapshot(installation)
+
+    result = _run(
+        [
+            sys.executable,
+            "-I",
+            "-B",
+            "-c",
+            VERSION_CONFIG_DRIVER,
+            script,
+            "<none>",
+            "<none>",
+            "--version",
+        ],
+        tmp_path,
+    )
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert result.stdout.strip() == "VERSION_OK"
+    assert result.stderr == ""
+    assert sentinel.read_bytes() == b"\xfffixed sentinel must remain unread"
+    assert _tree_snapshot(installation) == before
+
+
+@pytest.mark.parametrize("skill", WORKFLOWS)
+@pytest.mark.parametrize("location", ["outside", "inside"])
+def test_relocated_version_reads_preexisting_explicit_config(
+    installation: Path, tmp_path: Path, skill: str, location: str
+):
+    script = installation / skill / "scripts" / "pipeline.py"
+    config = (
+        tmp_path / f"{skill}.json"
+        if location == "outside"
+        else script.with_name("explicit-test-config.json")
+    )
+    config.write_text('{"probe":"observed"}', encoding="utf-8")
+
+    result = _run(
+        [
+            sys.executable,
+            "-I",
+            "-B",
+            "-c",
+            VERSION_CONFIG_DRIVER,
+            script,
+            config,
+            "observed",
+            "--version",
+            "--config",
+            config,
+        ],
+        tmp_path,
+    )
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert result.stdout.strip() == "VERSION_OK"
+    assert result.stderr == ""
+    assert config.read_text(encoding="utf-8") == '{"probe":"observed"}'
+
+
+@pytest.mark.parametrize(
+    ("skill", "payload"),
+    [
+        ("markdown-conversion", '{"pdf_ocr":[]}'),
+        ("pdf-conversion", '{"pdf_conversion":{"validation":[]}}'),
+        ("file-conversion", '{"pdf_images":[]}'),
+    ],
+)
+def test_relocated_version_rejects_invalid_explicit_config_before_output(
+    installation: Path, tmp_path: Path, skill: str, payload: str
+):
+    script = installation / skill / "scripts" / "pipeline.py"
+    config = tmp_path / f"invalid-{skill}.json"
+    config.write_text(payload, encoding="utf-8")
+
+    result = _run(
+        [
+            sys.executable,
+            "-I",
+            "-B",
+            "-c",
+            VERSION_CONFIG_DRIVER,
+            script,
+            config,
+            "<none>",
+            "--version",
+            "--config",
+            config,
+        ],
+        tmp_path,
+    )
+
+    assert result.returncode == 1
+    assert result.stdout == ""
+    assert "ERROR:" in result.stderr
+    assert "Traceback" not in result.stderr
+    assert config.read_text(encoding="utf-8") == payload
+
+
+@pytest.mark.parametrize("skill", WORKFLOWS)
+def test_relocated_version_rejects_missing_explicit_config_without_creating_it(
+    installation: Path, tmp_path: Path, skill: str
+):
+    script = installation / skill / "scripts" / "pipeline.py"
+    config = tmp_path / f"missing-{skill}.json"
+
+    result = _run(
+        [
+            sys.executable,
+            "-I",
+            "-B",
+            "-c",
+            VERSION_CONFIG_DRIVER,
+            script,
+            config,
+            "<none>",
+            "--version",
+            "--config",
+            config,
+        ],
+        tmp_path,
+    )
+
+    assert result.returncode == 1
+    assert result.stdout == ""
+    assert "ERROR:" in result.stderr
+    assert "Traceback" not in result.stderr
+    assert not config.exists()
 
 
 ORIGIN_DRIVER = r"""
@@ -353,4 +532,3 @@ def test_runtime_carrier_junction_is_rejected_before_business_writes(
     assert str(carrier) in result.stderr
     assert not config.exists() and not output.exists()
     assert source.read_bytes() == b"not converted"
-

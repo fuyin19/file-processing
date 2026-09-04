@@ -1,5 +1,5 @@
 """
-Tests for pipeline.py (v7.0.1 canonical conversion architecture).
+Tests for pipeline.py (v7.0.2 canonical conversion architecture).
 
 Run from project root: pytest scripts/test_pipeline.py -v
 
@@ -22,7 +22,7 @@ sys.path.insert(0, os.path.normpath(_PIPELINE_DIR))
 SCRIPT = [sys.executable, os.path.normpath(os.path.join(_PIPELINE_DIR, 'pipeline.py'))]
 PROVIDER_WORKER = os.path.normpath(os.path.join(_PIPELINE_DIR, 'provider_worker.py'))
 
-# Test config — avoids touching the real config.json
+# Explicit test config fixture.
 _TEST_CONFIG = os.path.normpath(os.path.join(os.path.dirname(__file__), 'fixtures', 'test_config.json'))
 CONFIG_ARG = ['--config', _TEST_CONFIG]
 
@@ -225,39 +225,54 @@ def test_default_timestamp_is_timezone_aware(tmp_path):
 
 # --- Config loading tests -------------------------------------------------------
 
-import json
+def test_load_config_omitted_uses_independent_memory_defaults_without_path_io(
+    tmp_path, monkeypatch
+):
+    import pipeline
+
+    sentinel = tmp_path / "config.json"
+    sentinel.write_bytes(b"sentinel must remain unread")
+    before = sentinel.read_bytes()
+
+    def unexpected(*_args, **_kwargs):
+        raise AssertionError("omitted config must not call a config path API")
+
+    monkeypatch.setattr(pipeline.np, "logical", unexpected)
+    monkeypatch.setattr(pipeline.np, "lstat", unexpected)
+    monkeypatch.setattr(pipeline.np, "read_text", unexpected)
+    first = pipeline.load_config()
+    first["pdf_ocr"]["mode"] = "force"
+    first["pdf_images"]["timeout_seconds"] = 1
+    second = pipeline.load_config()
+
+    assert second == pipeline.DEFAULT_CONFIG
+    assert second is not pipeline.DEFAULT_CONFIG
+    assert second["pdf_ocr"] is not pipeline.DEFAULT_CONFIG["pdf_ocr"]
+    assert second["pdf_images"] is not pipeline.DEFAULT_CONFIG["pdf_images"]
+    assert sentinel.read_bytes() == before
 
 
-def test_load_config_creates_default_when_missing(tmp_path, monkeypatch):
-    """When config.json doesn't exist, create it with defaults and return it."""
-    from pipeline import load_config, DEFAULT_CONFIG
-    config_path = tmp_path / "config.json"
-    monkeypatch.setattr("pipeline.CONFIG_PATH", str(config_path))
-    cfg = load_config()
-    assert cfg == DEFAULT_CONFIG
-    assert config_path.exists()
-    saved = json.loads(config_path.read_text(encoding="utf-8"))
-    assert saved == DEFAULT_CONFIG
-
-
-def test_load_config_reads_existing(tmp_path, monkeypatch):
-    """When config.json exists, read and return it."""
+def test_load_config_reads_explicit_relative_existing_file(tmp_path, monkeypatch):
     from pipeline import load_config
     config_path = tmp_path / "config.json"
     config_path.write_text(json.dumps({"custom_key": "custom-value"}), encoding="utf-8")
-    monkeypatch.setattr("pipeline.CONFIG_PATH", str(config_path))
-    cfg = load_config()
+    monkeypatch.chdir(tmp_path)
+    cfg = load_config(Path("config.json"))
     assert cfg["custom_key"] == "custom-value"
 
 
-def test_load_config_preserves_extra_keys(tmp_path, monkeypatch):
+def test_load_config_preserves_extra_keys_and_merges_partial_blocks(tmp_path):
     """Config with extra keys should preserve them after merging with defaults."""
     from pipeline import load_config
     config_path = tmp_path / "config.json"
-    config_path.write_text(json.dumps({"custom_key": "custom-value"}), encoding="utf-8")
-    monkeypatch.setattr("pipeline.CONFIG_PATH", str(config_path))
-    cfg = load_config()
+    config_path.write_text(
+        json.dumps({"custom_key": "custom-value", "pdf_ocr": {"mode": "force"}}),
+        encoding="utf-8",
+    )
+    cfg = load_config(config_path)
     assert cfg["custom_key"] == "custom-value"
+    assert cfg["pdf_ocr"]["mode"] == "force"
+    assert cfg["pdf_ocr"]["dpi"] == 300.0
 
 
 def test_pdf_ocr_config_merges_defaults_and_cli_takes_precedence():
@@ -306,14 +321,100 @@ def test_pdf_ocr_config_rejects_invalid_threshold(capsys):
     assert 'min_confidence' in capsys.readouterr().err
 
 
-def test_load_config_invalid_json_uses_defaults(tmp_path, monkeypatch):
-    """Malformed config.json should warn and use defaults."""
-    from pipeline import load_config, DEFAULT_CONFIG
+@pytest.mark.parametrize(
+    ("payload", "message"),
+    [
+        (b"\xff", "strict UTF-8 JSON"),
+        (b"{bad json", "strict UTF-8 JSON"),
+        (b'{"value": NaN}', "strict UTF-8 JSON"),
+        (b"[]", "config root must be an object"),
+        (b'{"pdf_ocr": []}', "config pdf_ocr must be an object"),
+        (b'{"pdf_images": null}', "config pdf_images must be an object"),
+    ],
+)
+def test_load_config_rejects_invalid_explicit_content(tmp_path, capsys, payload, message):
+    from pipeline import load_config
+
     config_path = tmp_path / "config.json"
-    config_path.write_text("{bad json", encoding="utf-8")
-    monkeypatch.setattr("pipeline.CONFIG_PATH", str(config_path))
-    cfg = load_config()
-    assert cfg == DEFAULT_CONFIG
+    config_path.write_bytes(payload)
+    with pytest.raises(SystemExit) as exc_info:
+        load_config(config_path)
+
+    assert exc_info.value.code == 1
+    assert message in capsys.readouterr().err
+    assert config_path.read_bytes() == payload
+
+
+@pytest.mark.parametrize("kind", ["missing", "directory", "empty"])
+def test_load_config_rejects_invalid_explicit_path(tmp_path, monkeypatch, capsys, kind):
+    from pipeline import build_parser, load_config
+
+    if kind == "missing":
+        selected = tmp_path / "missing.json"
+    elif kind == "directory":
+        selected = tmp_path / "directory"
+        selected.mkdir()
+    else:
+        monkeypatch.chdir(tmp_path)
+        selected = build_parser().parse_args(["--config", ""]).config
+    with pytest.raises(SystemExit) as exc_info:
+        load_config(selected)
+
+    assert exc_info.value.code == 1
+    assert "ERROR:" in capsys.readouterr().err
+    assert not (tmp_path / "missing.json").exists()
+
+
+def test_load_config_rejects_link_leaf(tmp_path):
+    import pipeline
+
+    target = tmp_path / "target.json"
+    target.write_text("{}", encoding="utf-8")
+    link = tmp_path / "link.json"
+    try:
+        link.symlink_to(target)
+    except (OSError, NotImplementedError) as exc:
+        pytest.skip(f"file symlinks unavailable: {exc}")
+    with pytest.raises(SystemExit) as link_error:
+        pipeline.load_config(link)
+    assert link_error.value.code == 1
+
+
+def test_load_config_converts_read_error_to_clean_exit(tmp_path, monkeypatch, capsys):
+    import pipeline
+
+    target = tmp_path / "target.json"
+    target.write_text("{}", encoding="utf-8")
+    monkeypatch.setattr(
+        pipeline.np,
+        "read_text",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("denied")),
+    )
+    with pytest.raises(SystemExit) as read_error:
+        pipeline.load_config(target)
+    assert read_error.value.code == 1
+    assert "ERROR:" in capsys.readouterr().err
+
+
+def test_batch_run_loads_omitted_config_once_and_passes_none_unchanged(tmp_path, monkeypatch):
+    import pipeline
+
+    inputs = tmp_path / "inputs"
+    inputs.mkdir()
+    args = pipeline.build_parser().parse_args(["--input-dir", str(inputs), "--ocr", "off"])
+    pipeline.precheck(args)
+    original = pipeline.load_config
+    calls = []
+
+    def observed(path=None):
+        calls.append(path)
+        return original(path)
+
+    monkeypatch.setattr(pipeline, "load_config", observed)
+    monkeypatch.setattr(pipeline, "run_batch", lambda _args: 0)
+
+    assert pipeline._run(args) == 0
+    assert calls == [None]
 
 
 # --- Default output path tests -------------------------------------------------
@@ -773,7 +874,7 @@ def test_version_flag():
     assert 'Dependencies:' in stdout
     # Should show pip install names (not import names)
     assert 'opencc-python-reimplemented' in stdout
-    assert 'markdown-conversion v7.0.1' in stdout
+    assert 'markdown-conversion v7.0.2' in stdout
     assert 'rapidocr:' in stdout
     assert 'onnxruntime:' in stdout
     assert 'ruamel.yaml:' not in stdout
@@ -815,7 +916,7 @@ def test_pipeline_direct_isolated_entry_ignores_hostile_python_environment(tmp_p
     )
 
     assert result.returncode == 0, result.stderr.decode('utf-8', errors='replace')
-    assert b'markdown-conversion v7.0.1' in result.stdout
+    assert b'markdown-conversion v7.0.2' in result.stdout
     assert b'hostile' not in result.stdout + result.stderr
 
 

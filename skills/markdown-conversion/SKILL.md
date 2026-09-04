@@ -3,7 +3,7 @@ name: markdown-conversion
 description: |
   Convert local PDF and AnyDoc/MarkItDown-supported documents, supported files, URLs, or directories into a canonical JSON plus Markdown bundle, or one clean Markdown file. Use for PDF Inspector-backed PDF extraction, AnyDoc-backed local non-PDF extraction, explicit MarkItDown rollback, deterministic five-field frontmatter, Chinese language normalization, batch conversion, and staged output handling.
 metadata:
-  version: 7.0.1
+  version: 7.0.2
 ---
 
 # Convert files to canonical JSON and Markdown
@@ -21,8 +21,9 @@ anti-entropy-core.runner/v1. By default the pipeline selects only
 anti-entropy-core/scripts/knowledge_unit_runner.py under the same skills root.
 ANTI_ENTROPY_CORE_RUNNER is an optional absolute-path override for a different
 installation root; an explicit empty, invalid, nonordinary, ABI-mismatched or
-version-mismatched value fails without fallback. Preflight happens before
-config creation, providers or stages; one invocation keeps the same runner.
+version-mismatched value fails without fallback. Bundle Core preflight happens
+before explicit config loading, providers or stages; conversion never creates a
+config file, and one invocation keeps the same runner.
 Each conversion skill carries a local standard-library Core client. Core
 completes only caller-owned disposable stages; conversion and publication
 remain in the conversion skills.
@@ -72,11 +73,24 @@ Markdown rendering.
   [--ocr-max-long-edge 4096] [--ocr-min-confidence 0.5]
   [--pdf-images auto|objects|off] [--pdf-image-timeout 1000]
   [--enrich-images]
+  [--config <config.json>] [--version]
 ```
 
 `bundle` is the default. `--output-path` is the compatibility interface for one
 exact Markdown file and implies `--output-mode markdown`; batch `--output-path`
 is a deprecated alias for `--output-dir`.
+
+Omitting `--config` uses a fresh independent copy of the built-in defaults in
+memory and does not read or create any fixed config file. An explicit config
+path may be relative or absolute and may be inside or outside the skill
+directory; a stable path outside the installed skill is recommended across
+upgrades. The explicit path must already name an ordinary regular non-link/
+reparse file containing strict UTF-8 JSON with an object root. Invalid paths,
+content, or known config blocks fail with exit code `1`, without fallback or a
+config write. Partial `pdf_ocr` and `pdf_images` blocks merge over defaults,
+unknown keys are preserved, and CLI values take precedence. `--version`
+validates an explicit config by the same loader contract; omission and `--help`
+perform no config-file read or creation.
 
 Bundle naming defaults to the compatibility `stem` behavior. For local bundle
 inputs, explicit `--bundle-name-mode source-basename` retains the final source
@@ -302,7 +316,7 @@ stem/slug fallback.
   rerun the full tests and benchmark after upgrades.
 - The authoritative AnyDoc upstream is `firecrawl/anydoc`; `fuyin19/anydoc` is
   a mirror. Referencing GitHub does not update an installed wheel.
-- v7.0.1 does not emit RAG chunks, change Canonical schema 1.0, or claim page,
+- v7.0.2 does not emit RAG chunks, change Canonical schema 1.0, or claim page,
   slide, sheet, rich-style, formula, or external-image fidelity beyond the
   AnyDoc model and documented warnings.
 - URL input, including a PDF URL, is downloaded through a public-network-only,

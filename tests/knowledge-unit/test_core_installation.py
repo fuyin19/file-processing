@@ -121,7 +121,7 @@ DRIVER = r'''
 import builtins, importlib.util, json, os, sys
 from pathlib import Path
 sys.dont_write_bytecode = True
-pipeline_path, expected, source, output, config, mode = sys.argv[1:]
+pipeline_path, expected, source, output, mode = sys.argv[1:]
 original_import = builtins.__import__
 def guarded_import(name, *args, **kwargs):
     if name == "anti_entropy_core" or name.startswith("anti_entropy_core."):
@@ -162,7 +162,7 @@ if hasattr(module, "_engine"):
     module._engine = lambda args, config: Engine()
     module.validate_pdf = lambda *args: {"pages":1}
     module.verify_validated_pdf = lambda *args: None
-argv = [pipeline_path, "--input", source, "--output-dir", output, "--config", config]
+argv = [pipeline_path, "--input", source, "--output-dir", output]
 if "--ocr" in module.build_parser()._option_string_actions:
     argv += ["--ocr", "off", "--language-normalization", "preserve"]
 if mode != "bundle":
@@ -180,6 +180,8 @@ raise SystemExit(code)
 @pytest.mark.parametrize("override", [False, True])
 def test_relocated_pipeline_main_uses_real_core_and_one_binding(installation, tmp_path, skill, override):
     scripts = installation / skill / "scripts"
+    sentinel = scripts / "config.json"
+    sentinel.write_bytes(b"\xffnormal sentinel must remain unread")
     expected = installation / "anti-entropy-core" / "scripts" / "knowledge_unit_runner.py"
     env = dict(os.environ)
     default_calls = tmp_path / "default-runner-calls.log"
@@ -207,12 +209,14 @@ def test_relocated_pipeline_main_uses_real_core_and_one_binding(installation, tm
     source.write_bytes(b"Synthetic source; providers do not parse these bytes")
     output = tmp_path / "output"
     config = tmp_path / "new-config.json"
-    result = _run([sys.executable, "-I", "-c", DRIVER, str(scripts / "pipeline.py"), str(expected), str(source), str(output), str(config), "bundle"], cwd=unrelated, env=env)
+    result = _run([sys.executable, "-I", "-c", DRIVER, str(scripts / "pipeline.py"), str(expected), str(source), str(output), "bundle"], cwd=unrelated, env=env)
     assert result.returncode == 0, result.stdout + result.stderr
     assert "OBSERVATIONS=" in result.stdout
     assert (output / "source" / "AGENTS.md").is_file()
     assert (output / "source" / "src" / source.name).read_bytes() == source.read_bytes()
-    assert config.is_file()
+    assert not config.exists()
+    assert sentinel.read_bytes() == b"\xffnormal sentinel must remain unread"
+    assert "config.json parse error" not in result.stderr
     assert not default_calls.exists(), "Explicit B must not probe or execute valid default A"
 
 
@@ -221,9 +225,15 @@ def test_direct_main_has_no_core_prerequisite(installation, tmp_path, skill, mod
     env = dict(os.environ, ANTI_ENTROPY_CORE_RUNNER="")
     source = tmp_path / "source.docx"
     source.write_bytes(b"Synthetic input")
-    result = _run([sys.executable, "-I", "-c", DRIVER, str(installation / skill / "scripts" / "pipeline.py"), "unused", str(source), str(tmp_path / "out"), str(tmp_path / "config.json"), mode], cwd=tmp_path, env=env)
+    sentinel = installation / skill / "scripts" / "config.json"
+    sentinel.write_bytes(b"\xffnormal sentinel must remain unread")
+    config = tmp_path / "config.json"
+    result = _run([sys.executable, "-I", "-c", DRIVER, str(installation / skill / "scripts" / "pipeline.py"), "unused", str(source), str(tmp_path / "out"), mode], cwd=tmp_path, env=env)
     assert result.returncode == 0, result.stdout + result.stderr
     assert '"direct"' in result.stdout
+    assert not config.exists()
+    assert sentinel.read_bytes() == b"\xffnormal sentinel must remain unread"
+    assert "config.json parse error" not in result.stderr
 
 
 @pytest.mark.parametrize("skill", SKILLS)
@@ -351,10 +361,12 @@ def test_help_does_not_require_core_or_create_config(installation, tmp_path, ski
 def test_version_main_does_not_require_core(installation, tmp_path, skill):
     # Version reporting normally probes installed providers; replace that probe,
     # retaining the actual parser/main branch and its Core prerequisite behavior.
-    code = '''import importlib.util, sys\nfrom pathlib import Path\nsys.dont_write_bytecode=True\np=Path(sys.argv[1])\ns=importlib.util.spec_from_file_location('version_pipeline',p)\nm=importlib.util.module_from_spec(s)\nsys.modules[s.name]=m\ns.loader.exec_module(m)\nm.show_version=lambda *args: print(m.VERSION)\nsys.argv=[str(p),'--version','--config',sys.argv[2]]\nassert m.main()==0\nassert m.core._ACTIVE_BINDING.get() is None\n'''
+    code = '''import importlib.util, sys\nfrom pathlib import Path\nsys.dont_write_bytecode=True\np=Path(sys.argv[1])\ns=importlib.util.spec_from_file_location('version_pipeline',p)\nm=importlib.util.module_from_spec(s)\nsys.modules[s.name]=m\ns.loader.exec_module(m)\nm.show_version=lambda *args: print(m.VERSION)\nsys.argv=[str(p),'--version']\nassert m.main()==0\nassert m.core._ACTIVE_BINDING.get() is None\n'''
     env = dict(os.environ, ANTI_ENTROPY_CORE_RUNNER="")
-    result = _run([sys.executable, "-I", "-c", code, str(installation / skill / "scripts" / "pipeline.py"), str(tmp_path / "config.json")], cwd=tmp_path, env=env)
+    config = tmp_path / "config.json"
+    result = _run([sys.executable, "-I", "-c", code, str(installation / skill / "scripts" / "pipeline.py")], cwd=tmp_path, env=env)
     assert result.returncode == 0, result.stderr
+    assert not config.exists()
 
 
 def test_generated_clients_are_identical_and_check_is_read_only():

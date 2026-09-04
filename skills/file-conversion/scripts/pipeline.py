@@ -119,10 +119,12 @@ _RUNTIME_LAYOUT = _runtime_layout.bootstrap(
 
 import argparse
 from collections import Counter
+import copy
 import importlib.util
 import json
 import os
 import re
+import stat
 import sys
 import tempfile
 from dataclasses import dataclass
@@ -130,7 +132,6 @@ from pathlib import Path
 from typing import NoReturn
 
 
-_SCRIPTS = _RUNTIME_LAYOUT.scripts
 _SKILLS = _RUNTIME_LAYOUT.skills_root
 _MARKDOWN = _SKILLS / "markdown-conversion" / "scripts"
 
@@ -204,8 +205,7 @@ _RUNTIME_LAYOUT.verify_module(
     expected=_MARKDOWN / "pipeline.py",
 )
 
-VERSION = "2.0.1"
-CONFIG_PATH = _SCRIPTS / "config.json"
+VERSION = "2.0.2"
 DEFAULT_CONFIG: dict[str, object] = {
     "pdf_ocr": dict(markdown_pipeline.DEFAULT_CONFIG["pdf_ocr"]),
     "pdf_images": dict(markdown_pipeline.DEFAULT_CONFIG["pdf_images"]),
@@ -243,24 +243,38 @@ def die(message: str) -> NoReturn:
     raise SystemExit(1)
 
 
+def _reject_non_json_constant(value: str) -> NoReturn:
+    raise ValueError(f"non-JSON numeric constant {value}")
+
+
 def _is_url(value: str) -> bool:
     return bool(_URL_RE.match(value.strip()))
 
 
+def _read_explicit_config(path: Path) -> dict[str, object]:
+    try:
+        selected = np.logical(path)
+        info = np.lstat(selected)
+    except (OSError, TypeError, ValueError) as exc:
+        die(f"Could not access config path: {exc}")
+    if stat.S_ISLNK(info.st_mode) or np.is_reparse(info) or not stat.S_ISREG(info.st_mode):
+        die(f"Config path is not an ordinary regular non-link/reparse file: {selected}")
+    try:
+        raw = json.loads(
+            np.read_text(selected, encoding="utf-8"),
+            parse_constant=_reject_non_json_constant,
+        )
+    except (OSError, UnicodeError, json.JSONDecodeError, ValueError) as exc:
+        die(f"Could not read config as strict UTF-8 JSON: {exc}")
+    if not isinstance(raw, dict):
+        die("config root must be an object")
+    return raw
+
+
 def load_config(path: Path | None = None) -> dict[str, object]:
-    selected = path or CONFIG_PATH
-    if not np.exists(selected):
-        np.write_text(selected, json.dumps(DEFAULT_CONFIG, indent=2) + "\n", encoding="utf-8")
-        raw: dict[str, object] = {}
-    else:
-        try:
-            loaded = json.loads(np.read_text(selected, encoding="utf-8"))
-        except (OSError, json.JSONDecodeError) as exc:
-            print(f"Warning: config.json parse error ({exc}), using defaults", file=sys.stderr)
-            loaded = {}
-        if not isinstance(loaded, dict):
-            die("config root must be an object")
-        raw = loaded
+    if path is None:
+        return copy.deepcopy(DEFAULT_CONFIG)
+    raw = _read_explicit_config(path)
     result = dict(raw)
     ocr = raw.get("pdf_ocr", {})
     if not isinstance(ocr, dict):
@@ -504,7 +518,7 @@ def show_version(config: dict[str, object], cli_path: str) -> None:
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Create one canonical Markdown + native PDF bundle per local input")
-    parser.add_argument("--config", default="")
+    parser.add_argument("--config", type=Path, default=None)
     parser.add_argument("--version", action="store_true")
     parser.add_argument("--input")
     parser.add_argument("--input-dir")
@@ -544,7 +558,7 @@ def build_parser() -> argparse.ArgumentParser:
 def main() -> int:
     args = build_parser().parse_args()
     if args.version:
-        config = load_config(np.logical(args.config) if args.config else None)
+        config = load_config(args.config)
         show_version(config, args.libreoffice_path)
         return 0
     precheck(args)
@@ -557,7 +571,7 @@ def main() -> int:
 
 
 def _run(args) -> int:
-    config = load_config(np.logical(args.config) if args.config else None)
+    config = load_config(args.config)
     # Resolve once for the whole invocation, before any per-item work.
     args.timestamp = markdown_pipeline.resolve_timestamp(args.timestamp)
     args.ocr_settings = markdown_pipeline.resolve_ocr_settings(args, config)

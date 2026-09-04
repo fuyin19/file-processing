@@ -15,8 +15,9 @@ anti-entropy-core.runner/v1. By default the pipeline selects only
 anti-entropy-core/scripts/knowledge_unit_runner.py under the same skills root.
 ANTI_ENTROPY_CORE_RUNNER is an optional absolute-path override for a different
 installation root; an explicit empty, invalid, nonordinary, ABI-mismatched or
-version-mismatched value fails without fallback. Preflight happens before
-config creation, providers or stages; one invocation keeps the same runner.
+version-mismatched value fails without fallback. Bundle Core preflight happens
+before explicit config loading, providers or stages; conversion never creates a
+config file, and one invocation keeps the same runner.
 Each conversion skill carries a local standard-library Core client. Core
 completes only caller-owned disposable stages; conversion and publication
 remain in the conversion skills.
@@ -25,6 +26,19 @@ Diagnostics identify the selected path, known actual values and required ABI/
 version. Install Core 1.2.1 beside the consumer skills, or correct the explicit
 override; update the matching consumer release when upgrading Core. There is
 no search of other skills roots, PATH lookup, download or automatic update.
+
+## Configuration errors
+
+Omitted `--config` always uses fresh in-memory defaults and never consults a
+`scripts/config.json` sentinel. For explicit configuration, pass an existing
+ordinary regular non-link/reparse file containing strict UTF-8 JSON with an
+object root. Relative paths resolve from the current working directory;
+absolute paths and paths inside or outside the skill directory are accepted. A
+stable path outside the installed skill is recommended across upgrades.
+Malformed JSON, invalid encoding, a missing/directory/link path, or a non-object
+known block is an error with no fallback or config/output write. Partial known
+blocks still merge over defaults, unknown keys remain available, and CLI values
+win. `--version --config <path>` applies this same contract.
 
 ## Output already exists
 
@@ -104,7 +118,7 @@ starts. A page image appendix cannot rescue an empty or unreadable body.
 - `--ocr force` routes every PDF page to OCR. It is an explicit replacement
   mode, not a merge with PDFium native text, and does not require PDF Inspector.
 
-The defaults are configurable under `pdf_ocr` in `scripts/config.json`:
+The defaults are configurable under `pdf_ocr` in an explicit `--config` file:
 `mode`, `engine`, `language`, `dpi`, `max_long_edge`, and `min_confidence`.
 CLI values override config values. OCR page rasters are in-memory only and are
 not published as bundle assets or Markdown sidecars. OCR output keeps the
@@ -192,7 +206,7 @@ Canonical content.
 
 ## PDF structure behavior
 
-The v7.0.1 PDF path parses Inspector's full-document headings, paragraphs, lists,
+The v7.0.2 PDF path parses Inspector's full-document headings, paragraphs, lists,
 tables, line wrapping, and reading order, avoiding page-local heading
 re-rooting. It does
 not apply PDFium native-text corrections for columns, cross-page joins, table
