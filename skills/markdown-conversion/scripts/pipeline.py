@@ -2,23 +2,121 @@
 """Unified PDF/Office-to-canonical/Markdown pipeline (v6)."""
 from __future__ import annotations
 
+import hashlib as _bootstrap_hashlib
+import importlib.util as _bootstrap_importlib
 import os as _bootstrap_os
+import stat as _bootstrap_stat
 import sys as _bootstrap_sys
 
-_SCRIPTS_DIR = _bootstrap_os.path.dirname(_bootstrap_os.path.realpath(__file__))
-_SHARED_SCRIPTS_DIR = _bootstrap_os.path.realpath(
-    _bootstrap_os.path.join(_SCRIPTS_DIR, "..", "..", "_shared", "scripts")
+_BOOTSTRAP_SKILL_ID = 'markdown-conversion'
+_BOOTSTRAP_SCRIPTS = _bootstrap_os.path.dirname(_bootstrap_os.path.abspath(__file__))
+_BOOTSTRAP_SKILLS_ROOT = _bootstrap_os.path.dirname(_bootstrap_os.path.dirname(_BOOTSTRAP_SCRIPTS))
+_BOOTSTRAP_LAYOUT = _bootstrap_os.path.join(
+    _BOOTSTRAP_SKILLS_ROOT, "file-processing", "scripts", "runtime_layout.py"
 )
-if _SHARED_SCRIPTS_DIR not in _bootstrap_sys.path:
-    _bootstrap_sys.path.insert(0, _SHARED_SCRIPTS_DIR)
-if _SCRIPTS_DIR in _bootstrap_sys.path:
-    _bootstrap_sys.path.remove(_SCRIPTS_DIR)
-_bootstrap_sys.path.insert(0, _SCRIPTS_DIR)
+_BOOTSTRAP_RESTORE = (
+    "restore the complete unified installation so sibling file-processing and "
+    "conversion skills come from one skills root"
+)
+
 if __name__ == "__main__":
     for _stream in (_bootstrap_sys.stdout, _bootstrap_sys.stderr):
         if hasattr(_stream, "reconfigure"):
             _stream.reconfigure(encoding="utf-8", errors="backslashreplace")
-del _bootstrap_os, _bootstrap_sys
+
+
+def _bootstrap_fail(path: str, reason: str) -> "NoReturn":
+    print(
+        f"ERROR: {_BOOTSTRAP_SKILL_ID}: incomplete unified file-processing installation; "
+        f"skills root: {_BOOTSTRAP_SKILLS_ROOT}; required path: {path}; "
+        f"reason: {reason}; {_BOOTSTRAP_RESTORE}.",
+        file=_bootstrap_sys.stderr,
+    )
+    raise SystemExit(1)
+
+
+def _bootstrap_within(root: str, candidate: str) -> bool:
+    try:
+        common = _bootstrap_os.path.commonpath((root, candidate))
+    except ValueError:
+        return False
+    return _bootstrap_os.path.normcase(common) == _bootstrap_os.path.normcase(root)
+
+
+def _bootstrap_require_layout() -> str:
+    root = _bootstrap_os.path.abspath(_BOOTSTRAP_SKILLS_ROOT)
+    candidate = _bootstrap_os.path.abspath(_BOOTSTRAP_LAYOUT)
+    if not _bootstrap_within(root, candidate):
+        _bootstrap_fail(candidate, "path escapes the selected skills root")
+    relative = _bootstrap_os.path.relpath(candidate, root)
+    current = root
+    components = [] if relative == _bootstrap_os.curdir else list(PathLikeParts(relative))
+    for index, component in enumerate([None, *components]):
+        if component is not None:
+            current = _bootstrap_os.path.join(current, component)
+        try:
+            info = _bootstrap_os.lstat(current)
+        except OSError as exc:
+            _bootstrap_fail(current, f"unavailable ({exc})")
+        if _bootstrap_stat.S_ISLNK(info.st_mode) or bool(
+            getattr(info, "st_file_attributes", 0) & 0x400
+        ):
+            _bootstrap_fail(current, "link or Windows reparse point is forbidden")
+        final = index == len(components)
+        if final:
+            if not _bootstrap_stat.S_ISREG(info.st_mode):
+                _bootstrap_fail(current, "required dependency is not an ordinary file")
+        elif not _bootstrap_stat.S_ISDIR(info.st_mode):
+            _bootstrap_fail(current, "path component is not an ordinary directory")
+    resolved_root = _bootstrap_os.path.realpath(root)
+    resolved_candidate = _bootstrap_os.path.realpath(candidate)
+    if not _bootstrap_within(resolved_root, resolved_candidate):
+        _bootstrap_fail(candidate, "resolved path escapes the selected skills root")
+    return candidate
+
+
+def PathLikeParts(relative: str) -> tuple[str, ...]:
+    drive, tail = _bootstrap_os.path.splitdrive(relative)
+    del drive
+    parts = []
+    while tail not in ("", _bootstrap_os.curdir):
+        head, leaf = _bootstrap_os.path.split(tail)
+        if leaf:
+            parts.append(leaf)
+        if head == tail:
+            break
+        tail = head
+    return tuple(reversed(parts))
+
+
+_runtime_layout_path = _bootstrap_require_layout()
+_runtime_layout_name = (
+    "_file_processing_runtime_layout_"
+    + _bootstrap_hashlib.sha256(_bootstrap_os.fsencode(_runtime_layout_path)).hexdigest()[:16]
+)
+_runtime_layout = _bootstrap_sys.modules.get(_runtime_layout_name)
+if _runtime_layout is None:
+    _runtime_layout_spec = _bootstrap_importlib.spec_from_file_location(
+        _runtime_layout_name, _runtime_layout_path
+    )
+    if _runtime_layout_spec is None or _runtime_layout_spec.loader is None:
+        _bootstrap_fail(_runtime_layout_path, "could not create a module loader")
+    _runtime_layout = _bootstrap_importlib.module_from_spec(_runtime_layout_spec)
+    _bootstrap_sys.modules[_runtime_layout_name] = _runtime_layout
+    try:
+        _runtime_layout_spec.loader.exec_module(_runtime_layout)
+    except BaseException:
+        _bootstrap_sys.modules.pop(_runtime_layout_name, None)
+        raise
+
+_RUNTIME_LAYOUT = _runtime_layout.bootstrap(
+    entrypoint=__file__,
+    skill_id=_BOOTSTRAP_SKILL_ID,
+    carrier_files=('native_paths.py', 'conversion_runtime.py'),
+    sibling_files=(('markdown-conversion', 'scripts/provider_worker.py'), ('markdown-conversion', 'scripts/anti_entropy_core_adapter.py')),
+    import_siblings=(),
+)
+
 
 import argparse
 from collections import Counter
@@ -42,7 +140,24 @@ from typing import Any, NoReturn
 
 import native_paths as np
 import anti_entropy_core_adapter as core
+import conversion_runtime as _conversion_runtime
 import knowledge_unit
+
+_RUNTIME_LAYOUT.verify_module(
+    np, label="native_paths", expected=_RUNTIME_LAYOUT.carrier_scripts / "native_paths.py"
+)
+_RUNTIME_LAYOUT.verify_module(
+    _conversion_runtime,
+    label="conversion_runtime",
+    expected=_RUNTIME_LAYOUT.carrier_scripts / "conversion_runtime.py",
+)
+_RUNTIME_LAYOUT.verify_module(core, label="anti_entropy_core_adapter")
+_RUNTIME_LAYOUT.verify_module(
+    knowledge_unit,
+    label="knowledge_unit",
+    expected=_RUNTIME_LAYOUT.scripts / "knowledge_unit.py",
+)
+
 from conversion_runtime import ConversionError as SharedConversionError
 from conversion_runtime import OutputCollision as SharedOutputCollision
 from conversion_runtime import SourceSnapshot, acquire_source_snapshot

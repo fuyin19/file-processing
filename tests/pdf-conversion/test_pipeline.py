@@ -15,12 +15,12 @@ from pypdf import PdfReader, PdfWriter
 
 ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = ROOT / "skills" / "pdf-conversion" / "scripts" / "pipeline.py"
-SHARED = ROOT / "skills" / "_shared" / "scripts"
+CARRIER = ROOT / "skills" / "file-processing" / "scripts"
 MARKDOWN = ROOT / "skills" / "markdown-conversion" / "scripts"
 CONFIG = ROOT / "tests" / "pdf-conversion" / "fixtures" / "test_config.json"
 LO = Path(r"C:\Program Files\LibreOffice\program\soffice.com")
 
-for value in (str(SHARED), str(MARKDOWN)):
+for value in (str(CARRIER), str(MARKDOWN)):
     if value not in sys.path:
         sys.path.insert(0, value)
 
@@ -381,7 +381,7 @@ def test_pdf_validator_uses_one_locked_identity_pinned_stream(tmp_path, monkeypa
 
     worker = _module(
         "pdf_validation_worker_lock_tests",
-        SHARED / "pdf_validation_worker.py",
+        CARRIER / "pdf_validation_worker.py",
     )
     source = _pdf(tmp_path / "source.pdf")
     replacement = _pdf(tmp_path / "replacement.pdf", 2)

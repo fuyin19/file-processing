@@ -10,8 +10,8 @@ copy of this content there.
 
 ## Project Purpose
 
-`file-processing` is a Claude Code plugin (v7.0.1) that packages five
-file-processing skills as `/file-processing:<name>` commands. It serves
+`file-processing` is a Claude Code plugin (v7.1.0) that packages five
+workflow skills as `/file-processing:<name>` commands plus one ordinary shared-runtime carrier skill. It serves
 developers working inside Claude Code who need repeatable, script-backed
 document workflows — convert, review, and translate — where deterministic
 Python pipelines do the structural work and Claude / sub-agents do the
@@ -23,7 +23,7 @@ Immutable long-term tradeoff (one line): for `translate`, accuracy / terminology
 match is prioritized over speed and token cost; across all skills,
 structure-safety and testability are prioritized over feature breadth.
 
-The five skills:
+The five workflow skills:
 
 - **markdown-conversion** (v7.0.1) — Convert local PDFs, AnyDoc-eligible
   non-PDF documents, remaining supported files, URLs, or directories through one
@@ -207,12 +207,17 @@ binds one preflighted runner and restores its context on exit.
 
 ### Skill Structure
 
-The plugin lives in `skills/` with one subdirectory per public skill plus the internal `skills/_shared/` runtime. Each public skill has a `SKILL.md` defining the `/file-processing:<name>` command and workflow. Each bundle skill includes its own generated Core thin client, maintained at
-`skills/_shared/scripts/anti_entropy_core_adapter.py` and synchronized by
-`python tools/sync_core_clients.py` (`--check` verifies byte parity). Runtime
-Core imports use that skill-local copy. Other `_shared` and sibling Markdown
-runtime dependencies remain; complete independent conversion is not provided
-by this Core-only release. All five skills are script-backed. `content-review` and `translate` additionally keep sub-agent prompt templates in `references/subagent-prompts.md`.
+The plugin lives in skills/ with one subdirectory per workflow skill plus the
+ordinary file-processing runtime carrier. Every directory is discoverable
+through its top-level SKILL.md; the carrier provides read-only installation
+diagnosis and no unified conversion CLI. Each bundle skill includes its own
+generated Core thin client, maintained at
+skills/file-processing/scripts/anti_entropy_core_adapter.py and synchronized by
+python tools/sync_core_clients.py (--check verifies byte parity). Runtime Core
+imports use that skill-local copy. Conversion entrypoints bind only the carrier
+and required conversion siblings under their own skills root. All five workflow
+skills are script-backed. content-review and translate additionally keep
+sub-agent prompt templates in references/subagent-prompts.md.
 
 ### Pipeline Flow (pdf-conversion and file-conversion)
 

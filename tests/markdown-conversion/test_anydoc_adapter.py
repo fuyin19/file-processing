@@ -12,7 +12,10 @@ from pathlib import Path
 
 import pytest
 
-_SCRIPTS = Path(__file__).resolve().parents[2] / "skills" / "markdown-conversion" / "scripts"
+_ROOT = Path(__file__).resolve().parents[2]
+_SCRIPTS = _ROOT / "skills" / "markdown-conversion" / "scripts"
+_CARRIER = _ROOT / "skills" / "file-processing" / "scripts"
+sys.path.insert(0, str(_CARRIER))
 sys.path.insert(0, str(_SCRIPTS))
 
 

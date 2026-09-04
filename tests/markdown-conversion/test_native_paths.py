@@ -11,7 +11,10 @@ import sys
 import pytest
 
 
-_SCRIPTS = Path(__file__).resolve().parents[2] / "skills" / "markdown-conversion" / "scripts"
+_ROOT = Path(__file__).resolve().parents[2]
+_SCRIPTS = _ROOT / "skills" / "markdown-conversion" / "scripts"
+_CARRIER = _ROOT / "skills" / "file-processing" / "scripts"
+sys.path.insert(0, str(_CARRIER))
 sys.path.insert(0, str(_SCRIPTS))
 
 import native_paths as np
@@ -73,7 +76,8 @@ def test_real_windows_long_paths_disabled_and_bundle_markdown_collision_overwrit
         r"SYSTEM\CurrentControlSet\Control\FileSystem",
     ) as key:
         value, _ = winreg.QueryValueEx(key, "LongPathsEnabled")
-    assert value == 0
+    if value != 0:
+        pytest.skip("requires Windows LongPathsEnabled=0")
 
     long_parent = _long_parent(tmp_path)
     source = long_parent / "source.txt"

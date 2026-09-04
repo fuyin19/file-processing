@@ -19,12 +19,7 @@ from pathlib import Path
 from typing import BinaryIO, Callable
 
 
-_HERE = Path(__file__).resolve()
-_MARKDOWN_SCRIPTS = _HERE.parents[2] / "markdown-conversion" / "scripts"
-if str(_MARKDOWN_SCRIPTS) not in sys.path:
-    sys.path.insert(0, str(_MARKDOWN_SCRIPTS))
-
-import native_paths as np  # noqa: E402
+import native_paths as np
 
 
 class ConversionError(RuntimeError):

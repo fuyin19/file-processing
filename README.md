@@ -1,7 +1,7 @@
 # file-processing
 
 A Claude Code plugin with five deterministic, script-backed document
-conversion, review, and translation skills.
+workflows and one ordinary shared-runtime carrier skill.
 
 ## Installation
 
@@ -11,25 +11,35 @@ claude skill add /path/to/file-processing
 
 ## Knowledge-unit Core
 
-Bundle routes require the independently installed `anti-entropy-core` skill,
-exactly Core `1.2.1` with ABI `anti-entropy-core.runner/v1`. By default the
-pipeline selects only `anti-entropy-core/scripts/knowledge_unit_runner.py`
-under the same skills root as this skill. `ANTI_ENTROPY_CORE_RUNNER` is an
-optional absolute-path override for a different installation root; an explicit
-empty, invalid, nonordinary, ABI-mismatched or version-mismatched value fails
-without fallback. Preflight happens before config creation, providers or stages;
-one invocation keeps the same runner. Update Core and consumer skills together.
+The three conversion skills bind shared runtime only from the ordinary sibling
+file-processing skill under their own skills root. markdown-conversion requires
+that carrier; pdf-conversion requires the carrier plus sibling
+markdown-conversion; and bundle-only file-conversion requires both plus Core.
+Missing, linked, reparsed, or escaping dependencies fail before config,
+provider, stage, or output writes, with guidance to restore the complete
+unified installation. There is no cwd, checkout, PYTHONPATH, or cross-root
+fallback.
 
-Each conversion skill carries a local standard-library Core client. Other
-`_shared` runtime and sibling Markdown implementation dependencies still
-require the existing complete file-processing layout: this release does not
-make the complete conversion skills independently runnable. Core completes
-only caller-owned disposable stages; conversion and publication remain here.
+Bundle routes require the independently installed anti-entropy-core skill,
+exactly Core 1.2.1 with ABI anti-entropy-core.runner/v1. By default the pipeline
+selects only anti-entropy-core/scripts/knowledge_unit_runner.py under the same
+skills root. ANTI_ENTROPY_CORE_RUNNER remains the explicit absolute-path
+override. Direct Markdown/PDF output, help, and version do not acquire a Core
+dependency.
 
-The maintained thin client is `skills/_shared/scripts/anti_entropy_core_adapter.py`.
-Run `python tools/sync_core_clients.py` after editing it; run the read-only
-`python tools/sync_core_clients.py --check` to verify all three installed copies.
-Direct Markdown/PDF output, help and version do not acquire a Core dependency.
+Each conversion skill carries a local standard-library Core client. The
+maintained canonical client is
+skills/file-processing/scripts/anti_entropy_core_adapter.py. Run
+python tools/sync_core_clients.py after editing it; run the read-only
+python tools/sync_core_clients.py --check to verify all three installed copies.
+Core completes only caller-owned disposable stages; conversion and publication
+remain in the conversion skills.
+
+## Shared runtime carrier
+
+skills/file-processing is a normal discoverable skill at version 1.0.0. It
+provides the conversion runtime and read-only installation diagnosis guidance,
+without adding a unified conversion CLI.
 
 ## Skills
 

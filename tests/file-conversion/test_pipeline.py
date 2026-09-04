@@ -14,13 +14,13 @@ from pypdf import PdfWriter
 ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = ROOT / "skills" / "file-conversion" / "scripts" / "pipeline.py"
 MARKDOWN_SCRIPT = ROOT / "skills" / "markdown-conversion" / "scripts" / "pipeline.py"
-SHARED = ROOT / "skills" / "_shared" / "scripts"
+CARRIER = ROOT / "skills" / "file-processing" / "scripts"
 MARKDOWN_SCRIPTS = MARKDOWN_SCRIPT.parent
 CONFIG = ROOT / "tests" / "file-conversion" / "fixtures" / "test_config.json"
 MARKDOWN_CONFIG = ROOT / "tests" / "markdown-conversion" / "fixtures" / "test_config.json"
 LO = Path(r"C:\Program Files\LibreOffice\program\soffice.com")
 
-for value in (str(SHARED), str(MARKDOWN_SCRIPTS)):
+for value in (str(CARRIER), str(MARKDOWN_SCRIPTS)):
     if value not in sys.path:
         sys.path.insert(0, value)
 
@@ -100,8 +100,8 @@ def _fake_emitter(args, snapshot, stage, stem, *, status="complete", warnings=No
 def test_skill_frontmatter_and_project_versions():
     skill = (ROOT / "skills" / "file-conversion" / "SKILL.md").read_text(encoding="utf-8")
     assert "name: file-conversion" in skill and "version: 2.0.1" in skill
-    assert json.loads((ROOT / "package.json").read_text(encoding="utf-8"))["version"] == "7.0.1"
-    assert json.loads((ROOT / ".claude-plugin" / "plugin.json").read_text(encoding="utf-8"))["version"] == "7.0.1"
+    assert json.loads((ROOT / "package.json").read_text(encoding="utf-8"))["version"] == "7.1.0"
+    assert json.loads((ROOT / ".claude-plugin" / "plugin.json").read_text(encoding="utf-8"))["version"] == "7.1.0"
     assert (ROOT / "CLAUDE.md").read_text(encoding="utf-8").strip() == "@AGENTS.md"
 
 

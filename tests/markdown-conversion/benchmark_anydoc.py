@@ -12,7 +12,9 @@ import sys
 import time
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "skills" / "markdown-conversion" / "scripts"))
+ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(ROOT / "skills" / "file-processing" / "scripts"))
+sys.path.insert(0, str(ROOT / "skills" / "markdown-conversion" / "scripts"))
 from adapters import AnyDocAdapter, MarkItDownAdapter, anydoc_capability_check
 
 MANDATORY_CORPUS_EXTENSIONS = frozenset({".docx", ".pptx", ".xls", ".xlsx", ".epub", ".csv"})

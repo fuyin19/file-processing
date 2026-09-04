@@ -2,20 +2,24 @@
 
 ## Core runner configuration or version mismatch
 
-Bundle routes require the independently installed `anti-entropy-core` skill,
-exactly Core `1.2.1` with ABI `anti-entropy-core.runner/v1`. By default the
-pipeline selects only `anti-entropy-core/scripts/knowledge_unit_runner.py`
-under the same skills root as this skill. `ANTI_ENTROPY_CORE_RUNNER` is an
-optional absolute-path override for a different installation root; an explicit
-empty, invalid, nonordinary, ABI-mismatched or version-mismatched value fails
-without fallback. Preflight happens before config creation, providers or stages;
-one invocation keeps the same runner. Update Core and consumer skills together.
+The conversion runtime is installed as the ordinary sibling
+file-processing skill under the same skills root. The pipeline accepts only
+that sibling's ordinary, non-link runtime files and never falls back to the
+current directory, a source checkout, PYTHONPATH, or another skills root.
+Restore the complete unified installation when this preflight reports a
+missing, linked, reparsed, or escaping dependency.
 
-Each conversion skill carries a local standard-library Core client. Other
-`_shared` runtime and sibling Markdown implementation dependencies still
-require the existing complete file-processing layout: this release does not
-make the complete conversion skills independently runnable. Core completes
-only caller-owned disposable stages; conversion and publication remain here.
+Bundle routes additionally require the independently installed
+anti-entropy-core skill, exactly Core 1.2.1 with ABI
+anti-entropy-core.runner/v1. By default the pipeline selects only
+anti-entropy-core/scripts/knowledge_unit_runner.py under the same skills root.
+ANTI_ENTROPY_CORE_RUNNER is an optional absolute-path override for a different
+installation root; an explicit empty, invalid, nonordinary, ABI-mismatched or
+version-mismatched value fails without fallback. Preflight happens before
+config creation, providers or stages; one invocation keeps the same runner.
+Each conversion skill carries a local standard-library Core client. Core
+completes only caller-owned disposable stages; conversion and publication
+remain in the conversion skills.
 
 Diagnostics identify the selected path, known actual values and required ABI/
 version. Install Core 1.2.1 beside the consumer skills, or correct the explicit

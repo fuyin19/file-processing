@@ -8,7 +8,7 @@ import sys
 
 
 ROOT = Path(__file__).absolute().parents[1]
-SOURCE = ROOT / "skills" / "_shared" / "scripts" / "anti_entropy_core_adapter.py"
+SOURCE = ROOT / "skills" / "file-processing" / "scripts" / "anti_entropy_core_adapter.py"
 SKILLS = ("markdown-conversion", "pdf-conversion", "file-conversion")
 
 

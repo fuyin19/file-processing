@@ -13,7 +13,7 @@ from typing import Any
 
 
 ROOT = Path(__file__).resolve().parents[1]
-RESOURCE_ROOT = ROOT / "skills" / "_shared" / "resources" / "knowledge-unit"
+RESOURCE_ROOT = ROOT / "tests" / "fixtures" / "knowledge-unit"
 GUIDES = {
     "AGENTS.md": (RESOURCE_ROOT / "AGENTS.md").read_bytes(),
     "CLAUDE.md": (RESOURCE_ROOT / "CLAUDE.md").read_bytes(),

@@ -1,6 +1,6 @@
 """Standard-library JSONL client; generated skill copies are byte-identical.
 
-Maintain this file in skills/_shared/scripts and run tools/sync_core_clients.py.
+Maintain this file in skills/file-processing/scripts and run tools/sync_core_clients.py.
 The active pipeline supplies its own skill boundary; direct clients require an
 explicit runner. Core implementation is never imported in this process.
 """

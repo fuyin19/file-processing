@@ -12,6 +12,7 @@ import json
 import os
 from pathlib import Path
 import shutil
+import stat
 import subprocess
 import sys
 
@@ -34,6 +35,29 @@ def _load_client(path: Path):
     return module
 
 
+def _copy_discoverable_skills(source: Path, destination: Path) -> tuple[str, ...]:
+    destination.mkdir(parents=True)
+    copied = []
+    for candidate in sorted(source.iterdir(), key=lambda item: item.name):
+        info = candidate.lstat()
+        if not stat.S_ISDIR(info.st_mode) or bool(getattr(info, "st_file_attributes", 0) & 0x400):
+            continue
+        boundary = candidate / "SKILL.md"
+        try:
+            boundary_info = boundary.lstat()
+        except OSError:
+            continue
+        if stat.S_ISLNK(boundary_info.st_mode) or not stat.S_ISREG(boundary_info.st_mode):
+            continue
+        shutil.copytree(
+            candidate,
+            destination / candidate.name,
+            ignore=shutil.ignore_patterns("__pycache__", "config.json"),
+        )
+        copied.append(candidate.name)
+    return tuple(copied)
+
+
 @pytest.fixture
 def installation(tmp_path, monkeypatch):
     configured = os.environ.get("FILE_PROCESSING_REAL_CORE_RUNNER")
@@ -41,7 +65,8 @@ def installation(tmp_path, monkeypatch):
     core = Path(configured).parent.parent
     assert (core / "SKILL.md").is_file(), "The actual installable Core skill is required"
     original = tmp_path / "original"
-    shutil.copytree(ROOT / "skills", original / "skills", ignore=shutil.ignore_patterns("__pycache__", "config.json"))
+    copied = _copy_discoverable_skills(ROOT / "skills", original / "skills")
+    assert "file-processing" in copied
     shutil.copytree(core, original / "skills" / "anti-entropy-core", ignore=shutil.ignore_patterns("__pycache__"))
     moved = tmp_path / "moved installation 中文"
     original.rename(moved)
@@ -245,7 +270,7 @@ def test_real_cli_rejects_core_before_config_provider_or_output(installation, tm
     assert source.read_bytes() == b"Never sent to a provider"
 
 
-def test_client_alone_and_core_are_relocatable_without_shared(installation, tmp_path, monkeypatch):
+def test_client_alone_and_core_are_relocatable_without_runtime_carrier(installation, tmp_path, monkeypatch):
     only = tmp_path / "only skills"
     scripts = only / "pdf-conversion" / "scripts"
     scripts.mkdir(parents=True)
@@ -256,7 +281,7 @@ def test_client_alone_and_core_are_relocatable_without_shared(installation, tmp_
     code = '''import sys\nfrom pathlib import Path\nsys.path.insert(0,sys.argv[1])\nimport anti_entropy_core_adapter as core\nwith core.operation(skill_entrypoint=Path(sys.argv[1])/'pipeline.py',skill_id='pdf-conversion'):\n assert core.capabilities().data['version']=='1.2.1'\n assert not any(n=='anti_entropy_core' or n.startswith('anti_entropy_core.') for n in sys.modules)\n'''
     result = _run([sys.executable, "-I", "-S", "-c", code, str(scripts)], cwd=tmp_path)
     assert result.returncode == 0, result.stderr
-    assert not (only / "_shared").exists()
+    assert not (only / "file-processing").exists()
 
 
 def test_context_preflights_once_restores_and_next_operation_rebinds(tmp_path, monkeypatch):
@@ -317,7 +342,7 @@ def test_help_does_not_require_core_or_create_config(installation, tmp_path, ski
     env = _cli_environment(tmp_path, [])
     env["ANTI_ENTROPY_CORE_RUNNER"] = ""
     script = installation / skill / "scripts" / "pipeline.py"
-    result = _run([sys.executable, str(script), "--help"], cwd=tmp_path, env=env)
+    result = _run([sys.executable, "-I", "-B", str(script), "--help"], cwd=tmp_path, env=env)
     assert result.returncode == 0, result.stderr
     assert not script.with_name("config.json").exists()
 
@@ -333,7 +358,7 @@ def test_version_main_does_not_require_core(installation, tmp_path, skill):
 
 
 def test_generated_clients_are_identical_and_check_is_read_only():
-    source = (ROOT / "skills" / "_shared" / "scripts" / "anti_entropy_core_adapter.py").read_bytes()
+    source = (ROOT / "skills" / "file-processing" / "scripts" / "anti_entropy_core_adapter.py").read_bytes()
     targets = [ROOT / "skills" / skill / "scripts" / "anti_entropy_core_adapter.py" for skill in SKILLS]
     assert all(path.read_bytes() == source for path in targets)
     result = _run([sys.executable, "-I", "-S", str(ROOT / "tools" / "sync_core_clients.py"), "--check"], cwd=ROOT)

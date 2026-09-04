@@ -8,9 +8,9 @@ import pytest
 
 
 ROOT = Path(__file__).resolve().parents[2]
-SHARED = ROOT / "skills" / "_shared" / "scripts"
+CARRIER = ROOT / "skills" / "file-processing" / "scripts"
 SCRIPTS = ROOT / "skills" / "markdown-conversion" / "scripts"
-for value in (str(SHARED), str(SCRIPTS)):
+for value in (str(CARRIER), str(SCRIPTS)):
     if value not in sys.path:
         sys.path.insert(0, value)
 

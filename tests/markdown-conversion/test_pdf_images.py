@@ -19,6 +19,8 @@ import pytest
 
 ROOT = Path(__file__).resolve().parents[2]
 SCRIPTS = ROOT / "skills" / "markdown-conversion" / "scripts"
+CARRIER = ROOT / "skills" / "file-processing" / "scripts"
+sys.path.insert(0, str(CARRIER))
 sys.path.insert(0, str(SCRIPTS))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
