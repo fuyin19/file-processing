@@ -3,7 +3,7 @@ name: markdown-conversion
 description: |
   Convert local PDF and AnyDoc/MarkItDown-supported documents, supported files, URLs, or directories into a canonical JSON plus Markdown bundle, or one clean Markdown file. Use for PDF Inspector-backed PDF extraction, AnyDoc-backed local non-PDF extraction, explicit MarkItDown rollback, deterministic five-field frontmatter, Chinese language normalization, batch conversion, and staged output handling.
 metadata:
-  version: 7.1.0
+  version: 7.1.1
 ---
 
 # Convert files to canonical JSON and Markdown
@@ -316,7 +316,15 @@ stem/slug fallback.
   rerun the full tests and benchmark after upgrades.
 - The authoritative AnyDoc upstream is `firecrawl/anydoc`; `fuyin19/anydoc` is
   a mirror. Referencing GitHub does not update an installed wheel.
-- v7.1.0 does not emit RAG chunks, change Canonical schema 1.0, or claim page,
+- AnyDoc inline and block `math.text` strings retain their original LaTeX in
+  canonical text and Markdown using `$...$` and `$$` delimiters. Chinese
+  normalization protects formula text. Empty math is omitted with a
+  per-occurrence `anydoc_math_empty` content-loss warning; malformed math text
+  fails before asset output. Block math in table cells retains canonical text
+  but reports `anydoc_math_layout_flattened` for Markdown layout loss. These
+  losses produce partial output when other usable content exists; otherwise
+  conversion fails. Source retention does not guarantee formula typesetting.
+- v7.1.1 does not emit RAG chunks, change Canonical schema 1.0, or claim page,
   slide, sheet, rich-style, formula, or external-image fidelity beyond the
   AnyDoc model and documented warnings.
 - URL input, including a PDF URL, is downloaded through a public-network-only,

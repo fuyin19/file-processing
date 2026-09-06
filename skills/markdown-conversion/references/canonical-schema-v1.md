@@ -1,7 +1,7 @@
 # Canonical JSON v1
 
 `<stem>.json` is the canonical, loss-aware bundle output of
-`markdown-conversion` v7.1.0.
+`markdown-conversion` v7.1.1.
 The machine-readable schema is `../schemas/canonical-v1.schema.json`.
 
 ## Top-level fields

@@ -1,5 +1,5 @@
 """
-Tests for pipeline.py (v7.1.0 canonical conversion architecture).
+Tests for pipeline.py (v7.1.1 canonical conversion architecture).
 
 Run from project root: pytest scripts/test_pipeline.py -v
 
@@ -904,7 +904,7 @@ def test_version_flag():
     assert 'Dependencies:' in stdout
     # Should show pip install names (not import names)
     assert 'opencc-python-reimplemented' in stdout
-    assert 'markdown-conversion v7.1.0' in stdout
+    assert 'markdown-conversion v7.1.1' in stdout
     assert 'rapidocr:' in stdout
     assert 'onnxruntime:' in stdout
     assert 'ruamel.yaml:' not in stdout
@@ -946,7 +946,7 @@ def test_pipeline_direct_isolated_entry_ignores_hostile_python_environment(tmp_p
     )
 
     assert result.returncode == 0, result.stderr.decode('utf-8', errors='replace')
-    assert b'markdown-conversion v7.1.0' in result.stdout
+    assert b'markdown-conversion v7.1.1' in result.stdout
     assert b'hostile' not in result.stdout + result.stderr
 
 

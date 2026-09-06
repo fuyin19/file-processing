@@ -119,8 +119,8 @@ def test_skill_frontmatter_and_project_versions():
     skill = (ROOT / "skills" / "file-conversion" / "SKILL.md").read_text(encoding="utf-8")
     assert "name: file-conversion" in skill and "version: 2.1.0" in skill
     assert pipeline.VERSION == "2.1.0"
-    assert json.loads((ROOT / "package.json").read_text(encoding="utf-8"))["version"] == "7.2.0"
-    assert json.loads((ROOT / ".claude-plugin" / "plugin.json").read_text(encoding="utf-8"))["version"] == "7.2.0"
+    assert json.loads((ROOT / "package.json").read_text(encoding="utf-8"))["version"] == "7.2.1"
+    assert json.loads((ROOT / ".claude-plugin" / "plugin.json").read_text(encoding="utf-8"))["version"] == "7.2.1"
     assert (ROOT / "CLAUDE.md").read_text(encoding="utf-8").strip() == "@AGENTS.md"
 
 

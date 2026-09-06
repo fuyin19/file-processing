@@ -60,7 +60,7 @@ This release does not change the persistent configuration behavior of
 
 ## Skills
 
-### markdown-conversion (v7.1.0)
+### markdown-conversion (v7.1.1)
 
 Convert local PDFs, Office documents, supported files, URLs, or directories
 through one canonical pipeline. Local PDFs use PDF Inspector as the
@@ -81,6 +81,15 @@ URLs) and other formats continue through MarkItDown. Use
 files must remain on AnyDoc; the MarkItDown rollback rejects them before
 conversion and recommends a trusted desktop conversion to `.docx`. Embedded
 AnyDoc image bytes are exported by default in bundle mode.
+
+AnyDoc inline and block `math.text` retains its original LaTeX inside `$...$`
+or `$$` delimiters in canonical text and Markdown, including nested content.
+Formula text is protected from Chinese normalization. Empty math is omitted
+with a per-occurrence content-loss warning; malformed text fails conversion.
+Block math in table cells keeps its canonical text and reports Markdown layout
+flattening as content loss. Such losses produce partial output when other
+usable content exists; an empty-math-only result fails. This preserves source
+formula text without promising typesetting fidelity.
 The
 default output is a movable bundle:
 

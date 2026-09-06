@@ -659,6 +659,14 @@ def _ad_kind(value: Any) -> str:
     return str(_ad_attr(value, "kind", "") or "").lower()
 
 
+def _ad_math_text(value: Any, *, block: bool = False) -> str:
+    """Keep validated AnyDoc LaTeX verbatim inside plain-text delimiters."""
+    text = _ad_attr(value, "text")
+    if not text.strip():
+        return ""
+    return "$$\n" + text + "\n$$" if block else "$" + text + "$"
+
+
 def _ad_text_blocks(blocks: list[Any] | None, include_lists: bool = True) -> str:
     """Render block content to visible text for table cells/notes."""
     output: list[str] = []
@@ -667,7 +675,9 @@ def _ad_text_blocks(blocks: list[Any] | None, include_lists: bool = True) -> str
         if kind in {"heading", "paragraph"}:
             for inline in _ad_attr(block, "content", []) or []:
                 inline_kind = _ad_kind(inline)
-                if inline_kind in {"text", "link"}:
+                if inline_kind == "link" and _ad_attr(inline, "content", None):
+                    output.append(_ad_text_inlines(_ad_attr(inline, "content"), None)[0])
+                elif inline_kind in {"text", "link"}:
                     text = _ad_attr(inline, "text", None)
                     if text is not None:
                         output.append(str(text))
@@ -677,7 +687,13 @@ def _ad_text_blocks(blocks: list[Any] | None, include_lists: bool = True) -> str
                     output.append("\n")
                 elif inline_kind == "image":
                     output.append(str(_ad_attr(inline, "alt", "") or ""))
+                elif inline_kind == "math":
+                    output.append(_ad_math_text(inline))
             output.append("\n")
+        elif kind == "math":
+            text = _ad_math_text(block, block=True)
+            if text:
+                output.append(text + "\n")
         elif kind == "code_block":
             output.append(str(_ad_attr(block, "text", "") or ""))
             output.append("\n")
@@ -738,6 +754,8 @@ def _ad_text_inlines(inlines: list[Any], asset_lookup: dict[int, dict[str, Any]]
         kind = _ad_kind(inline)
         if kind == "text":
             visible.append(str(_ad_attr(inline, "text", "") or ""))
+        elif kind == "math":
+            visible.append(_ad_math_text(inline))
         elif kind == "link":
             nested_text, nested_images = _ad_text_inlines(_ad_attr(inline, "content", []) or [], asset_lookup)
             visible.append(nested_text)
@@ -773,6 +791,8 @@ def _ad_inline_segments(inlines: list[Any]) -> list[tuple[str, Any]]:
         kind = _ad_kind(inline)
         if kind == "text":
             segments.append(("text", str(_ad_attr(inline, "text", "") or "")))
+        elif kind == "math":
+            segments.append(("text", _ad_math_text(inline)))
         elif kind == "link":
             target = _ad_attr(inline, "target", None)
             target_kind = _ad_kind(target)
@@ -825,11 +845,11 @@ _ANYDOC_MAX_TABLE_COLUMNS = 1_000
 _ANYDOC_MAX_TABLE_CELLS = 1_000_000
 _ANYDOC_MAX_CHARS_PER_FIELD = 10_000_000
 _ANYDOC_MAX_TOTAL_TEXT = 100_000_000
-_ANYDOC_BLOCK_KINDS = {"heading", "paragraph", "list", "table", "block_quote", "code_block", "rule"}
-_ANYDOC_INLINE_KINDS = {"text", "link", "image", "anchor", "note_ref", "line_break"}
+_ANYDOC_BLOCK_KINDS = {"heading", "paragraph", "list", "table", "block_quote", "code_block", "rule", "math"}
+_ANYDOC_INLINE_KINDS = {"text", "link", "image", "anchor", "note_ref", "line_break", "math"}
 
 
-def _validate_anydoc_document(document: Any) -> None:
+def _validate_anydoc_document(document: Any) -> list[tuple[str, str]]:
     """Fail closed on malformed/native model graphs before canonical allocation."""
     if document is None:
         raise RuntimeError("AnyDoc returned no Document model")
@@ -839,8 +859,10 @@ def _validate_anydoc_document(document: Any) -> None:
     if not isinstance(blocks, (list, tuple)) or not isinstance(notes, (list, tuple)) or not isinstance(assets, (list, tuple)):
         raise RuntimeError("AnyDoc Document has invalid blocks/notes/assets collections")
     visited: set[int] = set()
+    math_containers: set[int] = set()
     active: set[int] = set()
     total_text = 0
+    math_diagnostics: list[tuple[str, str]] = []
 
     def integer(value: Any, field: str, minimum: int | None = None) -> None:
         if value is None:
@@ -850,7 +872,7 @@ def _validate_anydoc_document(document: Any) -> None:
         if minimum is not None and value < minimum:
             raise RuntimeError(f"AnyDoc {field} must be >= {minimum}")
 
-    def walk(value: Any, path: str, depth: int) -> None:
+    def walk(value: Any, path: str, depth: int, in_table: bool = False, inline: bool = False) -> None:
         nonlocal total_text
         if depth > _ANYDOC_MAX_DEPTH:
             raise RuntimeError(f"AnyDoc model exceeds max depth {_ANYDOC_MAX_DEPTH} at {path}")
@@ -866,19 +888,14 @@ def _validate_anydoc_document(document: Any) -> None:
         identity = id(value)
         if identity in active:
             raise RuntimeError(f"AnyDoc model cycle detected at {path}")
-        if identity in visited:
+        if identity in visited and identity not in math_containers:
             return
         visited.add(identity)
         active.add(identity)
         try:
-            if isinstance(value, dict):
-                for key, child in value.items():
-                    walk(key, f"{path}.key", depth + 1)
-                    walk(child, f"{path}[{key!r}]", depth + 1)
-                return
             if isinstance(value, (list, tuple)):
                 for index, child in enumerate(value):
-                    walk(child, f"{path}[{index}]", depth + 1)
+                    walk(child, f"{path}[{index}]", depth + 1, in_table, inline)
                 return
             kind = _ad_kind(value)
             if kind and kind not in _ANYDOC_BLOCK_KINDS | _ANYDOC_INLINE_KINDS | {
@@ -886,20 +903,42 @@ def _validate_anydoc_document(document: Any) -> None:
                 "footnote", "endnote", "bullet", "decimal", "lower_alpha", "upper_alpha", "lower_roman", "upper_roman",
             }:
                 raise RuntimeError(f"AnyDoc returned unknown model kind {kind!r} at {path}")
-            for field in (
-                "kind", "level", "anchor", "content", "list", "table", "blocks", "lang", "text",
+            if kind == "math":
+                math_containers.update(active)
+                text = _ad_attr(value, "text", None)
+                if not isinstance(text, str):
+                    raise RuntimeError(f"AnyDoc math.text must be text at {path}.text")
+                if not text.strip():
+                    math_diagnostics.append(("anydoc_math_empty", f"Empty AnyDoc math was omitted at {path}"))
+                elif in_table and not inline:
+                    math_diagnostics.append((
+                        "anydoc_math_layout_flattened",
+                        f"AnyDoc block math at {path} retains LaTeX text but table-cell Markdown flattens its layout",
+                    ))
+            fields = value.keys() if isinstance(value, dict) else (
+                "kind", "level", "anchor", "content", "list", "table", "blocks", "notes", "assets", "lang", "text",
                 "target", "alt", "source", "note_id", "marker", "start", "items", "checked", "marker_label",
                 "grid", "header_rows", "cell", "origin_row", "origin_col", "col_span", "row_span", "id",
                 "media_type", "origin_part", "data", "url", "asset_id", "style",
-            ):
+            )
+            for field in fields:
+                if isinstance(value, dict):
+                    walk(field, f"{path}.key", depth + 1)
                 child = _ad_attr(value, field, None)
                 if child is None:
                     continue
-                if field in {"level", "start", "header_rows", "origin_row", "origin_col", "col_span", "row_span", "id", "asset_id"}:
+                if field in {"level", "start", "header_rows", "origin_row", "origin_col", "col_span", "row_span", "id", "asset_id"} and not (
+                    field == "id" and kind in {"footnote", "endnote"}
+                ):
                     integer(child, f"{path}.{field}", 0 if field not in {"level", "col_span", "row_span"} else 1)
                 if field == "marker" and str(child) not in {"bullet", "decimal", "lower_alpha", "upper_alpha", "lower_roman", "upper_roman"}:
                     raise RuntimeError(f"AnyDoc list marker {child!r} is invalid at {path}")
-                walk(child, f"{path}.{field}", depth + 1)
+                # Revisit math-containing subgraphs for occurrence diagnostics;
+                # keep memoization for already-validated subgraphs without math.
+                walk(
+                    child, f"{path}.{field}", depth + 1, in_table or field == "cell",
+                    True if field == "content" else False if field == "blocks" else inline,
+                )
         finally:
             active.remove(identity)
 
@@ -1069,6 +1108,7 @@ def _validate_anydoc_document(document: Any) -> None:
             scan_tables(child, f"{path}[{index}]", seen)
 
     scan_tables(document, "document", set())
+    return math_diagnostics
 
 
 def _ad_warning(code: str, message: str, source_unit: str, content_loss: bool) -> dict[str, Any]:
@@ -1541,7 +1581,7 @@ class AnyDocAdapter:
                     inspect_ooxml_features(path, original_unit_id),
                 )
             raise RuntimeError(f"AnyDoc could not convert {path.name}: {exc}") from exc
-        _validate_anydoc_document(document)
+        math_diagnostics = _validate_anydoc_document(document)
 
         unit_locator = {"kind": "document", "index": 1}
         unit_id = stable_id("unit", document_id, unit_locator, "document", 1)
@@ -1553,7 +1593,9 @@ class AnyDocAdapter:
             "status": "complete",
             "warnings": [],
         }
-        warnings: list[dict[str, Any]] = []
+        warnings: list[dict[str, Any]] = [
+            _ad_warning(code, message, unit_id, True) for code, message in math_diagnostics
+        ]
 
         def add_warning(item: dict[str, Any], dedupe: bool = False) -> None:
             if dedupe and any(existing.get("code") == item.get("code") for existing in warnings):
@@ -1883,6 +1925,8 @@ class AnyDocAdapter:
                 emit_inlines(heading_inlines, source_locator, first_kind="heading", first_extra={"level": level})
             elif kind == "paragraph":
                 emit_inlines(_ad_attr(block, "content", []) or [], source_locator)
+            elif kind == "math":
+                add_text("paragraph", _ad_math_text(block, block=True), source_locator)
             elif kind == "code_block":
                 add_text("code", str(_ad_attr(block, "text", "") or ""), source_locator, language=str(_ad_attr(block, "lang", "") or ""))
             elif kind == "table":
@@ -1903,7 +1947,6 @@ class AnyDocAdapter:
                     ))
                 for item_index, item in enumerate(_ad_attr(listing, "items", []) or [], start=1):
                     item_blocks = _ad_attr(item, "blocks", []) or []
-                    nested_lists = [child for child in item_blocks if _ad_kind(child) == "list"]
                     checked = _ad_attr(item, "checked", None)
                     marker_label = _ad_attr(item, "marker_label", None)
                     item_locator = {
@@ -1921,6 +1964,13 @@ class AnyDocAdapter:
                     for child_index, child in enumerate(item_blocks, start=1):
                         child_kind = _ad_kind(child)
                         if child_kind == "list":
+                            add_warning(_ad_warning(
+                                "anydoc_nested_block_structure_flattened",
+                                "Nested AnyDoc list containment was flattened to canonical list items",
+                                unit_id,
+                                True,
+                            ), dedupe=True)
+                            emit_block(child, block_index, nesting=nesting + 1, model_path=item_locator["model_path"] + ["blocks", child_index])
                             continue
                         before = len(content)
                         if child_kind == "paragraph":
@@ -1941,16 +1991,6 @@ class AnyDocAdapter:
                                 )
                         if len(content) > before:
                             emitted_item = True
-                    if nested_lists:
-                        add_warning(_ad_warning(
-                            "anydoc_nested_block_structure_flattened",
-                            "Nested AnyDoc list containment was flattened to canonical list items",
-                            unit_id,
-                            True,
-                        ), dedupe=True)
-                    for child_index, child in enumerate(item_blocks, start=1):
-                        if _ad_kind(child) == "list":
-                            emit_block(child, block_index, nesting=nesting + 1, model_path=item_locator["model_path"] + ["blocks", child_index])
                     ordinal += 1
             elif kind == "block_quote":
                 add_warning(_ad_warning(
@@ -2008,7 +2048,12 @@ class AnyDocAdapter:
                 unit_id,
                 warnings,
             )
-        if not content:
+        # Empty math must not become a publishable result merely because an
+        # empty containing table still has a canonical node.
+        if not content or (math_diagnostics and not (
+            any(node.get("text", "").strip() or node["type"] == "image" for node in content)
+            or any(cell["text"].strip() for table in tables for row in table["rows"] for cell in row)
+        )):
             raise RuntimeError(f"AnyDoc produced no usable content for {path.name}")
         normalize_canonical_text(content, tables, mode)
         source_unit["warnings"].extend(warnings)

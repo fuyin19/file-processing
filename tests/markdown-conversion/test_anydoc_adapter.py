@@ -790,3 +790,194 @@ def test_real_anydoc_internal_image_relationship_uses_package_bytes(tmp_path):
     assert result["assets"]
     assert {asset["sha256"] for asset in result["assets"]} <= set(package_images.values())
     assert all("url" not in asset["source_locator"] for asset in result["assets"])
+
+
+def _math_document(blocks, notes=None, assets=None):
+    return SimpleNamespace(blocks=blocks, notes=notes or [], assets=assets or [])
+
+
+def _math_extract(tmp_path, fake_anydoc, document, mode="preserve"):
+    source = tmp_path / "math.docx"
+    source.write_bytes(b"PK fake")
+    fake_anydoc._ANYDOC.to_document = lambda data, format=None: document
+    return fake_anydoc.AnyDocAdapter().extract(
+        str(source), "sha256:" + "a" * 64, mode, tmp_path / "assets"
+    )
+
+
+def _math_table(blocks):
+    cell = SimpleNamespace(blocks=blocks, row_span=1, col_span=1)
+    return _Block("table", table=SimpleNamespace(
+        kind="data", header_rows=0, grid=[[SimpleNamespace(kind="origin", cell=cell)]]
+    ))
+
+
+def _math_list(blocks):
+    result = _Block("list")
+    result.list = SimpleNamespace(marker="decimal", start=3, items=[SimpleNamespace(blocks=blocks)])
+    return result
+
+
+def test_anydoc_math_keeps_formula_image_link_and_block_order(tmp_path, fake_anydoc):
+    from canonical import render_markdown
+
+    formula = r"\frac{a^{2}}{b}"
+    document = _math_document([
+        _Block("heading", [_Inline("text", text="Title "), _Inline("math", text=formula)], level=1),
+        _Block("paragraph", [
+            _Inline("text", text="Before "), _Inline("math", text="x^2"),
+            _Inline("image", alt="figure", source=_ImageSource()),
+            _Inline("link", content=[_Inline("math", text=r"\int_0^1 x dx")]),
+            _Inline("text", text=" after"),
+        ]),
+        _Block("math", text="a+b=c"),
+    ], assets=[_Asset()])
+    result = _math_extract(tmp_path, fake_anydoc, document)
+    expected = ["Title $" + formula + "$", "Before $x^2$", None, r"$\int_0^1 x dx$ after", "$$\na+b=c\n$$"]
+    assert [node.get("text") for node in result["content"]] == expected
+    decoded = json.loads(json.dumps(result))
+    assert [node.get("raw_text") for node in decoded["content"]] == expected
+    md = render_markdown(result, include_frontmatter=False)
+    assert md.index(expected[0]) < md.index(expected[1]) < md.index("![figure]") < md.index(expected[3]) < md.index(expected[4])
+    assert not any(item["code"].startswith("anydoc_math_") for item in result["warnings"])
+
+
+def test_anydoc_math_nested_list_quote_table_and_note_order(tmp_path, fake_anydoc):
+    from canonical import render_markdown
+
+    p = lambda text: _Block("paragraph", [_Inline("text", text=text)])
+    quote = _Block("block_quote")
+    quote.blocks = [p("Quote before"), _Block("math", text="q^2"), p("Quote after")]
+    table = _math_table([
+        p("Cell before"), _Block("math", text=r"\left|x\right|"),
+        _math_table([_Block("paragraph", [_Inline("link", text="", content=[_Inline("math", text="n^2")])])]), p("Cell after"),
+    ])
+    document = _math_document([
+        _math_list([p("Parent before"), _math_list([_Block("math", text="l^2")]), p("Parent after")]),
+        quote, table,
+    ], notes=[SimpleNamespace(kind="footnote", id="n1", blocks=[p("Note before"), _Block("math", text="f^2"), p("Note after")])])
+    result = _math_extract(tmp_path, fake_anydoc, document)
+    values = [node.get("text") for node in result["content"]]
+    assert values[:6] == ["Parent before", "$$\nl^2\n$$", "Parent after", "Quote before", "$$\nq^2\n$$", "Quote after"]
+    assert result["content"][1]["source_locator"]["nesting"] == 1
+    assert result["content"][0]["ordinal"] == result["content"][1]["ordinal"] == 3
+    cell = result["tables"][0]["rows"][0][0]
+    assert cell["raw_text"] == "Cell before\n$$\n\\left|x\\right|\n$$\n$n^2$\nCell after"
+    assert values[-1] == "Note before\n$$\nf^2\n$$\nNote after"
+    warnings = [item for item in result["warnings"] if item["code"] == "anydoc_math_layout_flattened"]
+    assert len(warnings) == 1 and warnings[0]["content_loss"] is True
+    assert "document.blocks[2].table.grid[0][0].cell.blocks[1]" in warnings[0]["message"]
+    md = render_markdown(result, include_frontmatter=False)
+    assert md.index("Parent before") < md.index("l^2") < md.index("Parent after")
+    assert r"\left\|x\right\|" in md
+
+
+@pytest.mark.parametrize("latex", [
+    r"\frac{體^{2}}{總額}", r"\int_0^1 x^{2}\,dx", "  \\text{體}\n + \\text{總額}  ",
+    r"\text{體}\$ + \left|x\right| + \\text{總額}",
+])
+def test_anydoc_math_payload_survives_chinese_normalization(tmp_path, fake_anydoc, latex):
+    from canonical import render_markdown
+
+    result = _math_extract(tmp_path, fake_anydoc, _math_document([
+        _Block("paragraph", [_Inline("text", text="體 "), _Inline("math", text=latex), _Inline("math", text=r"\text{總額}"), _Inline("text", text=" 總額")]),
+        _Block("math", text=latex),
+    ]), mode="simplified")
+    inline, block = result["content"]
+    assert inline["text"] == "體 $" + latex + r"$$\text{總額}$ 總額"
+    assert inline["normalized_text"] == "体 $" + latex + r"$$\text{總額}$ 总额"
+    assert block["raw_text"] == block["text"] == block["normalized_text"] == "$$\n" + latex + "\n$$"
+    assert block["text"] in render_markdown(result, include_frontmatter=False)
+
+
+def test_anydoc_empty_math_reports_each_occurrence_including_flattened_content(tmp_path, fake_anydoc):
+    from canonical import quality_from_warnings
+
+    empty = _Inline("math", text=" \n ")
+    result = _math_extract(tmp_path, fake_anydoc, _math_document([
+        _Block("paragraph", [_Inline("text", text="Kept"), empty, empty]),
+        _math_table([_Block("math", text="")]),
+    ], notes=[SimpleNamespace(kind="footnote", id="n1", blocks=[_Block("math", text=" ")])]))
+    warnings = [item for item in result["warnings"] if item["code"] == "anydoc_math_empty"]
+    assert len(warnings) == 4
+    assert all(item["content_loss"] is True for item in warnings)
+    assert len({item["message"] for item in warnings}) == 4
+    assert any("document.notes[0].blocks[0]" in item["message"] for item in warnings)
+    assert quality_from_warnings(result["warnings"]) == "partial"
+    assert all("$$" not in node.get("text", "") for node in result["content"])
+    assert all(item in result["source_units"][0]["warnings"] for item in warnings)
+
+
+@pytest.mark.parametrize("node", [
+    _Block("math"), _Inline("math", text=123), {"kind": "math"}, {"kind": "math", "text": None},
+    {"kind": "math", "text": []}, {"kind": "future_math", "text": "x"}, _Block("future_math", text="x"),
+])
+def test_anydoc_malformed_math_and_unknown_kinds_fail_before_assets(tmp_path, fake_anydoc, monkeypatch, node):
+    calls = []
+    monkeypatch.setattr(fake_anydoc, "_write_anydoc_assets", lambda *args: calls.append(args))
+    with pytest.raises(RuntimeError, match=r"(math.*text|unknown model kind).*document"):
+        _math_extract(tmp_path, fake_anydoc, _math_document([_Block("paragraph", [node])], assets=[_Asset()]))
+    assert calls == []
+    assert not (tmp_path / "assets").exists()
+
+
+def test_anydoc_math_only_empty_fails_and_dictionary_math_is_supported(tmp_path, fake_anydoc):
+    with pytest.raises(RuntimeError, match="no usable content"):
+        _math_extract(tmp_path, fake_anydoc, _math_document([_Block("math", text=" ")]))
+    result = _math_extract(tmp_path, fake_anydoc, {
+        "blocks": [{"kind": "paragraph", "content": [{"kind": "math", "text": "x+y"}]}], "notes": [], "assets": [],
+    })
+    assert result["content"][0]["text"] == "$x+y$"
+
+
+def test_anydoc_math_empty_table_without_other_content_fails(tmp_path, fake_anydoc):
+    with pytest.raises(RuntimeError, match="no usable content"):
+        _math_extract(tmp_path, fake_anydoc, _math_document([_math_table([_Block("math", text=" ")])]))
+
+
+def test_anydoc_math_keeps_size_depth_and_cycle_guards(monkeypatch):
+    import adapters
+
+    math = _Block("math", text="x" * 40)
+    document = _math_document([math])
+    with monkeypatch.context() as patch:
+        patch.setattr(adapters, "_ANYDOC_MAX_CHARS_PER_FIELD", 32)
+        with pytest.raises(RuntimeError, match="text field exceeds.*document.blocks"):
+            adapters._validate_anydoc_document(document)
+    with monkeypatch.context() as patch:
+        patch.setattr(adapters, "_ANYDOC_MAX_TOTAL_TEXT", 64)
+        with pytest.raises(RuntimeError, match="text exceeds"):
+            adapters._validate_anydoc_document(_math_document([math, math]))
+    math.content = [math]
+    with pytest.raises(RuntimeError, match="cycle"):
+        adapters._validate_anydoc_document(document)
+    math.content = []
+    with monkeypatch.context() as patch:
+        patch.setattr(adapters, "_ANYDOC_MAX_DEPTH", 1)
+        with pytest.raises(RuntimeError, match="max depth"):
+            adapters._validate_anydoc_document(document)
+
+
+def test_math_normalization_respects_escaped_prose_dollars_and_adjacent_formulas():
+    from canonical import convert_chinese
+
+    assert convert_chinese(r"體 \$總額\$ $\text{體}$$\text{總額}$ 體") == r"体 \$总额\$ $\text{體}$$\text{總額}$ 体"
+
+
+def test_anydoc_validation_memoizes_shared_subgraphs_without_math(monkeypatch):
+    import adapters
+
+    child = SimpleNamespace(blocks=[])
+    for _ in range(16):
+        child = SimpleNamespace(blocks=[child, child])
+    original = adapters._ad_kind
+    calls = 0
+
+    def count_kind(value):
+        nonlocal calls
+        calls += 1
+        return original(value)
+
+    monkeypatch.setattr(adapters, "_ad_kind", count_kind)
+    assert adapters._validate_anydoc_document(_math_document([child])) == []
+    assert calls < 100
