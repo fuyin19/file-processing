@@ -229,8 +229,13 @@ def _body_projection(value: dict) -> tuple[list, list]:
     return nodes, ordered_tables
 
 
-def _validate_image_candidate(body: dict, candidate: dict, image_dir: Path, document_id: str) -> None:
+def _validate_image_candidate(body: dict, candidate: dict, image_dir: Path, document_id: str,
+                              max_asset_bytes: int | None = None) -> None:
     """Validate all enhancement-specific content and files before acceptance."""
+    if max_asset_bytes is None:
+        max_asset_bytes = IMAGE_BYTES_LIMIT
+    if type(max_asset_bytes) is not int or max_asset_bytes <= 0:
+        raise ValueError("PDF image max_asset_bytes must be a positive integer")
     if _body_projection(body) != _body_projection(candidate):
         raise ValueError("PDF image enhancement changed the authoritative body or tables")
     if candidate.get("adapter") != body.get("adapter") or candidate.get("title") != body.get("title"):
@@ -267,7 +272,7 @@ def _validate_image_candidate(body: dict, candidate: dict, image_dir: Path, docu
         if np.is_reparse(info) or not stat.S_ISREG(info.st_mode):
             raise ValueError("PDF image asset is not a regular owned file")
         total_bytes += info.st_size
-        if total_bytes > IMAGE_BYTES_LIMIT:
+        if total_bytes > max_asset_bytes:
             raise ValueError("PDF image byte limit exceeded")
         if sha256_file(path) != asset["sha256"]:
             raise ValueError("PDF image asset hash differs from its record")
@@ -296,6 +301,7 @@ def _write_image_result(path: Path, value: dict) -> None:
 def _run_image_enhancement(args) -> int:
     from pdf_images import enhance_pdf_images
 
+    started = time.monotonic()
     deadline = args.image_deadline
     if not math.isfinite(deadline) or time.monotonic() >= deadline:
         raise TimeoutError("PDF image deadline expired before reading the body")
@@ -307,14 +313,17 @@ def _run_image_enhancement(args) -> int:
     frozen_body = copy.deepcopy(body)
     candidate = enhance_pdf_images(
         source, body, Path(args.image_dir),
-        {"mode": args.image_mode, "document_id": args.image_document_id}, deadline,
+        {"mode": args.image_mode, "document_id": args.image_document_id,
+         "max_asset_bytes": args.image_max_asset_bytes, "timeout_seconds": args.image_timeout_seconds}, deadline,
     )
-    _validate_image_candidate(frozen_body, candidate, Path(args.image_dir), args.image_document_id)
+    _validate_image_candidate(frozen_body, candidate, Path(args.image_dir), args.image_document_id, args.image_max_asset_bytes)
     if sha256_file(source) != args.image_document_id.removeprefix("sha256:"):
         raise ValueError("PDF image source changed during enhancement")
     if time.monotonic() >= deadline:
         raise TimeoutError("PDF image deadline expired before candidate acceptance")
     metrics = candidate.get("image_metrics", {})
+    metrics.update(progress_known=True, timeout_seconds=args.image_timeout_seconds,
+                   elapsed_seconds=round(time.monotonic() - started, 6))
     summary = {key: item for key, item in metrics.items()
                if isinstance(item, (int, float, str)) or key == "stages_seconds"}
     for key in ("candidate_pages", "processed_pages", "unprocessed_pages", "capped_pages"):
@@ -334,6 +343,8 @@ def main() -> int:
     parser.add_argument("--image-mode", choices=["auto", "objects"])
     parser.add_argument("--image-document-id")
     parser.add_argument("--image-deadline", type=float)
+    parser.add_argument("--image-max-asset-bytes", type=int, default=IMAGE_BYTES_LIMIT)
+    parser.add_argument("--image-timeout-seconds", type=float)
     parser.add_argument("--result", required=True)
     args = parser.parse_args()
     result_path = Path(args.result)

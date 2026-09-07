@@ -764,6 +764,7 @@ def _extract_pdf_image_support(
     max_assets: int | None = None,
     max_bytes: int | None = None,
     deadline: float | None = None,
+    timeout_seconds: float | None = None,
 ) -> dict[str, Any]:
     """Extract bundle images without running PDFium's document parser.
 
@@ -772,30 +773,41 @@ def _extract_pdf_image_support(
     become canonical document text or influence Inspector's structure.
     """
     import pypdfium2 as pdfium
+    from pdf_images import ImageBudgetExceeded, _check_deadline, _unfinished_warning
 
     assets: list[dict[str, Any]] = []
     content: list[dict[str, Any]] = []
     warnings: list[dict[str, Any]] = []
     document = pdfium.PdfDocument(source)
     exported_bytes = 0
+    started = time.monotonic()
+    metrics = {"pages_scanned": 0, "processed_pages": [], "unprocessed_pages": [],
+               "asset_bytes": 0, "asset_count": 0, "max_assets": max_assets,
+               "max_asset_bytes": max_bytes, "stop_reason": "complete"}
+    total = len(document)
     try:
         for page_index in range(len(document)):
-            if deadline is not None and time.monotonic() >= deadline:
-                raise TimeoutError("PDF object image budget expired")
+            if deadline is not None:
+                _check_deadline(deadline)
             page_number = page_index + 1
             unit = units_by_page.get(page_number)
             if unit is None:
+                metrics["unprocessed_pages"].append(page_number)
                 continue
             page = document.get_page(page_index)
             textpage = None
+            initial_count, initial_bytes = len(assets), exported_bytes
+            page_failed = False
             try:
                 objects = list(page.get_objects(max_depth=15))
+                metrics["pages_scanned"] += 1
                 image_objects = [
                     obj
                     for obj in objects
                     if obj.type == pdfium.raw.FPDF_PAGEOBJ_IMAGE
                 ]
                 if not image_objects:
+                    metrics["processed_pages"].append(page_number)
                     continue
 
                 textpage = page.get_textpage()
@@ -828,9 +840,9 @@ def _extract_pdf_image_support(
                         continue
 
                     if max_assets is not None and len(assets) >= max_assets:
-                        raise ValueError("PDF object image asset count limit exceeded")
-                    if deadline is not None and time.monotonic() >= deadline:
-                        raise TimeoutError("PDF object image budget expired")
+                        raise ImageBudgetExceeded("asset_count_limit")
+                    if deadline is not None:
+                        _check_deadline(deadline)
                     image_ordinal += 1
                     try:
                         bbox = [round(float(value), 3) for value in obj.get_bounds()]
@@ -850,10 +862,10 @@ def _extract_pdf_image_support(
                         target = asset_dir / filename
                         try:
                             _extract_image(obj, target)
-                            exported_bytes += target.stat().st_size
-                            if max_bytes is not None and exported_bytes > max_bytes:
-                                target.unlink(missing_ok=True)
-                                raise MemoryError("PDF object image byte limit exceeded")
+                            size = target.stat().st_size
+                            if max_bytes is not None and exported_bytes + size > max_bytes:
+                                metrics["rejected_asset_bytes"] = size
+                                raise ImageBudgetExceeded("asset_byte_limit")
                             record = {
                                 "asset_id": asset_id,
                                 "type": "image",
@@ -867,6 +879,7 @@ def _extract_pdf_image_support(
                                 "caption": "",
                             }
                             assets.append(record)
+                            exported_bytes += size
                             page_content.append(
                                 {
                                     "id": "pending",
@@ -878,9 +891,10 @@ def _extract_pdf_image_support(
                         except Exception:
                             target.unlink(missing_ok=True)
                             raise
-                    except MemoryError:
+                    except ImageBudgetExceeded:
                         raise
                     except Exception as exc:
+                        page_failed = True
                         warnings.append(
                             _warning(
                                 "pdf_image_extraction_failed",
@@ -893,13 +907,30 @@ def _extract_pdf_image_support(
                                 unit["id"],
                             )
                         )
-                content.extend(page_content)
+                if not page_failed:
+                    content.extend(page_content)
+                    metrics["processed_pages"].append(page_number)
+                else:
+                    metrics["unprocessed_pages"].append(page_number)
             finally:
+                if page_number not in metrics["processed_pages"]:
+                    for asset in assets[initial_count:]:
+                        (asset_dir / Path(asset["path"]).name).unlink(missing_ok=True)
+                    del assets[initial_count:]
+                    exported_bytes = initial_bytes
                 if textpage is not None:
                     textpage.close()
                 page.close()
+    except ImageBudgetExceeded as exc:
+        metrics["stop_reason"] = str(exc)
+        metrics["unprocessed_pages"] = sorted(set(range(1, total + 1)) - set(metrics["processed_pages"]))
     finally:
         document.close()
+    metrics.update(asset_count=len(assets), asset_bytes=exported_bytes)
+    if metrics["unprocessed_pages"] and metrics["stop_reason"] == "complete":
+        metrics["stop_reason"] = "page_failures"
+    if metrics["stop_reason"] != "complete":
+        _unfinished_warning({"warnings": warnings}, metrics, time.monotonic() - started, timeout_seconds)
     return {
         "source_units": [],
         "content": content,
@@ -907,6 +938,7 @@ def _extract_pdf_image_support(
         "assets": assets,
         "relationships": [],
         "warnings": warnings,
+        "image_metrics": metrics,
     }
 
 

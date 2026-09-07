@@ -60,7 +60,7 @@ This release does not change the persistent configuration behavior of
 
 ## Skills
 
-### markdown-conversion (v7.1.1)
+### markdown-conversion (v7.2.0)
 
 Convert local PDFs, Office documents, supported files, URLs, or directories
 through one canonical pipeline. Local PDFs use PDF Inspector as the
@@ -217,7 +217,7 @@ not an operating-system sandbox or no-external-access guarantee.
 
 See [the PDF skill contract](skills/pdf-conversion/SKILL.md).
 
-### file-conversion (v2.1.0)
+### file-conversion (v2.2.0)
 
 Create one local bundle containing canonical Markdown/JSON, a sibling native
 PDF, the exact source snapshot, and conditional image assets:

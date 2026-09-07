@@ -303,10 +303,10 @@ def test_rotated_cropbox_preserves_visible_composited_graphics(monkeypatch, tmp_
 def test_image_settings_default_and_cli_override_are_independent_of_ocr(mode):
     import pipeline
     args = SimpleNamespace(pdf_images=None, pdf_image_timeout=None, ocr="force")
-    assert pipeline.resolve_pdf_image_settings(args, {}) == {"mode": "auto", "timeout_seconds": 1000.0}
+    assert pipeline.resolve_pdf_image_settings(args, {}) == {"mode": "auto", "timeout_seconds": 1000.0, "max_asset_bytes": 268435456}
     args.pdf_images, args.pdf_image_timeout = mode, 9
     assert pipeline.resolve_pdf_image_settings(args, {"pdf_images": {"mode": "off", "timeout_seconds": 3}}) == {
-        "mode": mode, "timeout_seconds": 9.0}
+        "mode": mode, "timeout_seconds": 9.0, "max_asset_bytes": 268435456}
     assert pipeline.PROVIDER_TIMEOUT_SECONDS == 1000
 
 
@@ -431,6 +431,12 @@ def test_timed_out_enhancement_selects_body_and_never_promotes_partial_images(mo
     assert result["assets"] == baseline["assets"] == []
     assert any(warning["code"] == "pdf_image_enhancement_incomplete" and warning["content_loss"]
                for warning in result["warnings"])
+    diagnostic = next(w["message"] for w in result["warnings"] if w["code"] == "pdf_image_enhancement_incomplete")
+    assert "stopped: timeout" in diagnostic and "accepted images 0, accepted bytes 0/" in diagnostic
+    assert "internal processing progress unknown" in diagnostic
+    assert result["image_metrics"]["stop_reason"] == "timeout"
+    assert result["image_metrics"]["progress_known"] is False
+    assert result["image_metrics"]["asset_count"] == result["image_metrics"]["asset_bytes"] == 0
     assert not (tmp_path / "assets" / "images").exists()
     assert list((tmp_path / "assets").iterdir()) == []
 
@@ -921,3 +927,158 @@ def test_repeated_adjacent_tail_closes_only_the_exact_body_occurrence(tail):
         assert any(member["text"] == expected_tail for member in block["members"])
     else:
         assert block["bbox"][1] > 280
+
+
+@pytest.mark.parametrize("value", [0, -1, True, False, 1.5, "1024", None, [], {}])
+def test_image_byte_config_requires_a_positive_integer(value):
+    import pipeline
+    with pytest.raises(SystemExit):
+        pipeline.resolve_pdf_image_settings(SimpleNamespace(), {"pdf_images": {"max_asset_bytes": value}})
+
+
+@pytest.mark.parametrize("mode", ["auto", "objects"])
+@pytest.mark.parametrize("reason", ["asset_byte_limit", "asset_count_limit", "timeout"])
+def test_cooperative_stops_keep_complete_pages_and_report_exact_limits(monkeypatch, tmp_path, mode, reason):
+    import pdf_images
+    source, body, items, _ = figure_pdf(tmp_path / "source.pdf", pages=3)
+    monkeypatch.setattr(pdf_images, "_position_items", lambda source, pages: [item for item in items if item["page"] in pages])
+    image_dir = tmp_path / "images"
+    settings = {"mode": mode, "document_id": DOCUMENT_ID, "max_asset_bytes": 1 if reason == "asset_byte_limit" else 1024 * 1024}
+    if reason == "asset_count_limit":
+        monkeypatch.setattr(pdf_images, "MAX_ASSETS", 1)
+    if reason == "timeout":
+        def expired(_deadline):
+            raise pdf_images.ImageBudgetExceeded("timeout")
+        monkeypatch.setattr(pdf_images, "_check_deadline", expired)
+    result = pdf_images.enhance_pdf_images(source, body, image_dir, settings, time.monotonic() + 20)
+    metrics = result["image_metrics"]
+    assert metrics["stop_reason"] == reason
+    warning = next(w for w in result["warnings"] if w["code"] == "pdf_images_unfinished")
+    assert reason in warning["message"] and warning["content_loss"]
+    assert f"accepted bytes {metrics['asset_bytes']}/{settings['max_asset_bytes']}" in warning["message"]
+    assert metrics["asset_count"] == len(result["assets"])
+    files = list(image_dir.glob("*.png"))
+    assert metrics["asset_bytes"] == sum(p.stat().st_size for p in files)
+    assert {p.name for p in files} == {Path(asset["path"]).name for asset in result["assets"]}
+    if mode == "auto":
+        assert {asset["asset_id"] for asset in result["assets"]} == {node["asset_id"] for node in _images(result)}
+    elif result["assets"] and not _images(result):
+        assert any(w["code"] == "pdf_image_position_ambiguous" for w in result["warnings"])
+    assert body_projection(result) == body_projection(body)
+    if reason == "asset_count_limit":
+        assert metrics["processed_pages"] == [1]
+        assert metrics["unprocessed_pages"] == [2, 3]
+    else:
+        assert metrics["asset_bytes"] == 0
+        assert metrics["unprocessed_pages"] == [1, 2, 3]
+
+
+@pytest.mark.parametrize("mode", ["auto", "objects"])
+def test_mid_page_byte_stop_discards_whole_page_and_counts_only_accepted_files(monkeypatch, tmp_path, mode):
+    import pdf_images
+    import pypdfium2 as pdfium
+    from pdf_inspector_adapter import _extract_pdf_image_support
+    source, body, _, _ = figure_pdf(tmp_path / "source.pdf")
+    if mode == "auto":
+        image_dir = tmp_path / "images"
+        image_dir.mkdir()
+        document = pdfium.PdfDocument(str(source))
+        page = document.get_page(0)
+        # Two crops on the same page: the first fits; the second crosses the cap.
+        plans = [{"bbox": [50, 200, 305, 355], "slot": 0}] * 2
+        metrics = {"asset_bytes": 0, "render_calls": 0, "rendered_pages": [], "max_asset_bytes": 1024 * 1024}
+        initial = {"assets": []}
+        outputs = pdf_images._save_page(page, plans[:1], 1, body["source_units"][1], image_dir, DOCUMENT_ID, initial, metrics, time.monotonic() + 20)
+        size = metrics["asset_bytes"]
+        for path in image_dir.iterdir():
+            path.unlink()
+        metrics["asset_bytes"], metrics["max_asset_bytes"] = 0, size
+        initial["assets"] = []
+        with pytest.raises(pdf_images.ImageBudgetExceeded, match="asset_byte_limit"):
+            pdf_images._save_page(page, plans, 1, body["source_units"][1], image_dir, DOCUMENT_ID, initial, metrics, time.monotonic() + 20)
+        assert initial["assets"] == [] and list(image_dir.iterdir()) == [] and metrics["asset_bytes"] == 0
+        page.close()
+        document.close()
+    else:
+        # The same image object twice is a valid independent placement.
+        from PIL import Image
+        from reportlab.lib.utils import ImageReader
+        from reportlab.pdfgen import canvas
+        pdf = canvas.Canvas(str(source))
+        tile = Image.new("RGB", (16, 16), "blue")
+        pdf.drawImage(ImageReader(tile), 20, 20, width=20, height=20)
+        pdf.drawImage(ImageReader(tile), 80, 80, width=20, height=20)
+        pdf.save()
+        units = {1: body["source_units"][1]}
+        accepted = _extract_pdf_image_support(str(source), DOCUMENT_ID, tmp_path / "baseline", units)
+        size = (tmp_path / "baseline" / Path(accepted["assets"][0]["path"]).name).stat().st_size
+        result = _extract_pdf_image_support(str(source), DOCUMENT_ID, tmp_path / "limited", units, max_bytes=size, max_assets=4096)
+        assert result["assets"] == [] and list((tmp_path / "limited").iterdir()) == []
+        assert result["image_metrics"]["asset_bytes"] == 0
+        assert result["image_metrics"]["unprocessed_pages"] == [1]
+        assert result["image_metrics"]["stop_reason"] == "asset_byte_limit"
+
+
+def test_worker_acceptance_uses_selected_byte_limit_not_hidden_default(monkeypatch, tmp_path):
+    import provider_worker
+    result, _, image_dir = _enhance(monkeypatch, tmp_path)
+    body = copy.deepcopy(result)
+    body["content"] = [node for node in result["content"] if node["type"] != "image"]
+    body["assets"] = []
+    monkeypatch.setattr(provider_worker, "IMAGE_BYTES_LIMIT", 1)
+    provider_worker._validate_image_candidate(body, result, image_dir, DOCUMENT_ID,
+                                              max_asset_bytes=result["image_metrics"]["asset_bytes"])
+    with pytest.raises(ValueError, match="byte limit"):
+        provider_worker._validate_image_candidate(body, result, image_dir, DOCUMENT_ID)
+
+
+@pytest.mark.parametrize("entry", [SCRIPTS / "pipeline.py", ROOT / "skills" / "file-conversion" / "scripts" / "pipeline.py"])
+@pytest.mark.parametrize("mode", ["auto", "objects"])
+def test_explicit_image_byte_config_reaches_both_public_pipelines_and_worker(tmp_path, entry, mode):
+    from PIL import Image
+    from reportlab.lib.utils import ImageReader
+    from reportlab.pdfgen import canvas
+    source = tmp_path / "source.pdf"
+    pdf = canvas.Canvas(str(source), pagesize=(612, 792))
+    for page in range(2):
+        for index in range(8):
+            pdf.drawString(72, 760 - index * 12, f"Before image page {page} line {index}")
+        pdf.drawImage(ImageReader(Image.new("RGB", (20, 20), "red")), 72, 640, width=40, height=40)
+        for index in range(8):
+            pdf.drawString(72, 620 - index * 12, f"After image page {page} line {index}")
+        pdf.showPage()
+    pdf.save()
+    documents = []
+    for limit in (1, 1073741824):
+        config = tmp_path / f"config-{limit}.json"
+        config.write_text(json.dumps({"pdf_images": {"mode": mode, "max_asset_bytes": limit}}), encoding="utf-8")
+        out = tmp_path / f"out-{limit}"
+        completed = subprocess.run([sys.executable, str(entry), "--input", str(source), "--output-dir", str(out),
+                                    "--config", str(config), "--ocr", "off"], capture_output=True,
+                                   text=True, encoding="utf-8", timeout=90)
+        assert completed.returncode == 0, completed.stderr
+        document = json.loads((out / "source" / "source.json").read_text(encoding="utf-8"))
+        documents.append(document)
+        metrics = json.loads(next(line.split("] ", 1)[1] for line in completed.stderr.splitlines() if line.startswith("[PDF image stages]")))
+        assert metrics["max_asset_bytes"] == limit
+        if limit == 1:
+            assert document["quality"]["status"] == "partial"
+            assert any(w["code"] == "pdf_images_unfinished" and "asset_byte_limit" in w["message"] for w in document["quality"]["warnings"])
+            assert metrics["unprocessed_pages_count"] == 2 and not document["assets"]
+        else:
+            assert document["assets"] and not any(w["content_loss"] for w in document["quality"]["warnings"])
+            assert metrics["pages_scanned"] == 2 and metrics["unprocessed_pages_count"] == 0
+    assert body_projection(documents[0]) == body_projection(documents[1])
+
+
+
+def test_rejected_worker_result_is_not_reported_as_timeout(monkeypatch, tmp_path):
+    import pipeline
+    import libreoffice_pdf
+    body = tmp_path / "body.json"
+    body.write_text("{}", encoding="utf-8")
+    monkeypatch.setattr(libreoffice_pdf, "_run_job_process", lambda *args, **kwargs: SimpleNamespace(returncode=1))
+    outcome = {}
+    accepted = pipeline._run_pdf_image_worker(body, tmp_path / "candidate.json", tmp_path / "images", "unused.pdf",
+        {"mode": "auto", "timeout_seconds": 20, "max_asset_bytes": 99, "document_id": DOCUMENT_ID}, outcome=outcome)
+    assert accepted is False and outcome["stop_reason"] == "worker_failed_or_invalid"

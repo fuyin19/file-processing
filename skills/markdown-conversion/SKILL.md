@@ -3,7 +3,7 @@ name: markdown-conversion
 description: |
   Convert local PDF and AnyDoc/MarkItDown-supported documents, supported files, URLs, or directories into a canonical JSON plus Markdown bundle, or one clean Markdown file. Use for PDF Inspector-backed PDF extraction, AnyDoc-backed local non-PDF extraction, explicit MarkItDown rollback, deterministic five-field frontmatter, Chinese language normalization, batch conversion, and staged output handling.
 metadata:
-  version: 7.1.1
+  version: 7.2.0
 ---
 
 # Convert files to canonical JSON and Markdown
@@ -152,8 +152,17 @@ disables PDF image enhancement. Neither changes `--ocr off|auto|force` or Office
 has its own `--pdf-image-timeout` budget, defaulting to 1000 seconds independently
 of the body worker's 1000 seconds. A failed or expired enhancement preserves the
 body and reports unprocessed pages; it cannot make an empty body publishable.
-The config block is `pdf_images: {"mode": "auto", "timeout_seconds": 1000}`.
-CLI values override config; timeout values must be positive and finite.
+The config block is `pdf_images: {"mode": "auto", "timeout_seconds": 1000, "max_asset_bytes": 268435456}`.
+`max_asset_bytes` is a positive integer total image-file byte limit (default
+256 MiB), shared by `auto` and `objects`. Set it to `1073741824` for 1 GiB when
+needed; it has no public CLI override. CLI mode/timeout values override config;
+timeout values must be positive and finite. Cooperative stops retain completed
+pages and distinguish `timeout`, `asset_count_limit` (4096 images), and
+`asset_byte_limit`, reporting accepted counts/bytes, limits, and unfinished
+physical pages. A hard timeout or invalid worker result accepts no image
+candidate and reports internal progress as unknown. `[PDF image stages]` logs
+include `pages_scanned`, accepted usage and unprocessed-page counts on success
+as well as partial output. Supplemental preview warnings remain non-lossy.
 
 ## Workflow
 
@@ -324,7 +333,7 @@ stem/slug fallback.
   but reports `anydoc_math_layout_flattened` for Markdown layout loss. These
   losses produce partial output when other usable content exists; otherwise
   conversion fails. Source retention does not guarantee formula typesetting.
-- v7.1.1 does not emit RAG chunks, change Canonical schema 1.0, or claim page,
+- v7.2.0 does not emit RAG chunks, change Canonical schema 1.0, or claim page,
   slide, sheet, rich-style, formula, or external-image fidelity beyond the
   AnyDoc model and documented warnings.
 - URL input, including a PDF URL, is downloaded through a public-network-only,

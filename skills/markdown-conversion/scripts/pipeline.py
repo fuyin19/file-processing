@@ -202,7 +202,7 @@ from pdf_inspector_adapter import PdfInspectorAdapter
 from safe_url import redact_url
 
 
-VERSION = "7.1.1"
+VERSION = "7.2.0"
 DEFAULT_CONFIG: dict[str, Any] = {
     "pdf_ocr": {
         "mode": "auto",
@@ -212,7 +212,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "max_long_edge": 4096,
         "min_confidence": 0.5,
     },
-    "pdf_images": {"mode": "auto", "timeout_seconds": 1000.0},
+    "pdf_images": {"mode": "auto", "timeout_seconds": 1000.0, "max_asset_bytes": 256 * 1024 * 1024},
 }
 SUPPORTED_EXTENSIONS = set(ANYDOC_FORMAT_BY_EXTENSION) | {
     ".pdf",
@@ -287,6 +287,7 @@ def _run_provider_worker(request: dict[str, Any], timeout: float = PROVIDER_TIME
         body_seconds = time.monotonic() - body_started
         image_seconds = 0.0
         accepted_image_dir = None
+        image_outcome = {}
         if not np.is_file(result_path):
             raise PipelineError(f"Native conversion worker exited {completed.returncode} without a result")
         if enhance and completed.returncode == 0:
@@ -294,7 +295,7 @@ def _run_provider_worker(request: dict[str, Any], timeout: float = PROVIDER_TIME
             image_dir = root / "images"
             settings = {**image_settings, "document_id": request["document_id"]}
             image_started = time.monotonic()
-            accepted = _run_pdf_image_worker(result_path, candidate_path, image_dir, request["source"], settings)
+            accepted = _run_pdf_image_worker(result_path, candidate_path, image_dir, request["source"], settings, outcome=image_outcome)
             image_seconds = time.monotonic() - image_started
             if accepted:
                 accepted_image_dir = image_dir
@@ -313,6 +314,28 @@ def _run_provider_worker(request: dict[str, Any], timeout: float = PROVIDER_TIME
         result = envelope.get("result")
         if not isinstance(result, dict):
             raise PipelineError("Native conversion worker result is not an object")
+        if enhance and accepted_image_dir is None:
+            pages = sorted(u["locator"]["page"] for u in result.get("source_units", [])
+                           if isinstance(u.get("locator", {}).get("page"), int))
+            from pdf_images import _page_ranges
+            reason = image_outcome.get("stop_reason", "worker_failed_or_invalid")
+            result["image_metrics"] = {"mode": image_settings["mode"], "stop_reason": reason,
+                "progress_known": False, "asset_count": 0, "asset_bytes": 0,
+                "max_asset_bytes": image_settings.get("max_asset_bytes", DEFAULT_CONFIG["pdf_images"]["max_asset_bytes"]),
+                "timeout_seconds": image_settings["timeout_seconds"], "elapsed_seconds": round(image_seconds, 6),
+                "unprocessed_pages": pages}
+            result["_image_metrics_log"] = json.dumps({
+                **{key: value for key, value in result["image_metrics"].items() if key != "unprocessed_pages"},
+                "unprocessed_pages_count": len(pages)}, ensure_ascii=True)
+            for warning in result.get("warnings", []):
+                if warning.get("code") == "pdf_image_enhancement_incomplete":
+                    warning["message"] = (
+                        f"PDF image enhancement stopped: {reason}; limit {image_settings['timeout_seconds']:g} seconds; "
+                        f"elapsed {image_seconds:.3f} seconds; accepted images 0, accepted bytes 0/"
+                        f"{image_settings.get('max_asset_bytes', DEFAULT_CONFIG['pdf_images']['max_asset_bytes'])}; "
+                        f"internal processing progress unknown; no image result accepted for pages "
+                        f"{_page_ranges(pages) or 'unknown'}; body retained"
+                    )
         if accepted_image_dir is not None and result.get("assets"):
             # Common selected-result loading is complete. Promote the worker's
             # prevalidated files without a second asset walk or hashing pass.
@@ -333,6 +356,7 @@ def _run_pdf_image_worker(
     image_dir: Path,
     source: str,
     settings: dict[str, Any],
+    *, outcome: dict[str, Any] | None = None,
 ) -> bool:
     """Select an image result using only bounded process and identity checks.
 
@@ -341,6 +365,8 @@ def _run_pdf_image_worker(
     """
     from libreoffice_pdf import _run_job_process
 
+    if outcome is not None:
+        outcome["stop_reason"] = "worker_failed_or_invalid"
     deadline = time.monotonic() + float(settings["timeout_seconds"])
     with np.open_file(result_path, "xb"):
         pass
@@ -354,16 +380,22 @@ def _run_pdf_image_worker(
         "--image-body", str(body_path), "--image-source", source,
         "--image-dir", str(image_dir), "--image-mode", settings["mode"],
         "--image-document-id", settings["document_id"],
+        "--image-max-asset-bytes", str(settings.get("max_asset_bytes", DEFAULT_CONFIG["pdf_images"]["max_asset_bytes"])),
+        "--image-timeout-seconds", str(settings["timeout_seconds"]),
         "--image-deadline", str(deadline), "--result", str(result_path),
     ]
     try:
         remaining = deadline - time.monotonic()
         if remaining <= 0:
+            if outcome is not None:
+                outcome["stop_reason"] = "timeout"
             return False
         completed = _run_job_process(
             command, cwd=body_path.parent, environment=environment,
             timeout=remaining, diagnostic_limit=4096,
         )
+        if outcome is not None and time.monotonic() > deadline:
+            outcome["stop_reason"] = "timeout"
         return (
             completed.returncode == 0
             and time.monotonic() <= deadline
@@ -371,7 +403,10 @@ def _run_pdf_image_worker(
             and image_identity.matches(image_dir)
             and 0 < np.lstat(result_path).st_size <= PDF_IMAGE_RESULT_LIMIT
         )
-    except (OSError, RuntimeError, subprocess.SubprocessError):
+    except (OSError, RuntimeError, subprocess.SubprocessError) as exc:
+        if outcome is not None and (time.monotonic() >= deadline or isinstance(exc, subprocess.TimeoutExpired)
+                                    or isinstance(exc.__cause__, subprocess.TimeoutExpired)):
+            outcome["stop_reason"] = "timeout"
         return False
 
 
@@ -512,7 +547,10 @@ def resolve_pdf_image_settings(args, config: dict[str, Any]) -> dict[str, Any]:
         die("PDF image timeout must be a positive finite number")
     if not math.isfinite(timeout) or timeout <= 0:
         die("PDF image timeout must be a positive finite number")
-    return {"mode": values["mode"], "timeout_seconds": timeout}
+    max_bytes = values["max_asset_bytes"]
+    if type(max_bytes) is not int or max_bytes <= 0:
+        die("PDF image max_asset_bytes must be a positive integer")
+    return {"mode": values["mode"], "timeout_seconds": timeout, "max_asset_bytes": max_bytes}
 
 
 def create_ocr_provider(settings: OcrSettings):

@@ -3,7 +3,7 @@ name: file-conversion
 description: |
   Route supported local PDF and Office files or directories into one canonical Markdown bundle plus a sibling native PDF, using one source snapshot and one staged publication boundary. Use when both machine-readable Markdown/JSON and a high-fidelity PDF are required.
 metadata:
-  version: 2.1.0
+  version: 2.2.0
 ---
 
 # Create Markdown + PDF bundles
@@ -81,7 +81,13 @@ complete rendered figures and uses labelled page supplements when placement is
 uncertain, `objects` retains the previous image-object path, and `off` disables
 image enhancement. The independent image budget defaults to 1000 seconds;
 `--pdf-image-timeout` overrides `pdf_images.timeout_seconds` in config. Image
-failure or timeout preserves an already usable body with loss warnings. These
+failure or timeout preserves an already usable body with loss warnings.
+`pdf_images.max_asset_bytes` sets the positive-integer total image-file byte
+limit in both image modes (default `268435456`, 256 MiB; `1073741824` for 1 GiB).
+It uses the same config and worker validation as standalone Markdown conversion.
+Diagnostics distinguish timeout, image count and byte limits, with accepted
+usage and unfinished pages; a rejected worker result reports unknown internal
+progress and no accepted images. These
 settings do not change PDF OCR routing, Office image OCR, or the sibling PDF.
 
 Bundle naming defaults to the compatibility `stem` behavior. The explicit

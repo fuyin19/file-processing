@@ -214,7 +214,7 @@ _RUNTIME_LAYOUT.verify_module(
     expected=_MARKDOWN / "pipeline.py",
 )
 
-VERSION = "2.1.0"
+VERSION = "2.2.0"
 DEFAULT_CONFIG: dict[str, object] = {
     "pdf_ocr": dict(markdown_pipeline.DEFAULT_CONFIG["pdf_ocr"]),
     "pdf_images": dict(markdown_pipeline.DEFAULT_CONFIG["pdf_images"]),

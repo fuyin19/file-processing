@@ -159,6 +159,19 @@ or clear the body. Completion and publication still run their normal validation
 after selecting the body or enhanced result, so an image budget is not a total
 conversion-time limit. Report image steps and full conversion time separately.
 
+The separate `pdf_images.max_asset_bytes` cap defaults to `268435456` (256 MiB
+of accepted image files, not model context). Set it to `1073741824` for 1 GiB
+through `--config`; this reaches both conversion entrypoints and both image
+modes. It must be a positive integer. Increasing timeout cannot resolve a byte
+cap. `pdf_images_unfinished` distinguishes `timeout`, `asset_count_limit` and
+`asset_byte_limit` and reports accepted usage, limits and unfinished physical
+pages. Completed pages survive cooperative stops; an incomplete page is rolled
+back. A hard timeout or invalid worker result instead accepts no image candidate
+and explicitly reports unknown internal processing progress. Check `[PDF image
+stages]` for scanned-page and unfinished-page counts even on successful runs.
+Do not clear `partial` by editing JSON; rerun with suitable limits and inspect
+remaining content-loss warnings. Page-supplement warnings alone are non-lossy.
+
 ## PDF Inspector encoding and fallback
 
 The PDF path accepts a behaviorally compatible PDF Inspector rather than a

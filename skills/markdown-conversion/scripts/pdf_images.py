@@ -148,7 +148,7 @@ def _check_deadline(deadline: float) -> None:
     # Leave a small cooperative margin for validation and result serialization;
     # the parent still enforces the original deadline over the complete worker.
     if time.monotonic() >= deadline - 0.25:
-        raise ImageBudgetExceeded("image deadline")
+        raise ImageBudgetExceeded("timeout")
 
 
 def _box(value) -> tuple[float, float, float, float] | None:
@@ -960,6 +960,15 @@ def _page_ranges(pages):
     return ",".join(str(r[0]) if len(r) == 1 else f"{r[0]}-{r[-1]}" for r in ranges)
 
 
+def _unfinished_warning(result, metrics, elapsed, timeout=None):
+    timing = f"elapsed {elapsed:.3f} seconds" + (f"/{timeout:g} seconds" if timeout is not None else "")
+    _warning(result, "pdf_images_unfinished",
+             f"PDF image processing stopped: {metrics['stop_reason']}; {timing}; "
+             f"accepted images {metrics['asset_count']}/{metrics['max_assets']}, "
+             f"accepted bytes {metrics['asset_bytes']}/{metrics['max_asset_bytes']}; "
+             f"unprocessed pages {_page_ranges(metrics['unprocessed_pages']) or 'none'}; body retained", True)
+
+
 def _save_page(page, plans, page_number, unit, image_dir, document_id, result, metrics, deadline):
     """Render once, then crop in bitmap coordinates supplied by PDFium."""
     _check_deadline(deadline)
@@ -969,13 +978,15 @@ def _save_page(page, plans, page_number, unit, image_dir, document_id, result, m
     metrics["rendered_pages"].append(page_number)
     bitmap = page.render(scale=scale, fill_color=(255, 255, 255, 255))
     outputs = []
+    paths = []
+    initial_count, initial_bytes = len(result["assets"]), metrics["asset_bytes"]
     try:
         image = bitmap.to_pil()
         posconv = bitmap.get_posconv(page)
         for ordinal, plan in enumerate(plans, 1):
             _check_deadline(deadline)
             if len(result["assets"]) >= MAX_ASSETS:
-                raise ImageBudgetExceeded("image asset count cap")
+                raise ImageBudgetExceeded("asset_count_limit")
             box = plan["bbox"]
             corners = [posconv.to_bitmap(x, y) for x, y in ((box[0], box[1]), (box[0], box[3]), (box[2], box[1]), (box[2], box[3]))]
             crop = (max(0, min(p[0] for p in corners)), max(0, min(p[1] for p in corners)),
@@ -987,18 +998,26 @@ def _save_page(page, plans, page_number, unit, image_dir, document_id, result, m
                        "placement": "pdf_page_supplement" if plan.get("supplement") else "body_region"}
             asset_id = stable_id("asset", document_id, locator, "image", ordinal)
             target = image_dir / f"{asset_id}.png"
+            paths.append(target)
             with image.crop(crop).convert("RGB") as cropped:
                 cropped.save(target, format="PNG")
             size = target.stat().st_size
-            if metrics["asset_bytes"] + size > MAX_ASSET_BYTES:
+            if metrics["asset_bytes"] + size > metrics["max_asset_bytes"]:
+                metrics["rejected_asset_bytes"] = size
                 target.unlink()
-                raise ImageBudgetExceeded("image asset byte cap")
+                raise ImageBudgetExceeded("asset_byte_limit")
             metrics["asset_bytes"] += size
             asset = {"asset_id": asset_id, "type": "image", "path": f"assets/images/{asset_id}.png",
                      "sha256": sha256_file(target), "media_type": "image/png", "source_locator": locator,
                      "alt": f"PDF page {page_number}" + (" preview" if plan.get("supplement") else " figure"), "caption": ""}
             result["assets"].append(asset)
             outputs.append((plan, {"id": "pending", "type": "image", "asset_id": asset_id, "source_locator": locator}))
+    except Exception:
+        for target in paths:
+            target.unlink(missing_ok=True)
+        del result["assets"][initial_count:]
+        metrics["asset_bytes"] = initial_bytes
+        raise
     finally:
         bitmap.close()
     return outputs
@@ -1012,12 +1031,15 @@ def enhance_pdf_images(source_path: Path, body: dict[str, Any], image_dir: Path,
     if settings.get("mode", "auto") == "off":
         return result
     document_id = settings["document_id"]
+    max_bytes = settings.get("max_asset_bytes", MAX_ASSET_BYTES)
+    if type(max_bytes) is not int or max_bytes <= 0:
+        raise ValueError("PDF image max_asset_bytes must be a positive integer")
     units = {int(u["locator"]["page"]): u for u in result["source_units"]
              if isinstance(u.get("locator", {}).get("page"), int)}
-    _check_deadline(deadline)
     if settings.get("mode") == "objects":
         support = _extract_pdf_image_support(str(source_path), document_id, image_dir, units,
-                                             max_assets=MAX_ASSETS, max_bytes=MAX_ASSET_BYTES, deadline=deadline)
+                                             max_assets=MAX_ASSETS, max_bytes=max_bytes, deadline=deadline,
+                                             timeout_seconds=settings.get("timeout_seconds"))
         supplements = [n for n in result["content"] if n.get("source_locator", {}).get("placement") == "unanchored_supplement"]
         content = [n for n in result["content"] if n.get("source_locator", {}).get("placement") != "unanchored_supplement"]
         pages = defaultdict(list)
@@ -1041,19 +1063,21 @@ def enhance_pdf_images(source_path: Path, body: dict[str, Any], image_dir: Path,
         document_warnings = [w for w in body.get("warnings", []) if w not in old_unit_warnings]
         result["warnings"] = [w for unit in result["source_units"] for w in unit.get("warnings", [])]
         result["warnings"].extend(w for w in document_warnings if w not in result["warnings"])
-        result["warnings"].extend(w for w in support.get("warnings", []) if w.get("code") == "pdf_image_extraction_failed" and w not in result["warnings"])
+        result["warnings"].extend(w for w in support.get("warnings", []) if w.get("code") in {"pdf_image_extraction_failed", "pdf_images_unfinished"} and w not in result["warnings"])
         _reassign_content_ids(result["content"], result["tables"], document_id)
-        result["image_metrics"] = {"mode": "objects", **stats}
+        result["image_metrics"] = {"mode": "objects", **stats, **support.get("image_metrics", {})}
         return result
     metrics = {"mode": "auto", "pages_scanned": 0, "candidate_pages": [], "precise_regions": 0,
                "page_supplements": 0, "render_calls": 0, "rendered_pages": [], "capped_pages": [],
-               "neighbor_checks": 0, "asset_bytes": 0, "processed_pages": [], "unprocessed_pages": [],
+               "neighbor_checks": 0, "asset_bytes": 0, "asset_count": 0, "max_asset_bytes": max_bytes,
+               "max_assets": MAX_ASSETS, "stop_reason": "complete", "processed_pages": [], "unprocessed_pages": [],
                "stages_seconds": {"scan": 0.0, "positions": 0.0, "mapping": 0.0, "render_save": 0.0}}
     result["image_metrics"] = metrics
     result.setdefault("assets", [])
     try:
         import pypdfium2 as pdfium
     except ImportError:
+        metrics.update(stop_reason="unavailable", unprocessed_pages=sorted(units))
         _warning(result, "pdf_images_unavailable", "Optional PDF image capability is unavailable; body retained", True)
         return result
     started = time.monotonic()
@@ -1075,12 +1099,15 @@ def enhance_pdf_images(source_path: Path, body: dict[str, Any], image_dir: Path,
                 next_page += 1
                 page = document.get_page(page_number - 1)
                 try:
-                    geometry = _scan_page(page, pdfium)
                     metrics["pages_scanned"] += 1
+                    geometry = _scan_page(page, pdfium)
                     if len(geometry["graphics"]) >= 2 or any(not g["separator"] for g in geometry["graphics"]) or geometry["uncertain"] or geometry["capped"]:
                         batch.append((page_number, geometry))
                         metrics["candidate_pages"].append(page_number)
+                    else:
+                        metrics["processed_pages"].append(page_number)
                 except Exception:
+                    metrics["candidate_pages"].append(page_number)
                     batch.append((page_number, {"bbox": page.get_bbox(), "graphics": [], "uncertain": True, "capped": False, "rotation": page.get_rotation()}))
                 finally:
                     page.close()
@@ -1142,10 +1169,9 @@ def enhance_pdf_images(source_path: Path, body: dict[str, Any], image_dir: Path,
                     metrics["stages_seconds"]["render_save"] += time.monotonic() - rendering_start
                     if page is not None:
                         page.close()
-    except ImageBudgetExceeded:
-        # Unfinished candidate pages plus unscanned pages are honest unknowns.
-        metrics["unprocessed_pages"] = sorted((set(metrics["candidate_pages"]) - set(metrics["processed_pages"])) | set(range(next_page, total + 1)))
-        _warning(result, "pdf_images_unfinished", f"PDF image budget exhausted; unprocessed pages {_page_ranges(metrics['unprocessed_pages']) or 'unknown'}; body retained", True)
+    except ImageBudgetExceeded as exc:
+        metrics["stop_reason"] = str(exc)
+        metrics["unprocessed_pages"] = sorted(set(range(1, total + 1)) - set(metrics["processed_pages"]))
     finally:
         document.close()
     content = []
@@ -1164,6 +1190,14 @@ def enhance_pdf_images(source_path: Path, body: dict[str, Any], image_dir: Path,
         else:
             (image_dir / Path(asset["path"]).name).unlink(missing_ok=True)
     result["assets"] = accepted
+    metrics["asset_count"] = len(accepted)
+    metrics["asset_bytes"] = sum((image_dir / Path(asset["path"]).name).stat().st_size for asset in accepted)
+    metrics["processed_pages"] = sorted(metrics["processed_pages"])
+    metrics["unprocessed_pages"] = sorted(set(metrics["unprocessed_pages"]))
+    if metrics["unprocessed_pages"] and metrics["stop_reason"] == "complete":
+        metrics["stop_reason"] = "page_failures"
+    if metrics["stop_reason"] != "complete":
+        _unfinished_warning(result, metrics, time.monotonic() - started, settings.get("timeout_seconds"))
     _reassign_content_ids(result["content"], result["tables"], document_id)
     metrics["stages_seconds"]["enhancement"] = time.monotonic() - started
     return result
