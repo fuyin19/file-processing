@@ -185,7 +185,7 @@ from libreoffice_pdf import (  # noqa: E402
 )
 
 
-VERSION = "2.0.2"
+VERSION = "3.0.0"
 DEFAULT_CONFIG: dict[str, object] = {"pdf_conversion": DEFAULT_PDF_CONVERSION}
 _URL_RE = re.compile(r"^[A-Za-z][A-Za-z0-9+.-]*://")
 
@@ -413,6 +413,8 @@ def convert_one(
     engine: LibreOfficePdfEngine | None = None,
 ) -> tuple[Path, dict[str, object]]:
     target = _preflight_target(resolve_target(args, source, relative_path), source, args.overwrite, args.rename)
+    if target.mode == "bundle" and Path(source).name.casefold() == "knowledge_unit.md":
+        raise PipelineError("Source name collides with reserved KNOWLEDGE_UNIT.md")
     converter = engine or _engine(args, config)
     if Path(source).suffix.lower() != ".pdf" and isinstance(converter, LibreOfficePdfEngine):
         _ = converter.executable

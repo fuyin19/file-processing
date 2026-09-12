@@ -21,7 +21,7 @@ unified installation. There is no cwd, checkout, PYTHONPATH, or cross-root
 fallback.
 
 Bundle routes require the independently installed anti-entropy-core skill,
-exactly Core 1.2.1 with ABI anti-entropy-core.runner/v1. By default the pipeline
+exactly Core 2.0.0 with ABI anti-entropy-core.runner/v1. By default the pipeline
 selects only anti-entropy-core/scripts/knowledge_unit_runner.py under the same
 skills root. ANTI_ENTROPY_CORE_RUNNER remains the explicit absolute-path
 override. Direct Markdown/PDF output, help, and version do not acquire a Core
@@ -37,7 +37,7 @@ remain in the conversion skills.
 
 ## Shared runtime carrier
 
-skills/file-processing is a normal discoverable skill at version 1.1.0. It
+skills/file-processing is a normal discoverable skill at version 2.0.0. It
 provides the conversion runtime and read-only installation diagnosis guidance,
 without adding a unified conversion CLI.
 
@@ -60,7 +60,7 @@ This release does not change the persistent configuration behavior of
 
 ## Skills
 
-### markdown-conversion (v7.2.0)
+### markdown-conversion (v8.0.0)
 
 Convert local PDFs, Office documents, supported files, URLs, or directories
 through one canonical pipeline. Local PDFs use PDF Inspector as the
@@ -95,8 +95,7 @@ default output is a movable bundle:
 
 ```text
 report/
-├── AGENTS.md
-├── CLAUDE.md
+├── KNOWLEDGE_UNIT.md
 ├── report.json
 ├── report.md
 ├── src/
@@ -196,7 +195,7 @@ occurrences without changing the default-path cost.
 See [the skill contract](skills/markdown-conversion/SKILL.md) and
 [Canonical JSON v1 reference](skills/markdown-conversion/references/canonical-schema-v1.md).
 
-### pdf-conversion (v2.0.2)
+### pdf-conversion (v3.0.0)
 
 Convert local PDFs and supported Word, PowerPoint, or Excel files to native,
 high-fidelity multipage PDF. PDF inputs bypass LibreOffice and are copied from
@@ -217,7 +216,7 @@ not an operating-system sandbox or no-external-access guarantee.
 
 See [the PDF skill contract](skills/pdf-conversion/SKILL.md).
 
-### file-conversion (v2.2.0)
+### file-conversion (v3.0.0)
 
 Create one local bundle containing canonical Markdown/JSON, a sibling native
 PDF, the exact source snapshot, and conditional image assets:

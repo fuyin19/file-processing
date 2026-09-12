@@ -117,10 +117,10 @@ def _fake_emitter(args, snapshot, stage, stem, *, status="complete", warnings=No
 
 def test_skill_frontmatter_and_project_versions():
     skill = (ROOT / "skills" / "file-conversion" / "SKILL.md").read_text(encoding="utf-8")
-    assert "name: file-conversion" in skill and "version: 2.2.0" in skill
-    assert pipeline.VERSION == "2.2.0"
-    assert json.loads((ROOT / "package.json").read_text(encoding="utf-8"))["version"] == "7.3.0"
-    assert json.loads((ROOT / ".claude-plugin" / "plugin.json").read_text(encoding="utf-8"))["version"] == "7.3.0"
+    assert "name: file-conversion" in skill and "version: 3.0.0" in skill
+    assert pipeline.VERSION == "3.0.0"
+    assert json.loads((ROOT / "package.json").read_text(encoding="utf-8"))["version"] == "8.0.0"
+    assert json.loads((ROOT / ".claude-plugin" / "plugin.json").read_text(encoding="utf-8"))["version"] == "8.0.0"
     assert (ROOT / "CLAUDE.md").read_text(encoding="utf-8").strip() == "@AGENTS.md"
 
 
@@ -182,6 +182,49 @@ def test_router_rejects_cortex_collisions_before_engine_or_write(
     with pytest.raises(error_type, match=message):
         pipeline.convert_one(args, str(renamed), pipeline.load_config(CONFIG))
 
+    assert not output.exists()
+
+
+@pytest.mark.parametrize("name", ["KNOWLEDGE_UNIT.docx", "KnOwLeDgE_UnIt.docx"])
+def test_router_reserved_generated_stem_fails_before_engine_or_writes(tmp_path, monkeypatch, name):
+    source = _source(tmp_path)
+    renamed = source.with_name(name)
+    source.rename(renamed)
+    output = tmp_path / "out"
+    args = _args(renamed, output)
+    monkeypatch.setattr(pipeline, "_engine", lambda *a, **k: pytest.fail("reserved stem reached engine"))
+    monkeypatch.setattr(pipeline.np, "mkdir", lambda *a, **k: pytest.fail("reserved stem reached mkdir"))
+    with pytest.raises(pipeline.markdown_pipeline.PipelineError, match="KNOWLEDGE_UNIT.md"):
+        pipeline.convert_one(args, str(renamed), pipeline.load_config(CONFIG))
+    assert not output.exists()
+
+
+@pytest.mark.parametrize("name", ["KNOWLEDGE_UNIT.md", "knowledge_unit.MD"])
+def test_router_reserved_source_fails_before_engine_even_with_full_basename(tmp_path, monkeypatch, name):
+    source = tmp_path / name
+    source.write_bytes(b"source")
+    output = tmp_path / "out"
+    # Direct convert_one callers still receive the retained-source guard; the CLI rejects unsupported .md.
+    args = pipeline.build_parser().parse_args(["--input", str(source), "--output-dir", str(output), "--bundle-name-mode", "source-basename"])
+    monkeypatch.setattr(pipeline, "_engine", lambda *a, **k: pytest.fail("reserved source reached engine"))
+    monkeypatch.setattr(pipeline.np, "mkdir", lambda *a, **k: pytest.fail("reserved source reached mkdir"))
+    with pytest.raises(pipeline.PipelineError, match="Source name"):
+        pipeline.convert_one(args, str(source), pipeline.load_config(CONFIG))
+    assert not output.exists()
+    assert source.read_bytes() == b"source"
+
+
+def test_router_batch_reserved_stem_fails_before_engine_creation(tmp_path, monkeypatch):
+    source = _source(tmp_path)
+    source.rename(source.with_name("KNOWLEDGE_UNIT.docx"))
+    output = tmp_path / "out"
+    args = pipeline.build_parser().parse_args(["--input-dir", str(tmp_path), "--output-dir", str(output)])
+    pipeline.precheck(args)
+    calls = []
+    monkeypatch.setattr(pipeline, "_engine", lambda *a, **k: calls.append("engine"))
+    monkeypatch.setattr(pipeline.np, "mkdir", lambda *a, **k: calls.append("mkdir"))
+    assert pipeline.run_batch(args, pipeline.load_config(CONFIG)) == 1
+    assert calls == []
     assert not output.exists()
 
 
@@ -383,7 +426,7 @@ def test_partial_markdown_plus_valid_pdf_publishes_flat_bundle(tmp_path, monkeyp
         args, str(source), pipeline.load_config(CONFIG), engine=FakeEngine(_valid_pdf(tmp_path / "valid.pdf"))
     )
     assert status == "partial" and warnings == [warning]
-    assert {path.name for path in target.iterdir()} == {"AGENTS.md", "CLAUDE.md", "assets", "source.md", "source.json", "source.pdf", "src"}
+    assert {path.name for path in target.iterdir()} == {"KNOWLEDGE_UNIT.md", "assets", "source.md", "source.json", "source.pdf", "src"}
     assert (target / "assets/.keep").read_bytes() == b""
 
 

@@ -15,8 +15,7 @@ from typing import Any
 ROOT = Path(__file__).resolve().parents[1]
 RESOURCE_ROOT = ROOT / "tests" / "fixtures" / "knowledge-unit"
 GUIDES = {
-    "AGENTS.md": (RESOURCE_ROOT / "AGENTS.md").read_bytes(),
-    "CLAUDE.md": (RESOURCE_ROOT / "CLAUDE.md").read_bytes(),
+    "KNOWLEDGE_UNIT.md": (RESOURCE_ROOT / "KNOWLEDGE_UNIT.md").read_bytes(),
 }
 
 
@@ -116,7 +115,7 @@ def main() -> int:
     except (KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
         return _failure("unknown", str(exc))
     if command == "capabilities":
-        return _emit(command, data={"version": "1.2.1", "commands": ["capabilities", "inspect", "validate", "repair", "stage.complete"]})
+        return _emit(command, data={"version": "2.0.0", "commands": ["capabilities", "inspect", "validate", "repair", "stage.complete"]})
     try:
         path = _path(request)
         private = request.get("private_root_files", [])

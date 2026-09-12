@@ -202,7 +202,7 @@ from pdf_inspector_adapter import PdfInspectorAdapter
 from safe_url import redact_url
 
 
-VERSION = "7.2.0"
+VERSION = "8.0.0"
 DEFAULT_CONFIG: dict[str, Any] = {
     "pdf_ocr": {
         "mode": "auto",
@@ -662,7 +662,9 @@ def _preflight_target(target: Target, source: str, overwrite: bool, rename: bool
 
 
 def validate_markdown_bundle_stem(stem: str) -> None:
-    """Reject a generated canonical JSON name reserved by Cortex metadata."""
+    """Reject generated representation names reserved for guides or private metadata."""
+    if f"{stem}.md".casefold() == "knowledge_unit.md":
+        raise PipelineError("Generated Markdown collides with reserved KNOWLEDGE_UNIT.md")
     if f"{stem}.json".casefold() == "record.json":
         raise PipelineError("Generated bundle JSON collides with reserved Cortex record.json")
 
@@ -1184,6 +1186,8 @@ def convert_one(args, source: str, relative_path: Path | None = None) -> tuple[P
     target = _preflight_target(resolve_target(args, source, relative_path), source, args.overwrite, args.rename)
     if target.mode == "bundle":
         validate_markdown_bundle_stem(target.stem)
+        if not is_url(source) and Path(source).name.casefold() == "knowledge_unit.md":
+            raise PipelineError("Source name collides with reserved KNOWLEDGE_UNIT.md")
     ocr_settings = getattr(args, "ocr_settings", OcrSettings(mode="off", engine="none"))
     ocr_provider = getattr(args, "ocr_provider", None)
     if target.mode == "bundle":

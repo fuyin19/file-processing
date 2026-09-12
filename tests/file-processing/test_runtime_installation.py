@@ -130,13 +130,13 @@ def test_carrier_is_discoverable_complete_and_has_no_conversion_cli():
     assert skill.is_file()
     text = skill.read_text(encoding="utf-8")
     assert "name: file-processing" in text
-    assert "version: 1.1.0" in text
+    assert "version: 2.0.0" in text
     assert "read-only" in text.lower()
     assert {path.name for path in (carrier / "scripts").iterdir() if path.is_file()} == CARRIER_FILES
     assert not (carrier / "scripts" / "pipeline.py").exists()
     assert not (ROOT / "skills" / "_shared").exists()
-    assert json.loads((ROOT / "package.json").read_text(encoding="utf-8"))["version"] == "7.3.0"
-    assert json.loads((ROOT / ".claude-plugin" / "plugin.json").read_text(encoding="utf-8"))["version"] == "7.3.0"
+    assert json.loads((ROOT / "package.json").read_text(encoding="utf-8"))["version"] == "8.0.0"
+    assert json.loads((ROOT / ".claude-plugin" / "plugin.json").read_text(encoding="utf-8"))["version"] == "8.0.0"
 
 
 @pytest.mark.parametrize("skill", ["markdown-conversion", "file-conversion"])

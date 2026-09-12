@@ -3,7 +3,7 @@ name: markdown-conversion
 description: |
   Convert local PDF and AnyDoc/MarkItDown-supported documents, supported files, URLs, or directories into a canonical JSON plus Markdown bundle, or one clean Markdown file. Use for PDF Inspector-backed PDF extraction, AnyDoc-backed local non-PDF extraction, explicit MarkItDown rollback, deterministic five-field frontmatter, Chinese language normalization, batch conversion, and staged output handling.
 metadata:
-  version: 7.2.0
+  version: 8.0.0
 ---
 
 # Convert files to canonical JSON and Markdown
@@ -16,7 +16,7 @@ Restore the complete unified installation when this preflight reports a
 missing, linked, reparsed, or escaping dependency.
 
 Bundle routes additionally require the independently installed
-anti-entropy-core skill, exactly Core 1.2.1 with ABI
+anti-entropy-core skill, exactly Core 2.0.0 with ABI
 anti-entropy-core.runner/v1. By default the pipeline selects only
 anti-entropy-core/scripts/knowledge_unit_runner.py under the same skills root.
 ANTI_ENTROPY_CORE_RUNNER is an optional absolute-path override for a different
@@ -333,7 +333,7 @@ stem/slug fallback.
   but reports `anydoc_math_layout_flattened` for Markdown layout loss. These
   losses produce partial output when other usable content exists; otherwise
   conversion fails. Source retention does not guarantee formula typesetting.
-- v7.2.0 does not emit RAG chunks, change Canonical schema 1.0, or claim page,
+- v8.0.0 does not emit RAG chunks, change Canonical schema 1.0, or claim page,
   slide, sheet, rich-style, formula, or external-image fidelity beyond the
   AnyDoc model and documented warnings.
 - URL input, including a PDF URL, is downloaded through a public-network-only,

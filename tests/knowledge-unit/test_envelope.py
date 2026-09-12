@@ -43,8 +43,8 @@ def test_explicit_core_runner_exposes_all_required_routes(tmp_path):
     completed = core.stage_complete(stage)
     assert completed.command == "stage.complete"
     assert completed.data["path"] == str(stage.resolve())
-    assert (stage / "AGENTS.md").is_file()
-    assert (stage / "CLAUDE.md").is_file()
+    assert (stage / "KNOWLEDGE_UNIT.md").is_file()
+    assert not (stage / "CLAUDE.md").exists()
     assert (stage / "assets" / ".keep").read_bytes() == b""
     assert (stage / "src" / ".keep").read_bytes() == b""
 
@@ -63,8 +63,8 @@ def test_actual_core_completes_and_validates_a_bundle_stage(tmp_path, monkeypatc
     completed = core.stage_complete(stage)
     assert completed.abi == core.EXPECTED_ABI
     assert core.validate(stage).status == "ok"
-    assert (stage / "AGENTS.md").is_file()
-    assert (stage / "CLAUDE.md").is_file()
+    assert (stage / "KNOWLEDGE_UNIT.md").is_file()
+    assert not (stage / "CLAUDE.md").exists()
 
 
 def test_core_adapter_requires_an_explicit_absolute_runner_without_fallback(tmp_path, monkeypatch):
@@ -92,7 +92,7 @@ def test_core_adapter_sends_only_the_command_and_absolute_request(tmp_path, monk
         "import json, sys\n"
         "incoming = json.loads(sys.stdin.readline())\n"
         "print(json.dumps({'abi': 'anti-entropy-core.runner/v1', 'status': 'ok', 'exit_code': 0, "
-        "'command': incoming['command'], 'data': {'incoming': incoming, 'version': '1.2.1'}, 'issues': []}))\n",
+        "'command': incoming['command'], 'data': {'incoming': incoming, 'version': '2.0.0'}, 'issues': []}))\n",
         encoding="utf-8",
     )
     stage = tmp_path / "stage"

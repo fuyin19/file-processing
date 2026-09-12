@@ -214,7 +214,7 @@ _RUNTIME_LAYOUT.verify_module(
     expected=_MARKDOWN / "pipeline.py",
 )
 
-VERSION = "2.2.0"
+VERSION = "3.0.0"
 DEFAULT_CONFIG: dict[str, object] = {
     "pdf_ocr": dict(markdown_pipeline.DEFAULT_CONFIG["pdf_ocr"]),
     "pdf_images": dict(markdown_pipeline.DEFAULT_CONFIG["pdf_images"]),
@@ -435,6 +435,14 @@ def _preflight_target(target: Target, source: str, overwrite: bool, rename: bool
     return target
 
 
+def _preflight_bundle_target(args, source: str, relative_path: Path | None = None) -> Target:
+    target = _preflight_target(resolve_target(args, source, relative_path), source, args.overwrite, args.rename)
+    markdown_pipeline.validate_markdown_bundle_stem(target.stem)
+    if Path(source).name.casefold() == "knowledge_unit.md":
+        raise PipelineError("Source name collides with reserved KNOWLEDGE_UNIT.md")
+    return target
+
+
 def _engine(args, config: dict[str, object]) -> LibreOfficePdfEngine:
     settings = PdfConversionSettings.from_config(config)
     engine = LibreOfficePdfEngine(settings)
@@ -453,8 +461,7 @@ def convert_one(
             "MarkItDown cannot safely convert legacy .doc files; use the default AnyDoc adapter "
             "or first convert the file to .docx in a trusted desktop environment"
         )
-    target = _preflight_target(resolve_target(args, source, relative_path), source, args.overwrite, args.rename)
-    markdown_pipeline.validate_markdown_bundle_stem(target.stem)
+    target = _preflight_bundle_target(args, source, relative_path)
     converter = engine or _engine(args, config)
     if Path(source).suffix.lower() != ".pdf" and isinstance(converter, LibreOfficePdfEngine):
         _ = converter.executable
@@ -494,6 +501,7 @@ def run_batch(args, config: dict[str, object]) -> int:
     for source in files:
         relative = np.logical(source).relative_to(root)
         try:
+            _preflight_bundle_target(args, source, relative)
             if Path(source).suffix.lower() != ".pdf" and engine is None:
                 engine = _engine(args, config)
             path, status, warnings = convert_one(args, source, config, relative, engine)

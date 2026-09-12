@@ -20,7 +20,7 @@ from typing import Any
 
 RUNNER_ENV = "ANTI_ENTROPY_CORE_RUNNER"
 EXPECTED_ABI = "anti-entropy-core.runner/v1"
-EXPECTED_CORE_VERSION = "1.2.1"
+EXPECTED_CORE_VERSION = "2.0.0"
 PREFLIGHT_TIMEOUT_SECONDS = 30
 _RESULT_FIELDS = ("abi", "status", "exit_code", "command", "data", "issues")
 

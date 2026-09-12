@@ -3,7 +3,7 @@ name: file-conversion
 description: |
   Route supported local PDF and Office files or directories into one canonical Markdown bundle plus a sibling native PDF, using one source snapshot and one staged publication boundary. Use when both machine-readable Markdown/JSON and a high-fidelity PDF are required.
 metadata:
-  version: 2.2.0
+  version: 3.0.0
 ---
 
 # Create Markdown + PDF bundles
@@ -16,7 +16,7 @@ Restore the complete unified installation when this preflight reports a
 missing, linked, reparsed, or escaping dependency.
 
 Bundle routes additionally require the independently installed
-anti-entropy-core skill, exactly Core 1.2.1 with ABI
+anti-entropy-core skill, exactly Core 2.0.0 with ABI
 anti-entropy-core.runner/v1. By default the pipeline selects only
 anti-entropy-core/scripts/knowledge_unit_runner.py under the same skills root.
 ANTI_ENTROPY_CORE_RUNNER is an optional absolute-path override for a different

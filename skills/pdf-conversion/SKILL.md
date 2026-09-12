@@ -3,7 +3,7 @@ name: pdf-conversion
 description: |
   Convert supported local PDF and Office files or directories to one native, high-fidelity multipage PDF per input using an identity-bound source snapshot and a private LibreOffice process. Use for PDF-preserving copy/validation and Word, PowerPoint, or Excel PDF export.
 metadata:
-  version: 2.0.2
+  version: 3.0.0
 ---
 
 # Convert local files to PDF
@@ -16,7 +16,7 @@ Restore the complete unified installation when this preflight reports a
 missing, linked, reparsed, or escaping dependency.
 
 Bundle routes additionally require the independently installed
-anti-entropy-core skill, exactly Core 1.2.1 with ABI
+anti-entropy-core skill, exactly Core 2.0.0 with ABI
 anti-entropy-core.runner/v1. By default the pipeline selects only
 anti-entropy-core/scripts/knowledge_unit_runner.py under the same skills root.
 ANTI_ENTROPY_CORE_RUNNER is an optional absolute-path override for a different

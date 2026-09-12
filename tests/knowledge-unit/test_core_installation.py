@@ -22,7 +22,7 @@ import pytest
 ROOT = Path(__file__).absolute().parents[2]
 SKILLS = ("markdown-conversion", "pdf-conversion", "file-conversion")
 ABI = "anti-entropy-core.runner/v1"
-VERSION = "1.2.1"
+VERSION = "2.0.0"
 
 
 def _load_client(path: Path):
@@ -190,7 +190,7 @@ def test_relocated_pipeline_main_uses_real_core_and_one_binding(installation, tm
         shutil.copytree(expected.parent.parent, other)
         expected = other / "scripts" / expected.name
         env["ANTI_ENTROPY_CORE_RUNNER"] = str(expected)
-        # Both A and B are valid real Core 1.2.1 runners. Instrument A without
+        # Both A and B are valid real Core 2.0.0 runners. Instrument A without
         # changing its behavior so even a discarded capabilities probe is seen.
         default = installation / "anti-entropy-core" / "scripts" / expected.name
         source = default.read_text(encoding="utf-8")
@@ -212,7 +212,7 @@ def test_relocated_pipeline_main_uses_real_core_and_one_binding(installation, tm
     result = _run([sys.executable, "-I", "-c", DRIVER, str(scripts / "pipeline.py"), str(expected), str(source), str(output), "bundle"], cwd=unrelated, env=env)
     assert result.returncode == 0, result.stdout + result.stderr
     assert "OBSERVATIONS=" in result.stdout
-    assert (output / "source" / "AGENTS.md").is_file()
+    assert (output / "source" / "KNOWLEDGE_UNIT.md").is_file()
     assert (output / "source" / "src" / source.name).read_bytes() == source.read_bytes()
     assert not config.exists()
     assert sentinel.read_bytes() == b"\xffnormal sentinel must remain unread"
@@ -288,7 +288,7 @@ def test_client_alone_and_core_are_relocatable_without_runtime_carrier(installat
     (scripts / "pipeline.py").write_text("# anchor", encoding="utf-8")
     shutil.copyfile(installation / "pdf-conversion" / "scripts" / "anti_entropy_core_adapter.py", scripts / "anti_entropy_core_adapter.py")
     shutil.copytree(installation / "anti-entropy-core", only / "anti-entropy-core")
-    code = '''import sys\nfrom pathlib import Path\nsys.path.insert(0,sys.argv[1])\nimport anti_entropy_core_adapter as core\nwith core.operation(skill_entrypoint=Path(sys.argv[1])/'pipeline.py',skill_id='pdf-conversion'):\n assert core.capabilities().data['version']=='1.2.1'\n assert not any(n=='anti_entropy_core' or n.startswith('anti_entropy_core.') for n in sys.modules)\n'''
+    code = '''import sys\nfrom pathlib import Path\nsys.path.insert(0,sys.argv[1])\nimport anti_entropy_core_adapter as core\nwith core.operation(skill_entrypoint=Path(sys.argv[1])/'pipeline.py',skill_id='pdf-conversion'):\n assert core.capabilities().data['version']=='2.0.0'\n assert not any(n=='anti_entropy_core' or n.startswith('anti_entropy_core.') for n in sys.modules)\n'''
     result = _run([sys.executable, "-I", "-S", "-c", code, str(scripts)], cwd=tmp_path)
     assert result.returncode == 0, result.stderr
     assert not (only / "file-processing").exists()

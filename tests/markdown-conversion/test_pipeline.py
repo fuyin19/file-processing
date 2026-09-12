@@ -1,5 +1,5 @@
 """
-Tests for pipeline.py (v7.2.0 canonical conversion architecture).
+Tests for pipeline.py (v8.0.0 canonical conversion architecture).
 
 Run from project root: pytest scripts/test_pipeline.py -v
 
@@ -904,7 +904,7 @@ def test_version_flag():
     assert 'Dependencies:' in stdout
     # Should show pip install names (not import names)
     assert 'opencc-python-reimplemented' in stdout
-    assert 'markdown-conversion v7.2.0' in stdout
+    assert 'markdown-conversion v8.0.0' in stdout
     assert 'rapidocr:' in stdout
     assert 'onnxruntime:' in stdout
     assert 'ruamel.yaml:' not in stdout
@@ -946,7 +946,7 @@ def test_pipeline_direct_isolated_entry_ignores_hostile_python_environment(tmp_p
     )
 
     assert result.returncode == 0, result.stderr.decode('utf-8', errors='replace')
-    assert b'markdown-conversion v7.2.0' in result.stdout
+    assert b'markdown-conversion v8.0.0' in result.stdout
     assert b'hostile' not in result.stdout + result.stderr
 
 
@@ -1605,7 +1605,7 @@ def test_default_bundle_contains_canonical_json_and_markdown(tmp_path):
     src.write_text('# Report\n\nBody', encoding='utf-8')
     code, stdout, stderr, bundle = _run_product_bundle(src, tmp_path / 'out')
     assert code == 0, stderr
-    assert sorted(path.name for path in bundle.iterdir()) == ['AGENTS.md', 'CLAUDE.md', 'assets', 'report.json', 'report.md', 'src']
+    assert sorted(path.name for path in bundle.iterdir()) == ['KNOWLEDGE_UNIT.md', 'assets', 'report.json', 'report.md', 'src']
     assert (bundle / 'assets' / '.keep').read_bytes() == b''
     assert (bundle / 'src' / src.name).read_bytes() == src.read_bytes()
     data = _load_bundle(bundle)
@@ -1692,6 +1692,55 @@ def test_default_cli_rejects_relative_url_stem_with_overwrite_and_zero_write(tmp
     assert result.returncode == 1
     assert b'relative component' in result.stderr
     assert not output.exists()
+
+
+@pytest.mark.parametrize("name", ["KNOWLEDGE_UNIT.md", "knowledge_unit.MD", "KNOWLEDGE_UNIT.txt", "KnOwLeDgE_UnIt.docx"])
+def test_reserved_guide_source_and_generated_stem_fail_before_conversion_or_write(tmp_path, monkeypatch, name):
+    import pipeline
+    source = tmp_path / name
+    source.write_bytes(b"preserved source")
+    output = tmp_path / "out"
+    monkeypatch.setattr(pipeline, "_build_document", lambda *a, **k: pytest.fail("reserved name reached provider"))
+    monkeypatch.setattr(pipeline.np, "mkdir", lambda *a, **k: pytest.fail("reserved name reached mkdir"))
+    with pytest.raises(pipeline.PipelineError, match="KNOWLEDGE_UNIT.md"):
+        pipeline.convert_one(_direct_bundle_args(source, output), str(source))
+    assert not output.exists()
+    assert source.read_bytes() == b"preserved source"
+
+
+@pytest.mark.parametrize("name", ["KNOWLEDGE_UNIT.md", "knowledge_unit.MD"])
+def test_reserved_retained_source_is_rejected_even_after_collision_rename(tmp_path, monkeypatch, name):
+    import pipeline
+    source = tmp_path / name
+    source.write_bytes(b"preserved source")
+    output = tmp_path / "out"
+    existing = output / source.stem
+    existing.mkdir(parents=True)
+    (existing / "sentinel").write_bytes(b"existing")
+    monkeypatch.setattr(pipeline, "_build_document", lambda *a, **k: pytest.fail("reserved source reached provider"))
+    monkeypatch.setattr(pipeline.np, "mkdir", lambda *a, **k: pytest.fail("reserved source reached mkdir"))
+    with pytest.raises(pipeline.PipelineError, match="Source name"):
+        pipeline.convert_one(_direct_bundle_args(source, output, rename=True), str(source))
+    assert sorted(p.name for p in output.iterdir()) == [source.stem]
+    assert (existing / "sentinel").read_bytes() == b"existing"
+
+
+@pytest.mark.parametrize("name", ["KNOWLEDGE_UNIT.md", "knowledge_unit.MD"])
+def test_direct_markdown_allows_reserved_bundle_names_and_emits_one_file(tmp_path, monkeypatch, name):
+    import pipeline
+    source = tmp_path / name
+    source.write_bytes(b"source")
+    output = tmp_path / "out"
+    args = _direct_bundle_args(source, output)
+    args.output_mode = "markdown"
+    document = _fake_bundle_document("a" * 64)
+    monkeypatch.setattr(pipeline, "_build_document", lambda *a, **k: document)
+    monkeypatch.setattr(pipeline, "render_markdown", lambda *a: "Body\n")
+    monkeypatch.setattr(pipeline, "validate_canonical", lambda *a, **k: None)
+    path, _, _ = pipeline.convert_one(args, str(source))
+    assert path.read_bytes() == b"Body\n"
+    assert list(output.iterdir()) == [path]
+    assert source.read_bytes() == b"source"
 
 
 @pytest.mark.parametrize('stem', ['record', 'ReCoRd'])

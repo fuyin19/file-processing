@@ -99,8 +99,39 @@ class FakeEngine:
 def test_frontmatter_and_versions_are_coherent():
     skill = (ROOT / "skills" / "pdf-conversion" / "SKILL.md").read_text(encoding="utf-8")
     assert "name: pdf-conversion" in skill
-    assert "version: 2.0.2" in skill
-    assert pipeline.VERSION == "2.0.2"
+    assert "version: 3.0.0" in skill
+    assert pipeline.VERSION == "3.0.0"
+
+
+@pytest.mark.parametrize("name", ["KNOWLEDGE_UNIT.md", "knowledge_unit.MD"])
+def test_pdf_reserved_retained_source_fails_before_engine_or_writes(tmp_path, monkeypatch, name):
+    source = tmp_path / name
+    source.write_bytes(b"source")
+    output = tmp_path / "out"
+    # Exercise the lower-level boundary; CLI precheck independently rejects unsupported .md.
+    args = pipeline.build_parser().parse_args(["--input", str(source), "--output-dir", str(output), "--output-mode", "bundle"])
+    monkeypatch.setattr(pipeline, "_engine", lambda *a, **k: pytest.fail("reserved source reached engine"))
+    monkeypatch.setattr(pipeline.np, "mkdir", lambda *a, **k: pytest.fail("reserved source reached mkdir"))
+    with pytest.raises(pipeline.PipelineError, match="KNOWLEDGE_UNIT.md"):
+        pipeline.convert_one(args, str(source), pipeline.load_config(CONFIG))
+    assert not output.exists()
+    assert source.read_bytes() == b"source"
+
+
+@pytest.mark.parametrize("name", ["KNOWLEDGE_UNIT.pdf", "knowledge_unit.PDF"])
+def test_pdf_direct_output_and_noncolliding_pdf_bundle_stem_remain_valid(tmp_path, name):
+    source = _pdf(tmp_path / name)
+    original = source.read_bytes()
+    direct = tmp_path / "direct"
+    args = _fake_args(source, direct, "--output-mode", "pdf")
+    path, _ = pipeline.convert_one(args, str(source), pipeline.load_config(CONFIG), engine=FakeEngine(source))
+    assert path.read_bytes() == original
+    assert list(direct.iterdir()) == [path]
+    bundle = tmp_path / "bundles"
+    args = _fake_args(source, bundle)
+    path, _ = pipeline.convert_one(args, str(source), pipeline.load_config(CONFIG), engine=FakeEngine(source))
+    assert sorted(p.name for p in path.iterdir()) == sorted(["KNOWLEDGE_UNIT.md", source.stem + ".pdf", "src", "assets"])
+    assert source.read_bytes() == original
 
 
 def test_load_config_omitted_uses_independent_memory_defaults_without_path_io(
