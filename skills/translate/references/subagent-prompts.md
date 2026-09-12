@@ -12,7 +12,7 @@ token cost are secondary.**
 
 The orchestrator preflights `runtime_mode`. In `orchestrated` mode it runs the
 two-phase glossary + chunked translation below. Without that runtime it must use
-report-only mode and cannot publish a formal v3 translation.
+report-only mode and cannot publish a formal translation.
 
 ## V3 artifact envelope
 
@@ -35,9 +35,10 @@ The translator payload additionally includes `translation_sha256` and one chunk
 record per planned chunk; each carries the complete occurrence-ID set it
 acknowledged. A v3 QA pass rejects missing, duplicate, unknown, or stale IDs.
 The semantic-QA payload is published only after deterministic QA and carries the
-same assembled translation hash plus the complete checked occurrence-ID set.
+same assembled translation hash, complete occurrence-ID set, and mandatory
+Python-derived task_coverage evidence for every local/seam/shared-term check.
 Without an orchestrated runtime,
-use report-only mode; the legacy single-agent fallback cannot write a formal v3
+use report-only mode; the legacy single-agent fallback cannot write a formal
 translation.
 
 ---
@@ -50,12 +51,12 @@ prepare (python) → CHUNK PLAN + PASSAGE MANIFEST
   ├─ G1: source-term-extractor (one per source chunk)  → candidate terms
   ├─ G2: reference-grounder   (batched over terms)      → grounded glossary
   │     (Python pre-selects reference passages per term via select_reference_passages)
-  ├─ merge → structured glossary {"terms":[...]} (saved to derive_glossary_path)
+  ├─ merge → structured glossary {"terms":[...]} (private in this run; export only on request)
   │
   ├─ translator-chunk (one per source chunk, glossary sliced per chunk)
   │     → {translated_markdown, self_audit}; orchestrator validates then publishes a manifest-bound translation artifact
   ├─ assemble + qa (python) → per-occurrence forced application + fix map
-  └─ required consistency-QA over the assembled translation
+  └─ required bounded local/seam/shared-term consistency-QA tasks
 ```
 
 ---
@@ -214,72 +215,53 @@ Return ONLY this JSON (no prose):
 
 ---
 
-## Agent 4 — `consistency-QA` (required, over the assembled translation)
+## Agent 4 — `consistency-QA` (one deterministic bounded task)
 
-**Reads:** the assembled translation (all chunks in order) + the structured
-glossary.
+Read only the chunks/occurrences in the Python-generated task descriptor and
+relevant bounded reference/style rules. Each task has one or two chunks. Local
+tasks cover reference expression, register/style, context rules and source
+residual; seam tasks cover every adjacent pair; term tasks compare consecutive
+occurrences of each shared term, exhaustively including scheduling boundaries.
 
-**Mandate:** catch what regex QA cannot — cross-chunk terminology drift, dropped
-sections, fluency, register consistency. Return a report; the orchestrator fixes
-`error`-level items. Its validated result is the required `semantic_qa` artifact;
-an error or unavailable result blocks strict `write`.
-
-**Prompt template:**
-
-```
-You are a translation consistency reviewer. Read the assembled translation and the
-glossary, and report cross-chunk issues only (structural counts are checked by the
-pipeline).
-
-Read the assembled translation: <assembled_path>
-Read the glossary: <glossary_path>
-
-Check:
-- Terminology drift: same glossary source term rendered differently in different
-  chunks without a context_note justification.
-- Dropped or added sections vs. the source structure.
-- Fluency/register consistency across chunk boundaries (the seams where chunks
-  join).
-
-Return ONLY this JSON (no prose):
-{
-  "translation_sha256": "<SHA-256 of assembled translation>",
-  "checked_occurrence_ids": ["<every occurrence id>"],
-  "checks": {"reference_expression": "pass|error", "chunk_seams": "pass|error",
-             "register_style": "pass|error", "context_rules": "pass|error",
-             "source_residual": "pass|error"},
-  "issues": [
-    {"severity": "error|warning", "chunk": <index or null>,
-     "issue": "...", "suggestion": "..."}
-  ]
-}
+```text
+You are a translation consistency reviewer. Read the source and translated
+chunks named in <task descriptor>, and <relevant glossary/reference context>.
+Verify every required check. Catch meaning loss, terminology drift, unsupported
+reference expressions, register changes, context-rule violations and untranslated
+source. For seams, inspect both sides in order. For shared-term comparisons,
+compare the specified occurrences and justify context-dependent differences.
+Do not claim a check passed if input is missing or your request budget was exceeded.
+Return the exact task identity fields and schema_version:"3.0", attempt,
+status:"completed" only after checking all inputs; checks maps every required
+check to "pass" or "error"; issues includes every error/warning with chunk,
+issue and suggestion. Preserve checked_chunk_ids, checked_occurrence_ids,
+translation_sha256, stage_input_hash and task_input_hash exactly.
 ```
 
----
+## Orchestration boundary
 
-## How the orchestrator uses these
+Prepare emits only counts and local plan/manifest paths. Use the automatic group
+loop in SKILL.md: all groups of at most max_chunks, no continuation question.
+Keep private terminology processing and reference selection; do not export a
+glossary unless the user requested --glossary-output.
 
-1. `python scripts/translate_pipeline.py prepare --input <file> [--references …]
-   [--glossary …] [--language <lang>]` → prints SOURCE/REFERENCES/INSTRUCTIONS
-   (legacy) + **CHUNK PLAN** + **PASSAGE MANIFEST**, writes chunk + passage files.
-2. **G1**: one `source-term-extractor` per chunk (concurrent). Merge → candidate
-   list with `source_chunks`.
-3. **G2**: `select_reference_passages` (Python) pre-selects passages per term;
-   `reference-grounder` agents batched over terms. Merge → structured glossary;
-   `save_glossary_structured` to `derive_glossary_path` (and `--glossary-output`).
-4. **Translator**: deterministic exhaustive relevance batches per chunk; one initial `translator-chunk`
-   per chunk. Orchestrator validates (`validate_translator_payload`), records all
-   occurrence IDs, and publishes the translation/self-audit with `publish-stage`.
-   Re-dispatch up to 2× on invalid/missing; still failing → `FAILED` (blocks strict `write`).
-5. **Assemble + QA**: orchestrator concatenates chunks in order → temp file →
-   `python scripts/translate_pipeline.py qa --source … --translation <temp>
-   --language <lang> --manifest <run_manifest>`. qa reads only manifest artifacts, enforces
-   per-occurrence application (convergence-gated), checks confidence:none
-   consistency, and prints a **FIX MAP** (`term → chunk`).
-6. **Fix loop**: for each fix-map entry, re-translate that chunk with a forced
-   prompt listing the required term; re-assemble; re-qa. Cap **2** re-translates
-   per chunk; remaining issues → human-handoff list. If qa has `error`s or a
-   required stage `FAILED`, `write` is blocked unless the user accepts a partial
-   artifact.
-7. `python scripts/translate_pipeline.py write --input … --translation <final>
-   --language <lang>` → `<stem>.<lang>.md`.
+For translation, derive `expected_partial_tasks(manifest, 'translation')` after
+source matching. Merge each one-chunk translator's validated self-audit into its
+exact descriptor, add schema_version, attempt, status, translated_markdown and
+top-level occurrence_ids, then write only its prescribed partial path. For QA,
+derive the semantic task descriptors after deterministic QA and write each
+bounded reviewer result to its prescribed path. Never invent the expected task
+set or claim whole-document coverage from sampled groups.
+
+Use `assemble --manifest ... --stage translation|semantic_qa` only after all
+expected partials are present; it validates identities/coverage and writes the
+full-stage JSON for existing publish-stage. Translation assembly also writes
+assembled.translation.md for deterministic QA and write. Retry invalid or missing
+responses at most twice (or configured agent_retry_limit), then leave the run
+incomplete. Re-publishing a correction invalidates downstream QA; regenerate its
+hash-bound task descriptors. Semantic task_coverage is mandatory even for direct
+full-stage publication and strict write; aggregate flags alone are insufficient.
+
+Final `write --manifest ...` defaults to ordered bilingual .json; explicit
+--output-format markdown produces .md. Export only a requested glossary through
+the formal writer. Do not send one model request all assembled source/translation.

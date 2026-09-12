@@ -254,7 +254,7 @@ fact checking through a deterministic dimension × chunk matrix.
 /file-processing:content-review ~/Documents/report.md --references ~/Documents/sources
 ```
 
-### translate (v2.0.0)
+### translate (v4.0.0)
 
 Translate with structure-safe chunking, source-driven terminology, reference
 grounding, and deterministic per-occurrence QA.
@@ -263,3 +263,15 @@ grounding, and deterministic per-occurrence QA.
 /file-processing:translate ~/Documents/report.md --language zh
 /file-processing:translate ~/Documents/report.md --language en --references ~/Documents/reference
 ```
+
+### Translate v4 output and long documents
+
+Translate now defaults to ordered bilingual `<stem>.<lang>.json`, with exact
+prepared-source chunk correspondence, readable Unicode and complete QA gates.
+Use `--output-format markdown` for the existing Markdown presentation. A glossary
+is exported only with an explicit `--glossary-output`; private reference-guided
+terminology remains part of translation. `max_chunks` (default 30) controls each
+scheduling group, and the SKILL continues all groups automatically. Deterministic
+assembly and mandatory semantic task coverage verify every chunk, seam and shared
+term comparison without one model request containing the full document. The real
+100 MiB guard remains. Older runtime manifests require re-prepare without mutation.

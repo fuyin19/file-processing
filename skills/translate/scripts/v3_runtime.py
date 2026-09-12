@@ -18,7 +18,7 @@ from typing import Any
 
 
 SCHEMA_VERSION = "3.0"
-PIPELINE_REVISION = "translate-v3"
+PIPELINE_REVISION = "translate-v4"
 TERMINAL_OCCURRENCE_STATES = {
     "applied", "preserved", "transliterated", "user_confirmed",
     "not_applicable", "conflict", "unresolved",
@@ -43,7 +43,7 @@ def runtime_fingerprint(runtime_mode: str) -> str:
         agent_fingerprint=os.environ.get("TRANSLATE_AGENT_FINGERPRINT", "unavailable"),
         prompt_digest=os.environ.get("TRANSLATE_PROMPT_DIGEST", "skill-managed"),
         retrieval_revision=os.environ.get("TRANSLATE_RETRIEVAL_REVISION", "semantic-v3"),
-        validator_revision="v3",
+        validator_revision="v4-task-coverage",
     )
 
 

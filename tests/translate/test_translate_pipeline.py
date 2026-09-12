@@ -234,8 +234,8 @@ class TestPipelineCLIPrepare:
             )
         os.unlink(f.name)
         assert result.returncode == 0
-        assert '=== SOURCE TEXT' in result.stdout
-        assert 'Hello world.' in result.stdout
+        assert '=== RUN MANIFEST ===' in result.stdout
+        assert 'Hello world.' not in result.stdout
         assert 'zh' in result.stdout
 
     def test_prepare_with_glossary(self):
@@ -256,8 +256,8 @@ class TestPipelineCLIPrepare:
         os.unlink(src_path)
         os.unlink(glos_path)
         assert result.returncode == 0
-        assert '=== GLOSSARY' in result.stdout
-        assert '机器学习' in result.stdout
+        assert '"glossary_output": null' in result.stdout
+        assert '机器学习' not in result.stdout
 
     def test_prepare_file_not_found(self):
         result = subprocess.run(
@@ -505,20 +505,19 @@ class TestPrepareChunkPlan:
     def test_chunk_plan_and_files(self, tmp_path):
         src, res = self._prepare(str(tmp_path))
         assert res.returncode == 0, res.stderr
-        assert '=== CHUNK PLAN ===' in res.stdout
-        assert '=== SOURCE TEXT' in res.stdout  # legacy marker preserved
-        plan = json.loads(res.stdout.split('=== CHUNK PLAN ===')[1].split('===')[0])
+        summary = json.loads(res.stdout.split('=== RUN MANIFEST ===')[1])
+        plan = json.load(open(summary['chunk_plan'], encoding='utf-8'))
         assert plan['n_chunks'] > 1
         assert os.path.exists(plan['chunks'][0]['path'])
 
     def test_passage_manifest_with_references(self, tmp_path):
         src, res = self._prepare(str(tmp_path), refs=True)
         assert res.returncode == 0, res.stderr
-        assert '=== PASSAGE MANIFEST ===' in res.stdout
-        man = json.loads(res.stdout.split('=== PASSAGE MANIFEST ===')[1].split('===')[0])
+        summary = json.loads(res.stdout.split('=== RUN MANIFEST ===')[1])
+        man = json.load(open(summary['passage_manifest'], encoding='utf-8'))
         assert man and man[0]['id'].startswith('ref#p')
 
-    def test_max_chunks_cap(self, tmp_path):
+    def test_max_chunks_is_scheduling_batch_size(self, tmp_path):
         small_cfg = tmp_path / 'cfg.json'
         small_cfg.write_text(json.dumps({
             'default_target_language': 'zh', 'chunk_lines': 5, 'max_chunks': 2,
@@ -532,8 +531,10 @@ class TestPrepareChunkPlan:
                       '--language', 'zh', '--chunk-lines', '5', '--runtime-mode', 'orchestrated'],
             capture_output=True, text=True,
         )
-        assert res.returncode == 1
-        assert 'max_chunks' in res.stderr
+        assert res.returncode == 0
+        summary = json.loads(res.stdout.split('=== RUN MANIFEST ===')[1])
+        assert summary['scheduling_batch_size'] == 2
+        assert summary['scheduling_batches'] > 1
 
 
 # --- v3 manifest / occurrence contract -----------------------------------
@@ -709,6 +710,12 @@ class TestV3CliContract:
                 'context_rules': 'pass', 'source_residual': 'pass',
             },
         }
+        from translate_pipeline import expected_partial_tasks
+        data = json.load(open(manifest, encoding='utf-8'))
+        semantic['task_coverage'] = [{**task, 'schema_version': '3.0', 'attempt': 1,
+                                      'status': 'completed', 'issues': [],
+                                      'checks': {c: 'pass' for c in task['required_checks']}}
+                                     for task in expected_partial_tasks(data, 'semantic_qa')]
         result = self._publish(manifest, workspace, 'semantic_qa', 'semantic_qa', semantic)
         assert result.returncode == 0, result.stderr
 
@@ -788,9 +795,9 @@ class TestV3CliContract:
             capture_output=True, text=True,
         )
         assert written.returncode == 3, written.stdout + written.stderr
-        incomplete = os.path.join(os.path.dirname(src), 'source.zh.incomplete.md')
+        incomplete = os.path.join(os.path.dirname(src), 'source.zh.incomplete.json')
         assert os.path.exists(incomplete)
-        assert 'qa_status: "INCOMPLETE"' in open(incomplete, encoding='utf-8').read()
+        assert json.load(open(incomplete, encoding='utf-8'))['qa_status'] == 'INCOMPLETE'
 
     def test_strict_write_rejects_incomplete_required_agent_stages(self, tmp_path):
         src, ws, result = self._prepare(str(tmp_path))
@@ -830,7 +837,7 @@ class TestV3CliContract:
         assert qa.returncode == 0, qa.stdout + qa.stderr
         self._publish_valid_semantic_qa(manifest, ws, translation_text, matching)
         written = subprocess.run(
-            SCRIPT + CONFIG_ARG + ['write', '--input', src, '--translation', translation,
+            SCRIPT + CONFIG_ARG + ['write', '--output-format', 'markdown', '--input', src, '--translation', translation,
                                    '--language', 'zh', '--manifest', manifest],
             capture_output=True, text=True,
         )

@@ -2,16 +2,11 @@
 """
 translate_pipeline.py - Translation pipeline for the file-processing plugin.
 
-Provides three subcommands:
-  prepare  - Read source file and references, chunk them (structure-safe), write
-             chunk + passage files to a workspace, and output structured text for
-             the orchestrator (chunk plan + passage manifest + the legacy
-             SOURCE/REFERENCES/INSTRUCTIONS sections).
-  qa       - Compare source vs translation: structural counts, untranslated
-             fragments, and per-occurrence glossary forced-application with a
-             convergence gate, confidence:none consistency, and a fix-loop map.
-             Auto-discovers the prepared glossary via derive_glossary_path.
-  write    - Write translated file with proper naming.
+prepare writes bounded chunk/passage inputs and a compact manifest handoff.
+assemble validates expected run-bound translation or semantic-QA partials and
+writes the existing full-stage publication payload. publish-stage, qa, resume
+and write retain schema-3.0 state/QA gates. write defaults to bilingual JSON;
+Markdown and a delivered glossary are explicit options.
 
 Exit codes:
   0 - success
@@ -26,7 +21,7 @@ import datetime
 import tempfile
 from typing import NoReturn
 
-VERSION = '3.0.0'
+VERSION = '4.0.0'
 
 # Import from sibling module
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -251,6 +246,7 @@ def write_chunk_files(text: str, chunk_lines: int, workspace: str) -> list[dict]
             'lines': c['lines'],
             'oversized': c['oversized'],
             'path': path,
+            'sha256': sha256_file(path),
         })
     return out
 
@@ -415,7 +411,10 @@ def _fail_runtime_if_needed(args) -> None:
 
 def _load_v3_manifest_or_die(path: str) -> dict:
     try:
-        return load_manifest(path)
+        manifest = load_manifest(path)
+        if runtime_fingerprint(manifest.get('runtime_mode', 'unavailable')) != manifest.get('runtime_fingerprint'):
+            raise ValueError('translation runtime changed; re-run prepare (old runs are preserved)')
+        return manifest
     except (OSError, ValueError, json.JSONDecodeError) as e:
         die(f'Invalid v3 manifest {path}: {e}')
 
@@ -433,6 +432,8 @@ def _manifest_json_artifact(manifest: dict, name: str) -> object:
     path = _manifest_artifact_path(manifest, name)
     if not path or not os.path.isfile(path):
         raise ValueError(f'missing manifest artifact: {name}')
+    if sha256_file(path) != manifest['artifacts'][name].get('sha256'):
+        raise ValueError(f'hash mismatch for manifest artifact: {name}')
     return _read_json(path)
 
 
@@ -569,6 +570,10 @@ def _validate_source_matching_payload(manifest: dict, payload: dict) -> list[str
 
 def _validate_translation_payload(manifest: dict, payload: dict, ledger: list[dict] | None = None) -> list[str]:
     errors: list[str] = []
+    try:
+        prepared_chunks(manifest)
+    except (OSError, ValueError, KeyError) as e:
+        return [f'invalid prepared chunks: {e}']
     chunks = payload.get('chunks')
     if not isinstance(chunks, list):
         return ['translation artifact requires chunks list']
@@ -580,7 +585,9 @@ def _validate_translation_payload(manifest: dict, payload: dict, ledger: list[di
             errors.append('translation chunk is not an object')
             continue
         try:
-            chunk = int(item['chunk'])
+            if type(item['chunk']) is not int:
+                raise ValueError('chunk id must be an integer')
+            chunk = item['chunk']
         except (KeyError, TypeError, ValueError):
             errors.append('translation chunk is missing an integer chunk id')
             continue
@@ -593,6 +600,9 @@ def _validate_translation_payload(manifest: dict, payload: dict, ledger: list[di
             errors.append(f'translation chunk {chunk} requires occurrence_ids')
         else:
             ids.extend(item['occurrence_ids'])
+            if ledger is not None:
+                errors.extend(validate_translation_occurrences(
+                    [entry for entry in ledger if entry.get('chunk') == chunk], item))
     if set(by_chunk) != expected_chunks:
         errors.append('translation chunks do not exactly match the chunk plan')
     if not isinstance(payload.get('translation_sha256'), str):
@@ -622,10 +632,202 @@ def _assembled_translation_from_payload(payload: dict) -> str:
     return '\n\n'.join(item['translated_markdown'] for item in ordered)
 
 
-def _validate_semantic_qa_payload(payload: dict, ledger: list[dict] | None = None) -> list[str]:
+SEMANTIC_CHECKS = ('reference_expression', 'chunk_seams', 'register_style',
+                   'context_rules', 'source_residual')
+
+
+def prepared_chunks(manifest: dict) -> list[dict]:
+    """Read only planned chunks and prove exact prepared-source reconstruction."""
+    chunks = _source_chunks(manifest)
+    texts, result = [], []
+    next_line = 1
+    for index, chunk in enumerate(chunks, 1):
+        expected_path = os.path.join(manifest['workspace'], f'chunk_{index:03d}.md')
+        if chunk.get('index') != index or os.path.abspath(chunk.get('path', '')) != expected_path:
+            raise ValueError('invalid planned chunk identity/path')
+        if os.path.islink(expected_path) or os.path.realpath(expected_path) != os.path.abspath(expected_path):
+            raise ValueError('planned chunk must be a local ordinary file')
+        with open(expected_path, encoding='utf-8', newline='') as f:
+            text = f.read().replace('\r\n', '\n')
+        if sha256_file(expected_path) != chunk.get('sha256'):
+            raise ValueError('prepared chunk hash mismatch')
+        if chunk.get('start') != next_line or chunk.get('end') != next_line + len(text.split('\n')) - 1:
+            raise ValueError('prepared source positions do not exactly cover source')
+        next_line = chunk['end'] + 1
+        texts.append(text)
+        result.append({**chunk, 'text': text})
+    if sha256_text('\n'.join(texts)) != manifest['source']['sha256']:
+        raise ValueError('prepared chunks do not reconstruct source hash')
+    return result
+
+
+def scheduling_groups(manifest: dict) -> list[list[int]]:
+    size = manifest['config']['max_chunks']
+    if type(size) is not int or size <= 0:
+        raise ValueError('max_chunks must be a positive scheduling batch size')
+    ids = [c['index'] for c in prepared_chunks(manifest)]
+    return [ids[i:i + size] for i in range(0, len(ids), size)]
+
+
+def expected_partial_tasks(manifest: dict, stage: str) -> list[dict]:
+    """Derive bounded tasks from verified inputs, never an agent denominator.
+
+    Terminology comparisons form an exhaustive chain of adjacent occurrences
+    for each shared term. Each request has at most two chunks; local checks and
+    all neighboring seams are covered independently, including scheduling seams.
+    """
+    chunks = prepared_chunks(manifest)
+    ledger = _stage_payload(manifest, 'source_matching', 'occurrence_ledger')['occurrences']
+    input_hash = stage_input_hash(manifest, stage)
+    translation_hash = None
+    if stage == 'semantic_qa':
+        translation = _stage_payload(manifest, 'translation', 'translation')
+        errors = _validate_translation_payload(manifest, translation, ledger)
+        if errors:
+            raise ValueError('; '.join(errors))
+        translation_hash = translation['translation_sha256']
+    elif stage != 'translation':
+        raise ValueError('unsupported partial stage')
+    tasks = []
+
+    def add(task_id, ids, occurrences, checks):
+        binding = {'run_id': manifest['run_id'], 'stage_input_hash': input_hash,
+                   'task_id': task_id, 'checked_chunk_ids': ids,
+                   'checked_occurrence_ids': occurrences, 'required_checks': list(checks)}
+        if translation_hash is not None:
+            binding['translation_sha256'] = translation_hash
+        binding['task_input_hash'] = fingerprint(**binding)
+        binding['path'] = os.path.join(manifest['workspace'], 'partials', stage, task_id + '.json')
+        tasks.append(binding)
+
+    for chunk in chunks:
+        idx = chunk['index']
+        add(f'chunk-{idx:06d}', [idx],
+            [x['occurrence_id'] for x in ledger if x['chunk'] == idx],
+            () if stage == 'translation' else [c for c in SEMANTIC_CHECKS if c != 'chunk_seams'])
+    if stage == 'semantic_qa':
+        for left, right in zip(chunks, chunks[1:]):
+            ids = [left['index'], right['index']]
+            add(f'seam-{ids[0]:06d}-{ids[1]:06d}', ids,
+                [x['occurrence_id'] for x in ledger if x['chunk'] in ids], ('chunk_seams',))
+        terms = {}
+        for entry in ledger:
+            terms.setdefault(entry['term_id'], []).append(entry)
+        for tid, entries in sorted(terms.items()):
+            entries.sort(key=lambda x: (x['source_offset'], x['occurrence_id']))
+            for i, (left, right) in enumerate(zip(entries, entries[1:]), 1):
+                add(f'term-{tid}-{i:06d}', sorted({left['chunk'], right['chunk']}),
+                    [left['occurrence_id'], right['occurrence_id']],
+                    ('reference_expression', 'context_rules'))
+    return tasks
+
+
+def _partial_errors(manifest: dict, expected: dict, actual: dict) -> list[str]:
+    if not isinstance(actual, dict):
+        return ['partial must be an object']
+    errors = []
+    for key, value in expected.items():
+        if key != 'path' and actual.get(key) != value:
+            errors.append(f"partial {expected['task_id']} mismatches {key}")
+    if (not isinstance(actual.get('checked_chunk_ids'), list) or
+            any(type(x) is not int for x in actual['checked_chunk_ids'])):
+        errors.append('partial checked_chunk_ids must be integer IDs')
+    if actual.get('schema_version') != SCHEMA_VERSION:
+        errors.append('partial requires schema_version 3.0')
+    limit = manifest['config'].get('agent_retry_limit', 2) + 1
+    if type(actual.get('attempt')) is not int or not 1 <= actual['attempt'] <= limit:
+        errors.append('partial attempt exceeds bounded retries')
+    if actual.get('status') != 'completed':
+        errors.append('partial is not completed')
+    if expected['required_checks']:
+        checks = actual.get('checks')
+        if not isinstance(checks, dict) or set(checks) != set(expected['required_checks']):
+            errors.append('partial check categories do not match task')
+        elif any(value != 'pass' for value in checks.values()):
+            errors.append('partial semantic check did not pass')
+        issues = actual.get('issues')
+        if not isinstance(issues, list):
+            errors.append('partial requires issues list')
+        elif any(not isinstance(x, dict) or x.get('severity') not in ('warning', 'error') for x in issues):
+            errors.append('partial issue has invalid severity')
+        elif any(x['severity'] == 'error' for x in issues):
+            errors.append('partial reports semantic error')
+    return errors
+
+
+def validate_semantic_coverage(manifest: dict, payload: dict) -> list[str]:
+    try:
+        expected = expected_partial_tasks(manifest, 'semantic_qa')
+    except (OSError, ValueError, KeyError) as e:
+        return [f'invalid semantic task inputs: {e}']
+    actual = payload.get('task_coverage')
+    if not isinstance(actual, list):
+        return ['semantic_qa requires task_coverage for every local, seam and shared-term task']
+    by_id = {x.get('task_id'): x for x in actual if isinstance(x, dict)}
+    if len(by_id) != len(actual) or set(by_id) != {x['task_id'] for x in expected}:
+        return ['semantic_qa task coverage is missing, duplicated or unknown']
+    errors, issues = [], []
+    for task in expected:
+        result = by_id[task['task_id']]
+        errors.extend(_partial_errors(manifest, task, result))
+        if isinstance(result.get('issues'), list):
+            issues.extend(result['issues'])
+    if payload.get('issues') != issues:
+        errors.append('semantic_qa issues do not aggregate every task issue in order')
+    if payload.get('translation_sha256') != expected[0]['translation_sha256']:
+        errors.append('semantic_qa translation hash is stale')
+    return errors
+
+
+def cmd_assemble(args) -> None:
+    manifest = _load_v3_manifest_or_die(args.manifest)
+    try:
+        tasks = expected_partial_tasks(manifest, args.stage)
+        results = []
+        for task in tasks:
+            path = task['path']
+            if os.path.islink(path) or os.path.realpath(path) != os.path.abspath(path):
+                raise ValueError('partial must be an ordinary file inside this run')
+            result = _read_json(path)
+            errors = _partial_errors(manifest, task, result)
+            if errors:
+                raise ValueError('; '.join(errors))
+            results.append(result)
+        payload = {'schema_version': SCHEMA_VERSION, 'run_id': manifest['run_id'],
+                   'stage_input_hash': stage_input_hash(manifest, args.stage),
+                   'attempt': max(x['attempt'] for x in results)}
+        ledger = _stage_payload(manifest, 'source_matching', 'occurrence_ledger')['occurrences']
+        if args.stage == 'translation':
+            payload['chunks'] = [{'chunk': task['checked_chunk_ids'][0],
+                                  'translated_markdown': result.get('translated_markdown'),
+                                  'occurrence_ids': result.get('occurrence_ids')}
+                                 for task, result in zip(tasks, results)]
+            payload['translation_sha256'] = sha256_text(_assembled_translation_from_payload(payload))
+            errors = _validate_translation_payload(manifest, payload, ledger)
+        else:
+            payload.update(translation_sha256=tasks[0]['translation_sha256'],
+                           checked_occurrence_ids=[x['occurrence_id'] for x in ledger],
+                           task_coverage=results, issues=[issue for x in results for issue in x['issues']],
+                           checks={check: 'pass' for check in SEMANTIC_CHECKS})
+            errors = _validate_semantic_qa_payload(payload, ledger, manifest)
+        if errors:
+            raise ValueError('; '.join(errors))
+        output = os.path.join(manifest['workspace'], f'assembled.{args.stage}.json')
+        atomic_write_json(output, payload)
+        if args.stage == 'translation':
+            atomic_write_text(os.path.join(manifest['workspace'], 'assembled.translation.md'),
+                              _assembled_translation_from_payload(payload))
+        print(json.dumps({'stage': args.stage, 'payload': output}, ensure_ascii=False))
+    except (OSError, ValueError, TypeError, KeyError) as e:
+        die(f'Cannot assemble {args.stage}: {e}')
+
+
+def _validate_semantic_qa_payload(payload: dict, ledger: list[dict] | None = None, manifest: dict | None = None) -> list[str]:
     errors: list[str] = []
     if not isinstance(payload.get('translation_sha256'), str):
         errors.append('semantic_qa requires translation_sha256')
+    if manifest is not None:
+        errors.extend(validate_semantic_coverage(manifest, payload))
     issues = payload.get('issues')
     if not isinstance(issues, list):
         errors.append('semantic_qa requires issues list')
@@ -660,7 +862,7 @@ def _strict_artifact_errors(manifest: dict, translation_text: str | None = None)
         translation = _stage_payload(manifest, 'translation', 'translation')
         errors.extend(_validate_translation_payload(manifest, translation, ledger))
         semantic = _stage_payload(manifest, 'semantic_qa', 'semantic_qa')
-        errors.extend(_validate_semantic_qa_payload(semantic, ledger))
+        errors.extend(_validate_semantic_qa_payload(semantic, ledger, manifest))
         coverage = _stage_payload(manifest, 'deterministic_qa', 'coverage_report')
         if coverage.get('status') != 'pass':
             errors.append('coverage report did not pass')
@@ -701,6 +903,10 @@ def cmd_prepare(args) -> None:
     chunk_lines = args.chunk_lines or cfg['chunk_lines']
     max_chunks = cfg['max_chunks']
     max_workspace_mb = cfg['max_workspace_mb']
+    if type(max_chunks) is not int or max_chunks <= 0:
+        die('max_chunks must be a positive scheduling batch size')
+    if type(chunk_lines) is not int or chunk_lines <= 0:
+        die('chunk_lines must be positive')
 
     source_text = _read_source_text(input_path)
 
@@ -738,12 +944,6 @@ def cmd_prepare(args) -> None:
         os.path.dirname(input_path), '.translate-runs', run_id
     )
     chunk_plan = plan_chunks(source_text, chunk_lines, workspace)
-    if chunk_plan['n_chunks'] > max_chunks:
-        die(
-            f'Chunk count {chunk_plan["n_chunks"]} exceeds max_chunks={max_chunks}. '
-            f'Raise --chunk-lines (currently {chunk_lines}) or split the document.',
-        )
-
     # Workspace size guard
     try:
         ws_size = sum(
@@ -759,6 +959,10 @@ def cmd_prepare(args) -> None:
     passage_manifest = []
     if reference_texts:
         passage_manifest = chunk_references(reference_texts, chunk_lines, workspace)
+
+    if sum(os.path.getsize(os.path.join(root, name))
+           for root, dirs, files in os.walk(workspace) for name in files) > max_workspace_mb * 1024 * 1024:
+        die(f'Workspace size exceeds max_workspace_mb={max_workspace_mb}.')
 
     # These artifacts are deterministic inputs to the agent-owned stages.  A
     # manifest begins with those stages pending; the SKILL orchestrator advances
@@ -785,6 +989,7 @@ def cmd_prepare(args) -> None:
         stages=['prepare', 'reference_mining', 'source_matching', 'translation',
                 'deterministic_qa', 'semantic_qa', 'write'], run_id=run_id,
     )
+    manifest['glossary_output'] = os.path.abspath(args.glossary_output) if args.glossary_output else None
     cache_root = os.path.abspath(os.environ.get(
         'TRANSLATE_CACHE_DIR', os.path.join(tempfile.gettempdir(), 'file-processing-translate-cache')
     ))
@@ -807,60 +1012,18 @@ def cmd_prepare(args) -> None:
     manifest_path = _manifest_path(workspace)
     _save_manifest(manifest_path, manifest)
 
-    # ---- Output (legacy sections preserved; new sections appended) ----
-    print(f'=== SOURCE TEXT ({os.path.basename(input_path)}) ===')
-    print(source_text)
-
-    if glossary:
-        print('\n=== GLOSSARY (pre-made) ===')
-        print(json.dumps(glossary, indent=2, ensure_ascii=False))
-
-    if reference_texts:
-        print('\n=== REFERENCES ===')
-        for name, content in reference_texts:
-            print(f'\n--- Reference: {name} ---')
-            print(content)
-
-    print('\n=== CHUNK PLAN ===')
-    print(json.dumps(chunk_plan, ensure_ascii=False, indent=2))
-
-    if passage_manifest:
-        print('\n=== PASSAGE MANIFEST ===')
-        print(json.dumps(passage_manifest, ensure_ascii=False, indent=2))
-
-    print('\n=== RUN MANIFEST ===')
+    # Compact handoff: source/reference bodies stay in bounded local files.
+    print('=== RUN MANIFEST ===')
     print(json.dumps({
-        'path': manifest_path,
-        'run_id': manifest['run_id'],
-        'runtime_mode': args.runtime_mode,
-        'quality_mode': args.quality_mode,
-        'input_fingerprint': manifest['input_fingerprint'],
+        'path': manifest_path, 'run_id': run_id, 'target_language': target_lang, 'chunks': chunk_plan['n_chunks'],
+        'scheduling_batch_size': max_chunks,
+        'scheduling_batches': (chunk_plan['n_chunks'] + max_chunks - 1) // max_chunks,
+        'chunk_plan': chunk_plan_path, 'passage_manifest': passage_manifest_path,
+        'reference_passages': len(passage_manifest),
+        'chunk_files': os.path.join(workspace, 'chunk_NNN.md'),
+        'glossary_output': manifest['glossary_output'],
     }, ensure_ascii=False, indent=2))
 
-    print(f'\n=== INSTRUCTIONS ===')
-    print(f'Translate the SOURCE TEXT to {target_lang}.')
-
-    if reference_texts:
-        print(
-            'Analyze ALL REFERENCES to generate a comprehensive glossary of EVERY terminology '
-            'mapping before translating. Extract ALL domain-specific terms, proper nouns, '
-            'technical jargon, and recurring expressions. Err on the side of including more '
-            'terms rather than fewer. Save the glossary to a JSON file, then translate using it '
-            'for consistent terminology throughout.'
-        )
-        if args.glossary_output:
-            print(f'Save the auto-generated glossary to: {args.glossary_output}')
-
-    if glossary:
-        print('Apply the pre-made GLOSSARY terms consistently throughout the translation.')
-
-    print('Preserve all markdown structure (headings, lists, tables, links, code blocks).')
-    print('Do NOT translate code, URLs, file paths, or variable names.')
-
-
-# ---------------------------------------------------------------------------
-# Subcommand: qa
-# ---------------------------------------------------------------------------
 
 def _read_chunk_translations(workspace: str, target_lang: str) -> dict[int, str]:
     """Read chunk_NNN.<lang>..md files -> {chunk_index: text}."""
@@ -1164,18 +1327,51 @@ def cmd_write(args) -> None:
         readiness_errors.extend(_strict_artifact_errors(manifest, content))
         if readiness_errors:
             die('Strict write blocked: ' + '; '.join(readiness_errors))
-        output_path = args.output or derive_output_path(input_path, target_lang)
         qa_status = 'strict-pass'
     else:
-        stem, ext = os.path.splitext(args.output or derive_output_path(input_path, target_lang))
-        output_path = f'{stem}.incomplete{ext}'
         qa_status = 'INCOMPLETE'
 
-    if not args.no_frontmatter:
-        now = datetime.datetime.now().isoformat(timespec='seconds')
+    output_format = args.output_format
+    extension = '.json' if output_format == 'json' else '.md'
+    default_path = os.path.splitext(derive_output_path(input_path, target_lang))[0] + extension
+    output_path = os.path.abspath(args.output or default_path)
+    if os.path.splitext(output_path)[1].lower() != extension:
+        die(f'Output extension must be {extension} for {output_format}')
+    if quality_mode == 'report-only':
+        stem, ext = os.path.splitext(output_path)
+        output_path = f'{stem}.incomplete{ext}'
+
+    if output_format == 'json':
+        try:
+            sources = prepared_chunks(manifest)
+            if quality_mode == 'strict' or manifest['stages']['translation']['state'] == 'completed':
+                translated = _stage_payload(manifest, 'translation', 'translation')
+                by_id = {x['chunk']: x['translated_markdown'] for x in translated['chunks']}
+            elif len(sources) == 1:
+                by_id = {1: content}
+            else:
+                raise ValueError('multi-chunk diagnostic JSON requires planned translated chunks')
+            document = {
+                'schema_version': 1,
+                'source': {'name': os.path.basename(input_path),
+                           'prepared_text_sha256': manifest['source']['sha256']},
+                'target_language': target_lang, 'qa_status': qa_status,
+                'segments': [{'id': c['index'], 'source_start_line': c['start'],
+                              'source_end_line': c['end'],
+                              'source': c['text'] + ('\n' if i < len(sources) - 1 else ''),
+                              'translation': by_id[c['index']]}
+                             for i, c in enumerate(sources)],
+            }
+            content = json.dumps(document, ensure_ascii=False, indent=2) + '\n'
+        except (OSError, ValueError, KeyError) as e:
+            die(f'Cannot write bilingual JSON: {e}')
+    elif not args.no_frontmatter:
+        now = manifest['created_at']
+        output_manifest_hash = manifest['stages']['write'].get('artifacts', {}).get('output', {}).get(
+            'manifest_sha256', manifest['manifest_sha256'])
         source_for_fm = input_path.replace('\\', '/').replace('"', '\\"')
         manifest_for_fm = os.path.abspath(args.manifest).replace('\\', '/')
-        fm = (
+        content = (
             '---\n'
             f'source: "{source_for_fm}"\n'
             f'translated_at: "{now}"\n'
@@ -1183,37 +1379,107 @@ def cmd_write(args) -> None:
             f'target_language: "{target_lang}"\n'
             f'run_id: "{manifest["run_id"]}"\n'
             f'qa_status: "{qa_status}"\n'
-            f'manifest_sha256: "{manifest["manifest_sha256"]}"\n'
+            f'manifest_sha256: "{output_manifest_hash}"\n'
             f'manifest_path: "{manifest_for_fm}"\n'
-            '---\n\n'
+            '---\n\n' + content
         )
-        content = fm + content
     elif quality_mode == 'report-only':
         content = f'<!-- INCOMPLETE run_id={manifest["run_id"]} qa_status=INCOMPLETE -->\n\n' + content
 
-    if os.path.exists(output_path):
-        if args.overwrite:
-            pass
-        elif args.rename:
-            stem, ext = os.path.splitext(output_path)
-            ts = datetime.datetime.now().strftime('%Y%m%dT%H%M%S')
-            output_path = f'{stem}-{ts}{ext}'
-        else:
-            die(
-                f'Output file already exists: {output_path}\n'
-                f'Re-run with --overwrite to replace or --rename to save as new file.'
-            )
+    glossary_path = manifest.get('glossary_output') if quality_mode == 'strict' else None
+    glossary_terms = None
+    if glossary_path:
+        try:
+            matching = _stage_payload(manifest, 'source_matching', 'occurrence_ledger')
+            glossary_terms = []
+            for candidate in matching['source_candidates']:
+                entry = dict(candidate)
+                occurrences = [x for x in matching['occurrences'] if x['source'] == entry.get('source')]
+                if not isinstance(entry.get('source'), str) or not entry['source'].strip():
+                    raise ValueError('glossary source must be nonempty text')
+                if entry.get('target') is not None and not isinstance(entry['target'], str):
+                    raise ValueError('glossary target must be text or null')
+                targets = sorted({x['target'] for x in occurrences if isinstance(x.get('target'), str) and x['target']})
+                if targets:
+                    entry['target'] = targets[0] if len(targets) == 1 else None
+                    if len(targets) > 1:
+                        entry['alternatives'] = targets
+                entry['occurrences'] = occurrences
+                glossary_terms.append(entry)
+        except (OSError, ValueError, KeyError) as e:
+            die(f'Cannot export requested glossary: {e}')
 
-    atomic_write_text(output_path, content)
+    def aliases(left, right):
+        return (os.path.normcase(os.path.realpath(left)) == os.path.normcase(os.path.realpath(right)) or
+                (os.path.exists(left) and os.path.exists(right) and os.path.samefile(left, right)))
 
-    if not os.path.exists(output_path):
-        die(f'Write failed: file not found at {output_path} after write')
+    protected = [input_path, manifest['source']['path'], translation_path, args.manifest]
+    protected.extend(x['path'] for x in manifest.get('references', []))
+    protected.extend(x['path'] for stage, record in manifest['stages'].items() if stage != 'write'
+                     for x in record.get('artifacts', {}).values() if isinstance(x, dict) and x.get('path'))
+    # The whole private run is reserved, including partials and future artifacts.
+    def preflight(path, key, expected_hash):
+        path = os.path.abspath(path)
+        try:
+            inside_run = os.path.commonpath([os.path.realpath(path), os.path.realpath(manifest['workspace'])]) == os.path.realpath(manifest['workspace'])
+        except ValueError:  # different Windows volumes
+            inside_run = False
+        if inside_run:
+            die('Output must not overwrite required run files')
+        if any(aliases(path, x) for x in protected):
+            die('Output aliases source or required run files')
+        previous = manifest['stages']['write'].get('artifacts', {}).get(key, {})
+        if (manifest['stages']['write'].get('state') == 'failed_transient'
+                and previous.get('requested_path', previous.get('path')) == path
+                and previous.get('sha256') == expected_hash
+                and os.path.isfile(previous.get('path', ''))
+                and sha256_file(previous['path']) == expected_hash):
+            return previous['path'], True
+        if os.path.exists(path):
+            if args.overwrite:
+                return path, False
+            if args.rename:
+                stem, ext = os.path.splitext(path)
+                timestamp = datetime.datetime.now().strftime('%Y%m%dT%H%M%S')
+                renamed = f'{stem}-{timestamp}{ext}'
+                serial = 1
+                while os.path.exists(renamed):
+                    renamed = f'{stem}-{timestamp}-{serial}{ext}'
+                    serial += 1
+                return renamed, False
+            die(f'Output file already exists: {path}; use --overwrite or --rename')
+        return path, False
 
-    update_stage(manifest, 'write', 'completed', artifacts={
-        'output': {'path': os.path.abspath(output_path), 'sha256': sha256_file(output_path)},
-    })
+    if glossary_path and aliases(output_path, glossary_path):
+        die('Translation and glossary destinations must be distinct')
+    requested_output_path = output_path
+    requested_glossary_path = glossary_path
+    output_path, reuse_output = preflight(output_path, 'output', sha256_text(content))
+    reuse_glossary = False
+    if glossary_path:
+        glossary_hash = sha256_text(json.dumps({'terms': glossary_terms}, ensure_ascii=False, indent=2, sort_keys=True) + '\n')
+        glossary_path, reuse_glossary = preflight(glossary_path, 'glossary_output', glossary_hash)
+        if aliases(output_path, glossary_path):
+            die('Translation and glossary destinations must be distinct')
+    published = {}
+    try:
+        if not reuse_output:
+            atomic_write_text(output_path, content)
+        published['output'] = {'path': output_path, 'sha256': sha256_file(output_path),
+                               'requested_path': requested_output_path,
+                               'manifest_sha256': locals().get('output_manifest_hash', manifest['manifest_sha256'])}
+        if glossary_path:
+            if not reuse_glossary:
+                save_glossary_structured(glossary_terms, glossary_path)
+            published['glossary_output'] = {'path': glossary_path, 'sha256': sha256_file(glossary_path),
+                                            'requested_path': requested_glossary_path}
+    except OSError as e:
+        update_stage(manifest, 'write', 'failed_transient', artifacts=published, detail=str(e))
+        _save_manifest(args.manifest, manifest)
+        die(f'Write/export failed: {e}; published paths: ' + ', '.join(x['path'] for x in published.values()))
+    update_stage(manifest, 'write', 'completed', artifacts=published)
     _save_manifest(args.manifest, manifest)
-    print(f'[OK] Written: {output_path}')
+    print(json.dumps({'status': qa_status, 'published_paths': [x['path'] for x in published.values()]}, ensure_ascii=False))
     if quality_mode == 'report-only':
         sys.exit(EXIT_REPORT_ONLY)
 
@@ -1327,11 +1593,19 @@ def cmd_publish_stage(args) -> None:
                 ledger = matching.get('occurrences') if isinstance(matching.get('occurrences'), list) else None
             except (OSError, ValueError, json.JSONDecodeError) as e:
                 die(f'Cannot validate semantic QA artifact: {e}')
-            validation_errors = _validate_semantic_qa_payload(payload, ledger)
+            validation_errors = _validate_semantic_qa_payload(payload, ledger, manifest)
         else:
             validation_errors = [f'unsupported required artifact {args.stage}/{args.artifact}']
         if validation_errors:
             die('Invalid stage artifact: ' + '; '.join(validation_errors))
+    previous = manifest['stages'][args.stage]
+    if previous.get('state') == args.state and args.artifact in previous.get('artifacts', {}):
+        try:
+            if _stage_payload(manifest, args.stage, args.artifact) == payload:
+                print(json.dumps({'stage': args.stage, 'state': args.state, 'idempotent': True}))
+                return
+        except (OSError, ValueError):
+            pass
     artifact_dir = os.path.join(manifest['workspace'], 'artifacts', args.stage)
     artifact_path = os.path.join(artifact_dir, f'{args.artifact}.json')
     raw_response_sha256 = sha256_file(args.input)
@@ -1417,6 +1691,10 @@ def main():
     p_qa.add_argument('--audits-dir', default=None, help='Dir with self_audit_NNN.json files')
     p_qa.add_argument('--manifest', required=True, help='v3 run_manifest.json created by prepare')
 
+    p_assemble = subparsers.add_parser('assemble', help='Validate expected local partials and assemble a full-stage payload')
+    p_assemble.add_argument('--manifest', required=True)
+    p_assemble.add_argument('--stage', required=True, choices=('translation', 'semantic_qa'))
+
     # --- write ---
     p_write = subparsers.add_parser('write', help='Write translated file')
     p_write.add_argument('--input', required=True, help='Original source file (for naming)')
@@ -1425,6 +1703,7 @@ def main():
     p_write.add_argument('--no-frontmatter', action='store_true', help='Skip frontmatter injection')
     p_write.add_argument('--overwrite', action='store_true', help='Overwrite existing output')
     p_write.add_argument('--rename', action='store_true', help='Rename if output exists')
+    p_write.add_argument('--output-format', choices=('json', 'markdown'), default='json')
     p_write.add_argument('--output', default='', help='Optional output path')
     p_write.add_argument('--manifest', required=True, help='v3 run_manifest.json bound to QA')
 
@@ -1451,6 +1730,8 @@ def main():
         cmd_prepare(args)
     elif args.command == 'qa':
         cmd_qa(args)
+    elif args.command == 'assemble':
+        cmd_assemble(args)
     elif args.command == 'write':
         cmd_write(args)
     elif args.command == 'resume':

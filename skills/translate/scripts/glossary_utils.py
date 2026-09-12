@@ -243,8 +243,8 @@ def save_glossary(glossary, path: str) -> None:
         out = glossary
     else:
         out = glossary
-    with open(path, 'w', encoding='utf-8') as f:
-        json.dump(out, f, indent=2, ensure_ascii=False)
+    from v3_runtime import atomic_write_json
+    atomic_write_json(path, out)
 
 
 def load_glossary_structured(path: str) -> list[dict]:
